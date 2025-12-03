@@ -177,6 +177,13 @@
             <input type="range" id="month" min="0" max="11" step="1" value="0" />
         </div>
 
+        <div class="control-group" id="precip-weight-group" style="display: none">
+            <label>
+                Precip Weight: <span class="value-display" id="precip-weight-value">1.0</span>
+            </label>
+            <input type="range" id="precip-weight" min="0" max="5" step="0.1" value="1.0" />
+        </div>
+
         <div class="control-group">
             <label>
                 <input type="checkbox" id="globe-projection" checked />
@@ -219,11 +226,13 @@
          * Output: assign to `fragColor` (vec4)
          */
         const combinedBandsCustomFrag = `
+  uniform float u_precipWeight;
+
   if (tavg > 1e20 || prec > 1e20) {
     discard;
   }
   
-  float combined = tavg + prec;
+  float combined = tavg + prec * u_precipWeight;
   
   float norm = (combined - clim.x) / (clim.y - clim.x);
   float cla = clamp(norm, 0.0, 1.0);
@@ -348,6 +357,8 @@
             document.getElementById('month-group').style.display = show
                 ? 'block'
                 : 'none'
+            // Hide weight control by default when switching datasets
+            document.getElementById('precip-weight-group').style.display = 'none'
             document.getElementById('time').parentElement.style.display = show
                 ? 'none'
                 : 'block'
@@ -482,6 +493,7 @@
             if (!config.has4D) return
 
             const monthIndex = parseInt(document.getElementById('month').value)
+            const precipWeight = parseFloat(document.getElementById('precip-weight').value)
 
             if (bandValue === 'combined') {
                 document.getElementById('loading').style.display = 'block'
@@ -505,10 +517,15 @@
                         noDataMax: config.noDataMax,
                         dimensionNames: config.dimensionNames,
                         customFrag: combinedBandsCustomFrag,
-                        uniforms: {},
+                        uniforms: {
+                            u_precipWeight: precipWeight
+                        },
                     })
 
                     map.addLayer(zarrLayer)
+
+                    // Show weight control
+                    document.getElementById('precip-weight-group').style.display = 'block'
 
                     zarrLayer.setVminVmax(-10, 40)
                     document.getElementById('vmin').value = -10
@@ -527,6 +544,9 @@
                     document.getElementById('loading').style.color = 'red'
                 }
             } else {
+                // Hide weight control if not combined
+                document.getElementById('precip-weight-group').style.display = 'none'
+
                 const bandIndex = parseInt(bandValue)
 
                 const needsRecreate = zarrLayer?.fragmentShaderSource !== undefined
@@ -582,6 +602,14 @@
                     zarrLayer.setColormap('viridis')
                     document.getElementById('colormap').value = 'viridis'
                 }
+            }
+        })
+
+        document.getElementById('precip-weight').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value)
+            document.getElementById('precip-weight-value').textContent = value.toFixed(1)
+            if (zarrLayer) {
+                zarrLayer.setUniforms({ u_precipWeight: value })
             }
         })
 

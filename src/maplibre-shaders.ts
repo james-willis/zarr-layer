@@ -173,6 +173,38 @@ export function createFragmentShaderSource(
     .map((name) => `uniform float ${name};`)
     .join('\n')
 
+  // Extract uniforms defined in customFrag that are not in customUniforms
+  // This is a naive regex check to avoid double declaration if user includes it in frag
+  // but also passes it in customUniforms array.
+  // In our architecture, the library injects the uniforms declared in `customUniforms`.
+  // If the user ALSO writes `uniform float u_precipWeight;` in their `customFrag`,
+  // it ends up inside `main()`, which is illegal in GLSL.
+
+  // We need to strip `uniform ...;` declarations from `customFrag` and move them to global scope
+  // OR we rely on `customUniforms` to declare them and ask the user NOT to declare them in frag.
+
+  // The user error message says: "ERROR: 0:49: 'uniform' : only allowed at global scope"
+  // This confirms they wrote `uniform float u_precipWeight;` inside the string which we inject into main().
+
+  // Fix: We'll regex replace `uniform ...;` from customFrag and add them to global scope
+  // if they aren't already there.
+
+  let processedFragBody = customFrag || ''
+  const uniformRegex = /uniform\s+\w+\s+(\w+)\s*;/g
+  let match
+  const extractedUniforms: string[] = []
+
+  while ((match = uniformRegex.exec(processedFragBody)) !== null) {
+    if (!customUniforms.includes(match[1])) {
+      extractedUniforms.push(match[0])
+    }
+  }
+
+  // Remove them from the body
+  processedFragBody = processedFragBody.replace(uniformRegex, '')
+
+  const extraUniformsDecl = extractedUniforms.join('\n')
+
   const bandReads = bands
     .map(
       (name) =>
@@ -184,9 +216,7 @@ export function createFragmentShaderSource(
     .map((name) => `  float ${name} = ${name}_val;`)
     .join('\n')
 
-  const nodataChecks = bands
-    .map((name) => `${name} == nodata`)
-    .join(' || ')
+  const nodataChecks = bands.map((name) => `${name} == nodata`).join(' || ')
 
   const commonDiscardChecks = hasBands
     ? `
@@ -207,7 +237,9 @@ ${bands
   )
   .join('\n')}
   
-  if (anyNaN || anyNoData || anyFill${nodataChecks ? ` || ${nodataChecks}` : ''}) {
+  if (anyNaN || anyNoData || anyFill${
+    nodataChecks ? ` || ${nodataChecks}` : ''
+  }) {
     discard;
   }
 `
@@ -283,6 +315,7 @@ uniform sampler2D colormap;
 
 ${bandSamplers}
 ${customUniformDecls}
+${extraUniformsDecl}
 
 in vec2 pix_coord;
 out vec4 fragColor;
@@ -291,7 +324,57 @@ void main() {
   vec2 sample_coord = pix_coord * u_texScale + u_texOffset;
 ${bandReads}
 ${bandAliases}
-${fragBody}
+${
+  processedFragBody
+    ? `
+${commonDiscardChecks}
+${processedFragBody.replace(/gl_FragColor/g, 'fragColor')}`
+    : bands.length === 1
+    ? `
+  float value = ${bands[0]};
+  
+  bool isNaN = (value != value);
+  bool isNoData = (value < u_noDataMin || value > u_noDataMax);
+  bool isFill = (u_useFillValue && abs(value - u_fillValue) < 1e-6);
+  
+  if (isNaN || isNoData || isFill || value == nodata) {
+    discard;
+  }
+  
+  float norm = (value - clim.x) / (clim.y - clim.x);
+  float cla = clamp(norm, 0.0, 1.0);
+  vec4 c = texture(colormap, vec2(cla, 0.5));
+  fragColor = vec4(c.r, c.g, c.b, opacity);
+`
+    : `
+  bool anyNaN = false;
+  bool anyNoData = false;
+  bool anyFill = false;
+${bands.map((name) => `  anyNaN = anyNaN || (${name} != ${name});`).join('\n')}
+${bands
+  .map(
+    (name) =>
+      `  anyNoData = anyNoData || (${name} < u_noDataMin || ${name} > u_noDataMax);`
+  )
+  .join('\n')}
+${bands
+  .map(
+    (name) =>
+      `  anyFill = anyFill || (u_useFillValue && abs(${name} - u_fillValue) < 1e-6);`
+  )
+  .join('\n')}
+  
+  if (anyNaN || anyNoData || anyFill) {
+    discard;
+  }
+  
+  float value = ${bands[0]};
+  float norm = (value - clim.x) / (clim.y - clim.x);
+  float cla = clamp(norm, 0.0, 1.0);
+  vec4 c = texture(colormap, vec2(cla, 0.5));
+  fragColor = vec4(c.r, c.g, c.b, opacity);
+`
+}
 }
 `
 }
