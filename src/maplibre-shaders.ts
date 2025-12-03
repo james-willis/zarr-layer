@@ -82,21 +82,15 @@ void main() {
 `
 
 /**
- * Fragment shader for tile rendering with colormap and nodata handling.
- * Supports fill values, nodata ranges, scale factors, and offsets.
+ * Fragment shader for tile rendering with colormap and fillValue handling.
+ * Mirrors carbonplan/maps approach with clim (vec2) and single fillValue.
  */
 export const maplibreFragmentShaderSource = `#version 300 es
 precision highp float;
 
-uniform float vmin;
-uniform float vmax;
+uniform vec2 clim;
 uniform float opacity;
-uniform float nodata;
-
-uniform float u_noDataMin;
-uniform float u_noDataMax;
-uniform bool u_useFillValue;
-uniform float u_fillValue;
+uniform float fillValue;
 uniform float u_scaleFactor;
 uniform float u_addOffset;
 uniform vec2 u_texScale;
@@ -113,18 +107,14 @@ void main() {
   float raw = texture(tex, sample_coord).r;
   float value = raw * u_scaleFactor + u_addOffset;
   
-  bool isNaN = (value != value);
-  bool isNoData = (value < u_noDataMin || value > u_noDataMax);
-  bool isFill = (u_useFillValue && abs(value - u_fillValue) < 1e-6);
-  
-  if (isNaN || isNoData || isFill || value == nodata) {
+  if (raw == fillValue || raw != raw || value != value) {
     discard;
   }
   
-  float norm = (value - vmin) / (vmax - vmin);
-  float cla = clamp(norm, 0.0, 1.0);
-  vec4 c = texture(cmap, vec2(cla, 0.5));
-  color = vec4(c.r, c.g, c.b, opacity);
+  float rescaled = (value - clim.x) / (clim.y - clim.x);
+  vec4 c = texture(cmap, vec2(clamp(rescaled, 0.0, 1.0), 0.5));
+  color = vec4(c.rgb, opacity);
+  color.rgb *= color.a;
 }
 `
 
@@ -173,22 +163,6 @@ export function createFragmentShaderSource(
     .map((name) => `uniform float ${name};`)
     .join('\n')
 
-  // Extract uniforms defined in customFrag that are not in customUniforms
-  // This is a naive regex check to avoid double declaration if user includes it in frag
-  // but also passes it in customUniforms array.
-  // In our architecture, the library injects the uniforms declared in `customUniforms`.
-  // If the user ALSO writes `uniform float u_precipWeight;` in their `customFrag`,
-  // it ends up inside `main()`, which is illegal in GLSL.
-
-  // We need to strip `uniform ...;` declarations from `customFrag` and move them to global scope
-  // OR we rely on `customUniforms` to declare them and ask the user NOT to declare them in frag.
-
-  // The user error message says: "ERROR: 0:49: 'uniform' : only allowed at global scope"
-  // This confirms they wrote `uniform float u_precipWeight;` inside the string which we inject into main().
-
-  // Fix: We'll regex replace `uniform ...;` from customFrag and add them to global scope
-  // if they aren't already there.
-
   let processedFragBody = customFrag || ''
   const uniformRegex = /uniform\s+\w+\s+(\w+)\s*;/g
   let match
@@ -200,7 +174,6 @@ export function createFragmentShaderSource(
     }
   }
 
-  // Remove them from the body
   processedFragBody = processedFragBody.replace(uniformRegex, '')
 
   const extraUniformsDecl = extractedUniforms.join('\n')
@@ -208,7 +181,8 @@ export function createFragmentShaderSource(
   const bandReads = bands
     .map(
       (name) =>
-        `  float ${name}_val = texture(${name}, sample_coord).r * u_scaleFactor + u_addOffset;`
+        `  float ${name}_raw = texture(${name}, sample_coord).r;
+  float ${name}_val = ${name}_raw * u_scaleFactor + u_addOffset;`
     )
     .join('\n')
 
@@ -216,96 +190,27 @@ export function createFragmentShaderSource(
     .map((name) => `  float ${name} = ${name}_val;`)
     .join('\n')
 
-  const nodataChecks = bands.map((name) => `${name} == nodata`).join(' || ')
+  const fillValueChecks = bands
+    .map(
+      (name) =>
+        `(${name}_raw == fillValue || ${name}_raw != ${name}_raw || ${name}_val != ${name}_val)`
+    )
+    .join(' || ')
 
   const commonDiscardChecks = hasBands
     ? `
-  bool anyNaN = false;
-  bool anyNoData = false;
-  bool anyFill = false;
-${bands.map((name) => `  anyNaN = anyNaN || (${name} != ${name});`).join('\n')}
-${bands
-  .map(
-    (name) =>
-      `  anyNoData = anyNoData || (${name} < u_noDataMin || ${name} > u_noDataMax);`
-  )
-  .join('\n')}
-${bands
-  .map(
-    (name) =>
-      `  anyFill = anyFill || (u_useFillValue && abs(${name} - u_fillValue) < 1e-6);`
-  )
-  .join('\n')}
-  
-  if (anyNaN || anyNoData || anyFill${
-    nodataChecks ? ` || ${nodataChecks}` : ''
-  }) {
+  if (${fillValueChecks}) {
     discard;
   }
 `
     : ''
 
-  const fragBody = customFrag
-    ? `
-${commonDiscardChecks}
-${customFrag.replace(/gl_FragColor/g, 'fragColor')}`
-    : bands.length === 1
-    ? `
-  float value = ${bands[0]};
-  
-  bool isNaN = (value != value);
-  bool isNoData = (value < u_noDataMin || value > u_noDataMax);
-  bool isFill = (u_useFillValue && abs(value - u_fillValue) < 1e-6);
-  
-  if (isNaN || isNoData || isFill || value == nodata) {
-    discard;
-  }
-  
-  float norm = (value - clim.x) / (clim.y - clim.x);
-  float cla = clamp(norm, 0.0, 1.0);
-  vec4 c = texture(colormap, vec2(cla, 0.5));
-  fragColor = vec4(c.r, c.g, c.b, opacity);
-`
-    : `
-  bool anyNaN = false;
-  bool anyNoData = false;
-  bool anyFill = false;
-${bands.map((name) => `  anyNaN = anyNaN || (${name} != ${name});`).join('\n')}
-${bands
-  .map(
-    (name) =>
-      `  anyNoData = anyNoData || (${name} < u_noDataMin || ${name} > u_noDataMax);`
-  )
-  .join('\n')}
-${bands
-  .map(
-    (name) =>
-      `  anyFill = anyFill || (u_useFillValue && abs(${name} - u_fillValue) < 1e-6);`
-  )
-  .join('\n')}
-  
-  if (anyNaN || anyNoData || anyFill) {
-    discard;
-  }
-  
-  float value = ${bands[0]};
-  float norm = (value - clim.x) / (clim.y - clim.x);
-  float cla = clamp(norm, 0.0, 1.0);
-  vec4 c = texture(colormap, vec2(cla, 0.5));
-  fragColor = vec4(c.r, c.g, c.b, opacity);
-`
-
   return `#version 300 es
 precision highp float;
 
-uniform float nodata;
 uniform float opacity;
 uniform vec2 clim;
-
-uniform float u_noDataMin;
-uniform float u_noDataMax;
-uniform bool u_useFillValue;
-uniform float u_fillValue;
+uniform float fillValue;
 uniform float u_scaleFactor;
 uniform float u_addOffset;
 uniform vec2 u_texScale;
@@ -332,47 +237,27 @@ ${processedFragBody.replace(/gl_FragColor/g, 'fragColor')}`
     : bands.length === 1
     ? `
   float value = ${bands[0]};
+  float raw = ${bands[0]}_raw;
   
-  bool isNaN = (value != value);
-  bool isNoData = (value < u_noDataMin || value > u_noDataMax);
-  bool isFill = (u_useFillValue && abs(value - u_fillValue) < 1e-6);
-  
-  if (isNaN || isNoData || isFill || value == nodata) {
+  if (raw == fillValue || raw != raw || value != value) {
     discard;
   }
   
-  float norm = (value - clim.x) / (clim.y - clim.x);
-  float cla = clamp(norm, 0.0, 1.0);
-  vec4 c = texture(colormap, vec2(cla, 0.5));
-  fragColor = vec4(c.r, c.g, c.b, opacity);
+  float rescaled = (value - clim.x) / (clim.y - clim.x);
+  vec4 c = texture(colormap, vec2(clamp(rescaled, 0.0, 1.0), 0.5));
+  fragColor = vec4(c.rgb, opacity);
+  fragColor.rgb *= fragColor.a;
 `
     : `
-  bool anyNaN = false;
-  bool anyNoData = false;
-  bool anyFill = false;
-${bands.map((name) => `  anyNaN = anyNaN || (${name} != ${name});`).join('\n')}
-${bands
-  .map(
-    (name) =>
-      `  anyNoData = anyNoData || (${name} < u_noDataMin || ${name} > u_noDataMax);`
-  )
-  .join('\n')}
-${bands
-  .map(
-    (name) =>
-      `  anyFill = anyFill || (u_useFillValue && abs(${name} - u_fillValue) < 1e-6);`
-  )
-  .join('\n')}
-  
-  if (anyNaN || anyNoData || anyFill) {
+  if (${fillValueChecks}) {
     discard;
   }
   
   float value = ${bands[0]};
-  float norm = (value - clim.x) / (clim.y - clim.x);
-  float cla = clamp(norm, 0.0, 1.0);
-  vec4 c = texture(colormap, vec2(cla, 0.5));
-  fragColor = vec4(c.r, c.g, c.b, opacity);
+  float rescaled = (value - clim.x) / (clim.y - clim.x);
+  vec4 c = texture(colormap, vec2(clamp(rescaled, 0.0, 1.0), 0.5));
+  fragColor = vec4(c.rgb, opacity);
+  fragColor.rgb *= fragColor.a;
 `
 }
 }

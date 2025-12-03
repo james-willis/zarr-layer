@@ -47,18 +47,14 @@ export class ZarrLayer {
   private invalidate: () => void
 
   private colormap: ColormapState
-  private vmin: number
-  private vmax: number
+  private clim: [number, number]
   private opacity: number
   private minRenderZoom: number
 
   private maxZoom: number = 4
   private tileSize: number = DEFAULT_TILE_SIZE
   private isMultiscale: boolean = true
-  private fillValue: number = 0
-  private useFillValue: boolean = false
-  private noDataMin: number = -9999
-  private noDataMax: number = 9999
+  private fillValue: number | null = null
   private scaleFactor: number = 1
   private offset: number = 0
 
@@ -144,14 +140,12 @@ export class ZarrLayer {
     variable,
     selector = {},
     colormap = 'viridis',
-    vmin,
-    vmax,
+    clim,
     opacity = 1,
-    minRenderZoom = 3,
+    minRenderZoom = 0,
     zarrVersion,
     dimensionNames = {},
-    noDataMin,
-    noDataMax,
+    fillValue,
     customFragmentSource,
     customFrag,
     uniforms,
@@ -170,8 +164,7 @@ export class ZarrLayer {
     this.invalidate = () => {}
 
     this.colormap = new ColormapState(colormap)
-    this.vmin = vmin
-    this.vmax = vmax
+    this.clim = clim
     this.opacity = opacity
     this.minRenderZoom = minRenderZoom
     if (customFragmentSource) {
@@ -190,8 +183,7 @@ export class ZarrLayer {
       }
     }
 
-    if (noDataMin !== undefined) this.noDataMin = noDataMin
-    if (noDataMax !== undefined) this.noDataMax = noDataMax
+    if (fillValue !== undefined) this.fillValue = fillValue
   }
 
   setOpacity(opacity: number) {
@@ -199,9 +191,8 @@ export class ZarrLayer {
     this.invalidate()
   }
 
-  setVminVmax(vmin: number, vmax: number) {
-    this.vmin = vmin
-    this.vmax = vmax
+  setClim(clim: [number, number]) {
+    this.clim = clim
     this.invalidate()
   }
 
@@ -354,9 +345,12 @@ export class ZarrLayer {
       this.offset = desc.addOffset
       this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE
 
-      if (desc.fill_value !== null && desc.fill_value !== undefined) {
+      if (
+        this.fillValue === null &&
+        desc.fill_value !== null &&
+        desc.fill_value !== undefined
+      ) {
         this.fillValue = desc.fill_value
-        this.useFillValue = true
       }
 
       this.isMultiscale = this.levelInfos.length > 0
@@ -487,13 +481,9 @@ export class ZarrLayer {
     const colormapTexture = this.colormap.ensureTexture(this.gl)
 
     const uniforms = {
-      vmin: this.vmin,
-      vmax: this.vmax,
+      clim: this.clim,
       opacity: this.opacity,
       fillValue: this.fillValue,
-      useFillValue: this.useFillValue,
-      noDataMin: this.noDataMin,
-      noDataMax: this.noDataMax,
       scaleFactor: this.scaleFactor,
       offset: this.offset,
     }

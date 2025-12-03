@@ -37,9 +37,8 @@ map.on('load', () => {
       id: 'zarr-layer',
       source: 'https://example.com/my.zarr',
       variable: 'temperature',
-      vmin: 270,
-      vmax: 310,
-      colormap: 'viridis',
+      clim: [270, 310],
+      colormap: 'warm',
       selector: { time: 0 },
       zarrVersion: 3,
     })

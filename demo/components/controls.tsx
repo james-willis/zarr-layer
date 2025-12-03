@@ -84,8 +84,7 @@ const Controls = ({
     setDatasetId(newId)
     const config = DATASETS[newId]
 
-    // Reset defaults based on dataset config
-    setClim([config.vmin, config.vmax])
+    setClim(config.clim)
     setColormap(config.colormap)
 
     if (config.has4D) {
@@ -146,9 +145,9 @@ const Controls = ({
       <Box>
         Min Value: {clim[0]}
         <Slider
-          min={dataset.vmin - (dataset.vmax - dataset.vmin) * 0.5}
-          max={dataset.vmax}
-          step={(dataset.vmax - dataset.vmin) / 100}
+          min={dataset.clim[0] - (dataset.clim[1] - dataset.clim[0]) * 0.5}
+          max={dataset.clim[1]}
+          step={(dataset.clim[1] - dataset.clim[0]) / 100}
           value={clim[0]}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
             setClim([parseFloat(e.target.value), clim[1]])
@@ -159,9 +158,9 @@ const Controls = ({
       <Box>
         Max Value: {clim[1]}
         <Slider
-          min={dataset.vmin}
-          max={dataset.vmax + (dataset.vmax - dataset.vmin) * 0.5}
-          step={(dataset.vmax - dataset.vmin) / 100}
+          min={dataset.clim[0]}
+          max={dataset.clim[1] + (dataset.clim[1] - dataset.clim[0]) * 0.5}
+          step={(dataset.clim[1] - dataset.clim[0]) / 100}
           value={clim[1]}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
             setClim([clim[0], parseFloat(e.target.value)])

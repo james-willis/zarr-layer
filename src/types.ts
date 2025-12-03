@@ -47,14 +47,12 @@ export interface MaplibreLayerOptions {
   variable: string
   selector?: Record<string, number | number[]>
   colormap?: ColorMapName | number[][] | string[]
-  vmin: number
-  vmax: number
+  clim: [number, number]
   opacity?: number
   minRenderZoom?: number
   zarrVersion?: 2 | 3
   dimensionNames?: DimensionNamesProps
-  noDataMin?: number
-  noDataMax?: number
+  fillValue?: number
   customFragmentSource?: string
   customFrag?: string
   uniforms?: Record<string, number>

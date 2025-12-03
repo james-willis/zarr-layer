@@ -15,13 +15,9 @@ import type { MercatorBounds } from './maplibre-utils'
 import type { TileRenderCache, TileRenderData } from './zarr-tile-cache'
 
 interface RendererUniforms {
-  vmin: number
-  vmax: number
+  clim: [number, number]
   opacity: number
-  fillValue: number
-  useFillValue: boolean
-  noDataMin: number
-  noDataMax: number
+  fillValue: number | null
   scaleFactor: number
   offset: number
 }
@@ -83,14 +79,8 @@ interface ShaderProgram {
   tileMercatorCoordsLoc: WebGLUniformLocation | null
   clippingPlaneLoc: WebGLUniformLocation | null
   projectionTransitionLoc: WebGLUniformLocation | null
-  vminLoc: WebGLUniformLocation | null
-  vmaxLoc: WebGLUniformLocation | null
   climLoc: WebGLUniformLocation | null
   opacityLoc: WebGLUniformLocation
-  noDataLoc: WebGLUniformLocation | null
-  noDataMinLoc: WebGLUniformLocation | null
-  noDataMaxLoc: WebGLUniformLocation | null
-  useFillValueLoc: WebGLUniformLocation | null
   fillValueLoc: WebGLUniformLocation | null
   scaleFactorLoc: WebGLUniformLocation | null
   addOffsetLoc: WebGLUniformLocation | null
@@ -264,29 +254,15 @@ export class ZarrRenderer {
       projectionTransitionLoc: isGlobe
         ? this.gl.getUniformLocation(program, 'u_projection_transition')
         : null,
-      // Shared uniforms
+
       opacityLoc: mustGetUniformLocation(this.gl, program, 'opacity'),
       texScaleLoc: mustGetUniformLocation(this.gl, program, 'u_texScale'),
       texOffsetLoc: mustGetUniformLocation(this.gl, program, 'u_texOffset'),
       vertexLoc: this.gl.getAttribLocation(program, 'vertex'),
       pixCoordLoc: this.gl.getAttribLocation(program, 'pix_coord_in'),
 
-      // Conditional uniforms (single vs multi-band)
-      vminLoc: useCustomShader
-        ? null
-        : this.gl.getUniformLocation(program, 'vmin'),
-      vmaxLoc: useCustomShader
-        ? null
-        : this.gl.getUniformLocation(program, 'vmax'),
-      climLoc: useCustomShader
-        ? this.gl.getUniformLocation(program, 'clim')
-        : null,
-
-      noDataLoc: this.gl.getUniformLocation(program, 'nodata'),
-      noDataMinLoc: this.gl.getUniformLocation(program, 'u_noDataMin'),
-      noDataMaxLoc: this.gl.getUniformLocation(program, 'u_noDataMax'),
-      useFillValueLoc: this.gl.getUniformLocation(program, 'u_useFillValue'),
-      fillValueLoc: this.gl.getUniformLocation(program, 'u_fillValue'),
+      climLoc: this.gl.getUniformLocation(program, 'clim'),
+      fillValueLoc: this.gl.getUniformLocation(program, 'fillValue'),
       scaleFactorLoc: this.gl.getUniformLocation(program, 'u_scaleFactor'),
       addOffsetLoc: this.gl.getUniformLocation(program, 'u_addOffset'),
 
@@ -348,39 +324,18 @@ export class ZarrRenderer {
     if (shaderProgram.colormapLoc) {
       gl.uniform1i(shaderProgram.colormapLoc, 1)
     }
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
-    if (shaderProgram.useCustomShader) {
-      if (shaderProgram.climLoc) {
-        gl.uniform2f(shaderProgram.climLoc, uniforms.vmin, uniforms.vmax)
-      }
-    } else {
-      if (shaderProgram.vminLoc) {
-        gl.uniform1f(shaderProgram.vminLoc, uniforms.vmin)
-      }
-      if (shaderProgram.vmaxLoc) {
-        gl.uniform1f(shaderProgram.vmaxLoc, uniforms.vmax)
-      }
+    if (shaderProgram.climLoc) {
+      gl.uniform2f(shaderProgram.climLoc, uniforms.clim[0], uniforms.clim[1])
     }
 
     gl.uniform1f(shaderProgram.opacityLoc, uniforms.opacity)
-    if (shaderProgram.noDataLoc) {
-      gl.uniform1f(shaderProgram.noDataLoc, uniforms.fillValue)
-    }
-    if (shaderProgram.noDataMinLoc) {
-      gl.uniform1f(shaderProgram.noDataMinLoc, uniforms.noDataMin)
-    }
-    if (shaderProgram.noDataMaxLoc) {
-      gl.uniform1f(shaderProgram.noDataMaxLoc, uniforms.noDataMax)
-    }
-    if (shaderProgram.useFillValueLoc) {
-      gl.uniform1i(shaderProgram.useFillValueLoc, uniforms.useFillValue ? 1 : 0)
-    }
     if (shaderProgram.fillValueLoc) {
-      gl.uniform1f(shaderProgram.fillValueLoc, uniforms.fillValue)
+      gl.uniform1f(shaderProgram.fillValueLoc, uniforms.fillValue ?? NaN)
     }
     if (shaderProgram.scaleFactorLoc) {
       gl.uniform1f(shaderProgram.scaleFactorLoc, uniforms.scaleFactor)
@@ -657,7 +612,7 @@ export class ZarrRenderer {
             gl.texParameteri(
               gl.TEXTURE_2D,
               gl.TEXTURE_MIN_FILTER,
-              this.canUseLinearFloat ? gl.LINEAR : gl.NEAREST
+              gl.NEAREST
             )
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -695,7 +650,7 @@ export class ZarrRenderer {
           gl.texParameteri(
             gl.TEXTURE_2D,
             gl.TEXTURE_MIN_FILTER,
-            this.canUseLinearHalfFloat ? gl.LINEAR : gl.NEAREST
+            gl.NEAREST
           )
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -709,14 +664,16 @@ export class ZarrRenderer {
               : channels >= 4
               ? gl.RGBA
               : gl.RED
+          // Use full 32-bit float textures so large sentinel values (fillValue)
+          // survive the upload and can be discarded in the shader.
           const internalFormat =
             channels === 2
-              ? gl.RG16F
+              ? gl.RG32F
               : channels === 3
-              ? gl.RGB16F
+              ? gl.RGB32F
               : channels >= 4
-              ? gl.RGBA16F
-              : gl.R16F
+              ? gl.RGBA32F
+              : gl.R32F
 
           if (!tileToRender.textureUploaded) {
             gl.texImage2D(

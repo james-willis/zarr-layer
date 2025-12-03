@@ -504,40 +504,6 @@ export async function openLevelArray(
 }
 
 /**
- * Resolves the no-data value range for masking dataset values.
- *
- * Priority order:
- * 1. User-specified min/max
- * 2. Dataset metadata min/max
- * 3. Hardcoded fallback (-9999 to 9999)
- *
- * @param userMin - User-defined no-data minimum value.
- * @param userMax - User-defined no-data maximum value.
- * @param metadataMin - Metadata-defined valid minimum value.
- * @param metadataMax - Metadata-defined valid maximum value.
- *
- * @returns An object containing:
- *  - `noDataMin`: Resolved no-data minimum value.
- *  - `noDataMax`: Resolved no-data maximum value.
- */
-export function resolveNoDataRange(
-  userMin: number | undefined,
-  userMax: number | undefined,
-  metadataMin: number | undefined,
-  metadataMax: number | undefined
-): { noDataMin: number; noDataMax: number } {
-  if (userMin !== undefined && userMax !== undefined) {
-    return { noDataMin: userMin, noDataMax: userMax }
-  }
-
-  if (metadataMin !== undefined && metadataMax !== undefined) {
-    return { noDataMin: metadataMin, noDataMax: metadataMax }
-  }
-
-  return { noDataMin: -9999, noDataMax: 9999 }
-}
-
-/**
  * Extracts no-data related metadata from a Zarr array's attributes.
  *
  * Looks for standard NetCDF attributes (`valid_min`, `valid_max`, `_FillValue`, `missing_value`).

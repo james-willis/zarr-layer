@@ -114,16 +114,16 @@
 
         <div class="control-group">
             <label>
-                Min Value: <span class="value-display" id="vmin-value">271</span>
+                Min Value: <span class="value-display" id="clim-min-value">271</span>
             </label>
-            <input type="range" id="vmin" min="260" max="290" step="1" value="271" />
+            <input type="range" id="clim-min" min="260" max="290" step="1" value="271" />
         </div>
 
         <div class="control-group">
             <label>
-                Max Value: <span class="value-display" id="vmax-value">305</span>
+                Max Value: <span class="value-display" id="clim-max-value">305</span>
             </label>
-            <input type="range" id="vmax" min="280" max="320" step="1" value="305" />
+            <input type="range" id="clim-max" min="280" max="320" step="1" value="305" />
         </div>
 
         <div class="control-group">
@@ -276,14 +276,12 @@
         // Add navigation controls
         map.addControl(new maplibregl.NavigationControl())
 
-        // Dataset configurations
         const datasets = {
             salinity_v2: {
                 source:
                     'https://atlantis-vis-o.s3-ext.jc.rl.ac.uk/nemotest101/pyramid2/T1d/sos_abs.zarr',
                 variable: 'sos_abs',
-                vmin: 30,
-                vmax: 37,
+                clim: [30, 37],
                 colormap: 'inferno',
                 zarrVersion: 2,
                 info: 'NEMO NPD-EORCA1 Salinity',
@@ -293,8 +291,7 @@
                 source:
                     'https://atlantis-vis-o.s3-ext.jc.rl.ac.uk/noc-npd-era5-demo/npd-eorca1-era5v1/gn/T1y/tos_con',
                 variable: 'tos_con',
-                vmin: 0,
-                vmax: 27,
+                clim: [0, 27],
                 colormap: 'hot',
                 zarrVersion: 3,
                 info: 'NEMO NPD-EORCA1 Temperature',
@@ -304,27 +301,21 @@
                 source:
                     'https://atlantis-vis-o.s3-ext.jc.rl.ac.uk/hurricanes/era5/florence',
                 variable: 'surface_pressure',
-                vmin: 75000,
-                vmax: 104000,
+                clim: [75000, 104000],
                 colormap: 'jet',
                 zarrVersion: 3,
                 info: 'Hurricane Florence Surface Pressure',
                 sourceInfo: 'Zarr v3 format (EPSG:4326)',
-                noDataMin: 0,
-                noDataMax: 999999,
             },
             wind_risk: {
                 source:
                     'https://carbonplan-ocr.s3.amazonaws.com/output/fire-risk/pyramid/production/v0.13.2/pyramid.zarr',
                 variable: 'wind_risk_2011',
-                vmin: 0,
-                vmax: 20,
+                clim: [0, 20],
                 colormap: 'turbo',
                 zarrVersion: 2,
                 info: 'Wind Risk (2011)',
                 sourceInfo: 'CarbonPlan Fire Risk Pyramid (Zarr v2)',
-                noDataMin: -1,
-                noDataMax: 1e10,
                 center: [-98, 39],
                 zoom: 4,
             },
@@ -332,8 +323,7 @@
                 source:
                     'https://carbonplan-maps.s3.us-west-2.amazonaws.com/v2/demo/4d/tavg-prec-month',
                 variable: 'climate',
-                vmin: -20,
-                vmax: 30,
+                clim: [-20, 30],
                 colormap: 'coolwarm',
                 zarrVersion: 2,
                 info: 'CarbonPlan Climate Demo (4D)',
@@ -392,15 +382,13 @@
                     id: 'zarr-layer',
                     source: config.source,
                     variable: config.variable,
-                    vmin: config.vmin,
-                    vmax: config.vmax,
+                    clim: config.clim,
                     colormap: config.colormap,
                     opacity: 0.7,
                     selector: selector,
                     zarrVersion: config.zarrVersion,
                     minRenderZoom: config.minRenderZoom ?? 0,
-                    noDataMin: config.noDataMin,
-                    noDataMax: config.noDataMax,
+                    fillValue: config.fillValue,
                     dimensionNames: config.dimensionNames,
                 })
                 // Add layer to map
@@ -430,45 +418,42 @@
         })
 
         function updateRangeControls(config) {
-            const vminInput = document.getElementById('vmin')
-            const vmaxInput = document.getElementById('vmax')
+            const climMinInput = document.getElementById('clim-min')
+            const climMaxInput = document.getElementById('clim-max')
 
-            // Update ranges based on dataset
-            const range = config.vmax - config.vmin
-            vminInput.min = Math.floor(config.vmin - range * 0.5)
-            vminInput.max = Math.ceil(config.vmax)
-            vmaxInput.min = Math.floor(config.vmin)
-            vmaxInput.max = Math.ceil(config.vmax + range * 0.5)
+            const range = config.clim[1] - config.clim[0]
+            climMinInput.min = Math.floor(config.clim[0] - range * 0.5)
+            climMinInput.max = Math.ceil(config.clim[1])
+            climMaxInput.min = Math.floor(config.clim[0])
+            climMaxInput.max = Math.ceil(config.clim[1] + range * 0.5)
 
-            vminInput.value = config.vmin
-            vmaxInput.value = config.vmax
-            document.getElementById('vmin-value').textContent = config.vmin
-            document.getElementById('vmax-value').textContent = config.vmax
+            climMinInput.value = config.clim[0]
+            climMaxInput.value = config.clim[1]
+            document.getElementById('clim-min-value').textContent = config.clim[0]
+            document.getElementById('clim-max-value').textContent = config.clim[1]
 
-            // Update colormap selector
             document.getElementById('colormap').value = config.colormap
 
-            // Update info display
             document.getElementById('dataset-info').textContent = config.info
             document.getElementById('source-info').textContent = config.sourceInfo
             document.getElementById('variable-info').textContent = config.variable
         }
 
-        document.getElementById('vmin').addEventListener('input', (e) => {
-            const vmin = parseFloat(e.target.value)
-            const vmax = parseFloat(document.getElementById('vmax').value)
-            document.getElementById('vmin-value').textContent = vmin
-            if (zarrLayer && vmin < vmax) {
-                zarrLayer.setVminVmax(vmin, vmax)
+        document.getElementById('clim-min').addEventListener('input', (e) => {
+            const climMin = parseFloat(e.target.value)
+            const climMax = parseFloat(document.getElementById('clim-max').value)
+            document.getElementById('clim-min-value').textContent = climMin
+            if (zarrLayer && climMin < climMax) {
+                zarrLayer.setClim([climMin, climMax])
             }
         })
 
-        document.getElementById('vmax').addEventListener('input', (e) => {
-            const vmin = parseFloat(document.getElementById('vmin').value)
-            const vmax = parseFloat(e.target.value)
-            document.getElementById('vmax-value').textContent = vmax
-            if (zarrLayer && vmax > vmin) {
-                zarrLayer.setVminVmax(vmin, vmax)
+        document.getElementById('clim-max').addEventListener('input', (e) => {
+            const climMin = parseFloat(document.getElementById('clim-min').value)
+            const climMax = parseFloat(e.target.value)
+            document.getElementById('clim-max-value').textContent = climMax
+            if (zarrLayer && climMax > climMin) {
+                zarrLayer.setClim([climMin, climMax])
             }
         })
 
@@ -506,15 +491,13 @@
                         id: 'zarr-layer',
                         source: config.source,
                         variable: config.variable,
-                        vmin: -10,
-                        vmax: 40,
+                        clim: [-10, 40],
                         colormap: 'turbo',
                         opacity: parseFloat(document.getElementById('opacity').value),
                         selector: { band: ['tavg', 'prec'], month: monthIndex },
                         zarrVersion: config.zarrVersion,
                         minRenderZoom: config.minRenderZoom ?? 0,
-                        noDataMin: config.noDataMin,
-                        noDataMax: config.noDataMax,
+                        fillValue: config.fillValue,
                         dimensionNames: config.dimensionNames,
                         customFrag: combinedBandsCustomFrag,
                         uniforms: {
@@ -524,14 +507,13 @@
 
                     map.addLayer(zarrLayer)
 
-                    // Show weight control
                     document.getElementById('precip-weight-group').style.display = 'block'
 
-                    zarrLayer.setVminVmax(-10, 40)
-                    document.getElementById('vmin').value = -10
-                    document.getElementById('vmax').value = 40
-                    document.getElementById('vmin-value').textContent = '-10'
-                    document.getElementById('vmax-value').textContent = '40'
+                    zarrLayer.setClim([-10, 40])
+                    document.getElementById('clim-min').value = -10
+                    document.getElementById('clim-max').value = 40
+                    document.getElementById('clim-min-value').textContent = '-10'
+                    document.getElementById('clim-max-value').textContent = '40'
                     zarrLayer.setColormap('turbo')
                     document.getElementById('colormap').value = 'turbo'
 
@@ -543,7 +525,6 @@
                     document.getElementById('loading').style.color = 'red'
                 }
             } else {
-                // Hide weight control if not combined
                 document.getElementById('precip-weight-group').style.display = 'none'
 
                 const bandIndex = parseInt(bandValue)
@@ -560,15 +541,13 @@
                             id: 'zarr-layer',
                             source: config.source,
                             variable: config.variable,
-                            vmin: bandIndex === 0 ? -20 : 0,
-                            vmax: bandIndex === 0 ? 30 : 500,
+                            clim: bandIndex === 0 ? [-20, 30] : [0, 500],
                             colormap: bandIndex === 0 ? 'coolwarm' : 'viridis',
                             opacity: parseFloat(document.getElementById('opacity').value),
                             selector: { band: bandIndex, month: monthIndex },
                             zarrVersion: config.zarrVersion,
                             minRenderZoom: config.minRenderZoom ?? 0,
-                            noDataMin: config.noDataMin,
-                            noDataMax: config.noDataMax,
+                            fillValue: config.fillValue,
                             dimensionNames: config.dimensionNames,
                         })
 
@@ -585,19 +564,19 @@
                 }
 
                 if (bandIndex === 0) {
-                    zarrLayer.setVminVmax(-20, 30)
-                    document.getElementById('vmin').value = -20
-                    document.getElementById('vmax').value = 30
-                    document.getElementById('vmin-value').textContent = '-20'
-                    document.getElementById('vmax-value').textContent = '30'
+                    zarrLayer.setClim([-20, 30])
+                    document.getElementById('clim-min').value = -20
+                    document.getElementById('clim-max').value = 30
+                    document.getElementById('clim-min-value').textContent = '-20'
+                    document.getElementById('clim-max-value').textContent = '30'
                     zarrLayer.setColormap('coolwarm')
                     document.getElementById('colormap').value = 'coolwarm'
                 } else {
-                    zarrLayer.setVminVmax(0, 500)
-                    document.getElementById('vmin').value = 0
-                    document.getElementById('vmax').value = 500
-                    document.getElementById('vmin-value').textContent = '0'
-                    document.getElementById('vmax-value').textContent = '500'
+                    zarrLayer.setClim([0, 500])
+                    document.getElementById('clim-min').value = 0
+                    document.getElementById('clim-max').value = 500
+                    document.getElementById('clim-min-value').textContent = '0'
+                    document.getElementById('clim-max-value').textContent = '500'
                     zarrLayer.setColormap('viridis')
                     document.getElementById('colormap').value = 'viridis'
                 }
@@ -656,20 +635,17 @@
                         }
                         : { time: 0 }
 
-                    // Create new layer
                     zarrLayer = new ZarrLayer({
                         id: 'zarr-layer',
                         source: config.source,
                         variable: config.variable,
-                        vmin: config.vmin,
-                        vmax: config.vmax,
+                        clim: config.clim,
                         colormap: config.colormap,
                         opacity: parseFloat(document.getElementById('opacity').value),
                         selector: selector,
                         zarrVersion: config.zarrVersion,
                         minRenderZoom: config.minRenderZoom ?? 0,
-                        noDataMin: config.noDataMin,
-                        noDataMax: config.noDataMax,
+                        fillValue: config.fillValue,
                         dimensionNames: config.dimensionNames,
                     })
 

@@ -106,7 +106,7 @@ const MapComponent = ({
         sources: {
           protomaps: {
             type: 'vector',
-            url: 'pmtiles://https://carbonplan-maps.s3.us-west-2.amazonaws.com/basemaps/pmtiles/lower48.pmtiles',
+            url: 'pmtiles://https://carbonplan-maps.s3.us-west-2.amazonaws.com/basemaps/pmtiles/global.pmtiles',
             attribution:
               '<a href="https://overturemaps.org/">Overture Maps</a>, <a href="https://protomaps.com">Protomaps</a>, © <a href="https://openstreetmap.org">OpenStreetMap</a>',
           },
@@ -164,15 +164,13 @@ const MapComponent = ({
       id: 'zarr-layer',
       source: dataset.source,
       variable: dataset.variable,
-      vmin: clim[0],
-      vmax: clim[1],
+      clim: clim,
       colormap: colormapArray,
       opacity: opacity,
       selector: selector,
       zarrVersion: dataset.zarrVersion,
       minRenderZoom: dataset.minRenderZoom ?? 0,
-      noDataMin: dataset.noDataMin,
-      noDataMax: dataset.noDataMax,
+      fillValue: dataset.fillValue,
       dimensionNames: dataset.dimensionNames,
     }
 
@@ -213,7 +211,7 @@ const MapComponent = ({
 
     layer.setOpacity(opacity)
     layer.setColormap(colormapArray)
-    layer.setVminVmax(clim[0], clim[1])
+    layer.setClim(clim)
 
     const isCombined = band === 'combined'
     let selector: any = {}

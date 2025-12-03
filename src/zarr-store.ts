@@ -49,6 +49,8 @@ interface ZarrV2Attributes {
   multiscales?: Multiscale[]
   scale_factor?: number
   add_offset?: number
+  _FillValue?: number
+  missing_value?: number
 }
 
 interface ZarrV3GroupMetadata {
@@ -85,6 +87,8 @@ interface ZarrV3ArrayMetadata {
     _ARRAY_DIMENSIONS?: string[]
     scale_factor?: number
     add_offset?: number
+    _FillValue?: number
+    missing_value?: number
   }
 }
 
@@ -375,6 +379,13 @@ export class ZarrStore {
     this.shape = zarray?.shape || []
     this.chunks = zarray?.chunks || []
     this.fill_value = zarray?.fill_value ?? null
+    if (this.fill_value === null && zattrs) {
+      if (zattrs._FillValue !== undefined) {
+        this.fill_value = zattrs._FillValue
+      } else if (zattrs.missing_value !== undefined) {
+        this.fill_value = zattrs.missing_value
+      }
+    }
     this.dtype = zarray?.dtype || null
     this.scaleFactor = zattrs?.scale_factor ?? 1
     this.addOffset = zattrs?.add_offset ?? 0
@@ -441,6 +452,16 @@ export class ZarrStore {
         this.shape
 
     this.fill_value = arrayMetadata.fill_value
+    if (
+      this.fill_value === null &&
+      arrayMetadata.attributes
+    ) {
+      if (arrayMetadata.attributes._FillValue !== undefined) {
+        this.fill_value = arrayMetadata.attributes._FillValue
+      } else if (arrayMetadata.attributes.missing_value !== undefined) {
+        this.fill_value = arrayMetadata.attributes.missing_value
+      }
+    }
     this.dtype = arrayMetadata.data_type || null
     this.scaleFactor = arrayMetadata.attributes?.scale_factor ?? 1
     this.addOffset = arrayMetadata.attributes?.add_offset ?? 0
