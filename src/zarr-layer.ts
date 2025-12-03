@@ -149,8 +149,7 @@ export class ZarrLayer {
   private fragmentShaderSource: string = maplibreFragmentShaderSource
 
   private static createSubdividedQuad(
-    subdivisions: number,
-    flipY: boolean
+    subdivisions: number
   ): { vertexArr: Float32Array; texCoordArr: Float32Array } {
     const vertices: number[] = []
     const texCoords: number[] = []
@@ -161,8 +160,7 @@ export class ZarrLayer {
       const x = -1 + col * step
       const y = 1 - row * step
       const u = col * texStep
-      const vBase = row * texStep
-      const v = flipY ? 1 - vBase : vBase
+      const v = row * texStep
       vertices.push(x, y)
       texCoords.push(u, v)
     }
@@ -195,18 +193,10 @@ export class ZarrLayer {
     const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1
     if (this.currentSubdivisions === targetSubdivisions) return
 
-    const subdivided = ZarrLayer.createSubdividedQuad(
-      targetSubdivisions,
-      false
-    )
+    const subdivided = ZarrLayer.createSubdividedQuad(targetSubdivisions)
     this.vertexArr = subdivided.vertexArr
     this.pixCoordArr = subdivided.texCoordArr
-
-    const subdividedSingle = ZarrLayer.createSubdividedQuad(
-      targetSubdivisions,
-      true
-    )
-    this.singleImagePixCoordArr = subdividedSingle.texCoordArr
+    this.singleImagePixCoordArr = this.pixCoordArr
 
     this.currentSubdivisions = targetSubdivisions
     this.tileCache?.markGeometryDirty()
