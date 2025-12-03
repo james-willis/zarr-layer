@@ -6,12 +6,10 @@
  */
 
 import * as zarr from "zarrita";
-import { colormapBuilder } from "./jsColormaps";
 import { calculateNearestIndex, loadDimensionValues } from "./zarr-utils";
 import { ZarrStore } from "./zarr-store";
 import { Tiles } from "./tiles";
 import {
-  createColorRampTexture,
   createProgram,
   createShader,
   mustCreateBuffer,
@@ -34,6 +32,8 @@ import {
   type TileTuple,
   zoomToLevel,
 } from "./maplibre-utils";
+import { ColormapState } from "./zarr-colormap";
+import { TileRenderCache, type TileRenderData } from "./zarr-tile-cache";
 import type {
   ColorMapName,
   CRS,
@@ -47,15 +47,6 @@ import type {
 
 const DEFAULT_TILE_SIZE = 128;
 const MAX_CACHED_TILES = 64;
-
-interface TileData {
-  data: Float32Array | null;
-  selectorHash: string | null;
-  tileTexture: WebGLTexture;
-  vertexBuffer: WebGLBuffer;
-  pixCoordBuffer: WebGLBuffer;
-  lastUsed: number;
-}
 
 /**
  * MapLibre/MapBox custom layer for rendering Zarr datasets.
@@ -86,16 +77,13 @@ export class ZarrMaplibreLayer {
   private selector: Record<string, number>;
   private invalidate: () => void;
 
-  private cmap: Float32Array;
-  private cmapLength: number;
-  private cmapColors: number[][];
+  private colormap: ColormapState;
   private vmin: number;
   private vmax: number;
   private opacity: number;
   private minRenderZoom: number;
 
-  private tiles: Map<string, TileData> = new Map();
-  private tileAccessOrder: string[] = [];
+  private tileCache: TileRenderCache | null = null;
   private tilesManager: Tiles | null = null;
   private maxZoom: number = 4;
   private tileSize: number = DEFAULT_TILE_SIZE;
@@ -137,7 +125,6 @@ export class ZarrMaplibreLayer {
   private addOffsetLoc: WebGLUniformLocation | undefined;
 
   private vertexLoc: number = 0;
-  private cmapTex: WebGLTexture | null = null;
   private cmapLoc: WebGLUniformLocation | undefined;
 
   private vertexArr: Float32Array;
@@ -205,10 +192,7 @@ export class ZarrMaplibreLayer {
     }
     this.invalidate = () => {};
 
-    const colors = this.normalizeColormap(colormap);
-    this.cmapColors = colors;
-    this.cmap = new Float32Array(colors.flat().map((v) => v / 255.0));
-    this.cmapLength = colors.length;
+    this.colormap = new ColormapState(colormap);
     this.vmin = vmin;
     this.vmax = vmax;
     this.opacity = opacity;
@@ -274,41 +258,11 @@ export class ZarrMaplibreLayer {
   }
 
   setColormap(colormap: ColorMapName | number[][] | string[]) {
-    const colors = this.normalizeColormap(colormap);
-    this.cmapColors = colors;
-    this.cmap = new Float32Array(colors.flat().map((v) => v / 255.0));
-    this.cmapLength = colors.length;
-    this.updateColormapTexture();
+    this.colormap.apply(colormap);
+    if (this.gl) {
+      this.colormap.upload(this.gl);
+    }
     this.invalidate();
-  }
-
-  private normalizeColormap(
-    colormap: ColorMapName | number[][] | string[]
-  ): number[][] {
-    const isRgbArray = Array.isArray(colormap) && Array.isArray(colormap[0]);
-    if (isRgbArray) {
-      const first = (colormap as number[][])[0];
-      const isNumberRow = Array.isArray(first) && typeof first[0] === "number";
-      if (isNumberRow) {
-        return colormap as number[][];
-      }
-    }
-    if (Array.isArray(colormap) && typeof colormap[0] === "string") {
-      return (colormap as string[]).map((hex) => this.hexToRgb(hex));
-    }
-    return colormapBuilder(colormap as ColorMapName) as number[][];
-  }
-
-  private hexToRgb(hex: string): number[] {
-    const cleaned = hex.replace("#", "");
-    if (cleaned.length !== 6) {
-      throw new Error(`Invalid hex color: ${hex}`);
-    }
-    const num = parseInt(cleaned, 16);
-    const r = (num >> 16) & 255;
-    const g = (num >> 8) & 255;
-    const b = num & 255;
-    return [r, g, b];
   }
 
   async setVariable(variable: string) {
@@ -321,16 +275,9 @@ export class ZarrMaplibreLayer {
   }
 
   private clearAllTiles() {
-    const gl = this.gl;
-    if (gl) {
-      for (const tile of this.tiles.values()) {
-        if (tile.tileTexture) gl.deleteTexture(tile.tileTexture);
-        if (tile.vertexBuffer) gl.deleteBuffer(tile.vertexBuffer);
-        if (tile.pixCoordBuffer) gl.deleteBuffer(tile.pixCoordBuffer);
-      }
+    if (this.tileCache) {
+      this.tileCache.clear();
     }
-    this.tiles.clear();
-    this.tileAccessOrder = [];
   }
 
   async setSelector(selector: Record<string, number>) {
@@ -358,7 +305,7 @@ export class ZarrMaplibreLayer {
 
     for (const tileTuple of visibleTiles) {
       const tileKey = tileToKey(tileTuple);
-      const tile = this.tiles.get(tileKey);
+      const tile = this.tileCache?.get(tileKey);
       const cache = this.tilesManager.getTile(tileTuple);
       if (!tile || !cache) continue;
       tile.data = cache.data;
@@ -368,35 +315,11 @@ export class ZarrMaplibreLayer {
     await this.prefetchTileData();
   }
 
-  private updateColormapTexture() {
-    if (!this.gl) return;
-    const gl = this.gl;
-    if (!this.cmapTex) {
-      this.cmapTex = mustCreateTexture(gl);
-    }
-    gl.bindTexture(gl.TEXTURE_2D, this.cmapTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGB16F,
-      this.cmapLength,
-      1,
-      0,
-      gl.RGB,
-      gl.FLOAT,
-      this.cmap
-    );
-    gl.bindTexture(gl.TEXTURE_2D, null);
-  }
-
   async onAdd(map: any, gl: WebGL2RenderingContext) {
     this.map = map;
     this.gl = gl;
     this.invalidate = () => map.triggerRepaint();
+    this.tileCache = new TileRenderCache(gl, MAX_CACHED_TILES);
 
     const vertexShader = createShader(
       gl,
@@ -448,7 +371,7 @@ export class ZarrMaplibreLayer {
     );
     this.addOffsetLoc = mustGetUniformLocation(gl, this.program, "u_addOffset");
 
-    this.updateColormapTexture();
+    this.colormap.upload(gl);
     this.cmapLoc = mustGetUniformLocation(gl, this.program, "cmap");
 
     this.texLoc = mustGetUniformLocation(gl, this.program, "tex");
@@ -652,55 +575,8 @@ export class ZarrMaplibreLayer {
     this.maxZoom = this.levelInfos.length - 1;
   }
 
-  private getOrCreateTile(tileKey: string): TileData {
-    const gl = this.gl!;
-    let tile = this.tiles.get(tileKey);
-
-    if (!tile) {
-      tile = {
-        data: null,
-        selectorHash: null,
-        tileTexture: mustCreateTexture(gl),
-        vertexBuffer: mustCreateBuffer(gl),
-        pixCoordBuffer: mustCreateBuffer(gl),
-        lastUsed: Date.now(),
-      };
-      this.tiles.set(tileKey, tile);
-      this.tileAccessOrder.push(tileKey);
-      this.evictOldTiles();
-    } else {
-      tile.lastUsed = Date.now();
-      const idx = this.tileAccessOrder.indexOf(tileKey);
-      if (idx > -1) {
-        this.tileAccessOrder.splice(idx, 1);
-        this.tileAccessOrder.push(tileKey);
-      }
-    }
-
-    return tile;
-  }
-
   private getSelectorHash(): string {
     return JSON.stringify(this.selector);
-  }
-
-  private evictOldTiles() {
-    const gl = this.gl;
-    if (!gl) return;
-
-    while (this.tiles.size > MAX_CACHED_TILES) {
-      const oldestKey = this.tileAccessOrder.shift();
-      if (!oldestKey) break;
-
-      const tile = this.tiles.get(oldestKey);
-      if (tile) {
-        if (tile.tileTexture) gl.deleteTexture(tile.tileTexture);
-        if (tile.vertexBuffer) gl.deleteBuffer(tile.vertexBuffer);
-        if (tile.pixCoordBuffer) gl.deleteBuffer(tile.pixCoordBuffer);
-        tile.data = null;
-        this.tiles.delete(oldestKey);
-      }
-    }
   }
 
   private async prepareSingleImage(): Promise<void> {
@@ -767,10 +643,11 @@ export class ZarrMaplibreLayer {
   private async fetchTileData(
     tileTuple: TileTuple
   ): Promise<Float32Array | null> {
-    if (this.isRemoved || !this.tilesManager || !this.gl) return null;
+    if (this.isRemoved || !this.tilesManager || !this.gl || !this.tileCache)
+      return null;
 
     const tileKey = tileToKey(tileTuple);
-    const tile = this.getOrCreateTile(tileKey);
+    const tile = this.tileCache.upsert(tileKey);
     const currentHash = this.getSelectorHash();
 
     if (tile.data && tile.selectorHash === currentHash) {
@@ -822,13 +699,9 @@ export class ZarrMaplibreLayer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    if (!this.cmapTex) {
-      this.updateColormapTexture();
-      if (!this.cmapTex) return;
-    }
-
+    const cmapTexture = this.colormap.ensureTexture(gl);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.cmapTex!);
+    gl.bindTexture(gl.TEXTURE_2D, cmapTexture);
     gl.uniform1i(this.cmapLoc!, 1);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -931,18 +804,20 @@ export class ZarrMaplibreLayer {
     x: number,
     y: number
   ): {
-    tile: TileData;
+    tile: TileRenderData;
     ancestorZ: number;
     ancestorX: number;
     ancestorY: number;
   } | null {
+    if (!this.tileCache) return null;
+
     let ancestorZ = z - 1;
     let ancestorX = Math.floor(x / 2);
     let ancestorY = Math.floor(y / 2);
 
     while (ancestorZ >= 0) {
       const parentKey = tileToKey([ancestorZ, ancestorX, ancestorY]);
-      const parentTile = this.tiles.get(parentKey);
+      const parentTile = this.tileCache.get(parentKey);
       if (parentTile && parentTile.data) {
         return { tile: parentTile, ancestorZ, ancestorX, ancestorY };
       }
@@ -983,6 +858,8 @@ export class ZarrMaplibreLayer {
   }
 
   private prerenderTiles(gl: WebGL2RenderingContext, worldOffsets: number[]) {
+    if (!this.tileCache) return;
+
     const visibleTiles = this.getVisibleTiles();
     this.prefetchTileData();
 
@@ -998,9 +875,9 @@ export class ZarrMaplibreLayer {
       for (const tileTuple of visibleTiles) {
         const [z, x, y] = tileTuple;
         const tileKey = tileToKey(tileTuple);
-        const tile = this.tiles.get(tileKey);
+        const tile = this.tileCache.get(tileKey);
 
-        let tileToRender: TileData | null = null;
+        let tileToRender: TileRenderData | null = null;
         let texCoords = this.pixCoordArr;
 
         if (tile && tile.data) {
@@ -1100,23 +977,15 @@ export class ZarrMaplibreLayer {
       this.renderProgram = null;
     }
 
-    if (this.cmapTex) {
-      gl.deleteTexture(this.cmapTex);
-      this.cmapTex = null;
-    }
+    this.colormap.dispose(gl);
 
     if (this.vertexBuffer) {
       gl.deleteBuffer(this.vertexBuffer);
       this.vertexBuffer = null;
     }
 
-    for (const tile of this.tiles.values()) {
-      if (tile.tileTexture) gl.deleteTexture(tile.tileTexture);
-      if (tile.vertexBuffer) gl.deleteBuffer(tile.vertexBuffer);
-      if (tile.pixCoordBuffer) gl.deleteBuffer(tile.pixCoordBuffer);
-    }
-    this.tiles.clear();
-    this.tileAccessOrder = [];
+    this.tileCache?.clear();
+    this.tileCache = null;
 
     if (this.singleImageTexture) {
       gl.deleteTexture(this.singleImageTexture);
