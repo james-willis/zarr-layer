@@ -8,7 +8,7 @@
  * to generate color-mapped textures and dynamic shader programs.
  */
 
-import { type ColorScaleProps } from './types';
+import { type ColorScaleProps } from "./types";
 
 /**
  * Creates and compiles a WebGL shader from source code.
@@ -36,7 +36,7 @@ export function createShader(
   gl.compileShader(shader);
 
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+    console.error("Shader compile error:", gl.getShaderInfoLog(shader));
     gl.deleteShader(shader);
     return null;
   }
@@ -71,7 +71,7 @@ export function createProgram(
   gl.linkProgram(program);
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    console.error('Program link error:', gl.getProgramInfoLog(program));
+    console.error("Program link error:", gl.getProgramInfoLog(program));
     gl.deleteProgram(program);
     return null;
   }
@@ -114,7 +114,17 @@ export function createColorRampTexture(
     flat[i * 4 + 3] = Math.floor(opacity * 255);
   }
 
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, colors.length, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    colors.length,
+    1,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    flat
+  );
 
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -154,7 +164,8 @@ export function updateImgData(
     imgData.data[pixelIdx + 2] = 0;
     imgData.data[pixelIdx + 3] = 0;
   } else {
-    const normalized = (value - colorScale.min) / (colorScale.max - colorScale.min);
+    const normalized =
+      (value - colorScale.min) / (colorScale.max - colorScale.min);
     const [r, g, b, a] = addColor(normalized, colorScale, opacity);
     imgData.data[pixelIdx + 0] = Math.floor(r);
     imgData.data[pixelIdx + 1] = Math.floor(g);
@@ -212,7 +223,7 @@ export function mustGetUniformLocation(
 export function mustCreateTexture(gl: WebGL2RenderingContext): WebGLTexture {
   const tex = gl.createTexture();
   if (!tex) {
-    throw new Error('Failed to create texture');
+    throw new Error("Failed to create texture");
   }
   return tex;
 }
@@ -223,7 +234,7 @@ export function mustCreateTexture(gl: WebGL2RenderingContext): WebGLTexture {
 export function mustCreateBuffer(gl: WebGL2RenderingContext): WebGLBuffer {
   const buf = gl.createBuffer();
   if (!buf) {
-    throw new Error('Failed to create buffer');
+    throw new Error("Failed to create buffer");
   }
   return buf;
 }
@@ -238,23 +249,39 @@ export function mustCreateFramebuffer(
 ): { framebuffer: WebGLFramebuffer; texture: WebGLTexture } {
   const framebuffer = gl.createFramebuffer();
   if (!framebuffer) {
-    throw new Error('Failed to create framebuffer');
+    throw new Error("Failed to create framebuffer");
   }
 
   const texture = gl.createTexture();
   if (!texture) {
-    throw new Error('Failed to create texture for framebuffer');
+    throw new Error("Failed to create texture for framebuffer");
   }
 
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    width,
+    height,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null
+  );
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    texture,
+    0
+  );
 
   return { framebuffer, texture };
 }

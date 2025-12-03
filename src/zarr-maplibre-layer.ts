@@ -9,31 +9,19 @@ import * as zarr from "zarrita";
 import { calculateNearestIndex, loadDimensionValues } from "./zarr-utils";
 import { ZarrStore } from "./zarr-store";
 import { Tiles } from "./tiles";
-import {
-  createProgram,
-  createShader,
-  mustCreateBuffer,
-  mustCreateFramebuffer,
-  mustCreateTexture,
-  mustGetUniformLocation,
-} from "./webgl-utils";
-import {
-  maplibreFragmentShaderSource,
-  maplibreVertexShaderSource,
-  renderFragmentShaderSource,
-  renderVertexShaderSource,
-} from "./maplibre-shaders";
+import { mustCreateBuffer, mustCreateTexture } from "./webgl-utils";
+import { maplibreFragmentShaderSource } from "./maplibre-shaders";
 import {
   boundsToMercatorNorm,
   getTilesAtZoom,
   type MercatorBounds,
   tileToKey,
-  tileToScale,
   type TileTuple,
   zoomToLevel,
 } from "./maplibre-utils";
 import { ColormapState } from "./zarr-colormap";
-import { TileRenderCache, type TileRenderData } from "./zarr-tile-cache";
+import { ZarrRenderer } from "./zarr-renderer";
+import { TileRenderCache } from "./zarr-tile-cache";
 import type {
   ColorMapName,
   CRS,
@@ -103,55 +91,35 @@ export class ZarrMaplibreLayer {
   private offset: number = 0;
 
   private gl: WebGL2RenderingContext | undefined;
-  private program: WebGLProgram | null = null;
   private map: any;
+  private renderer: ZarrRenderer | null = null;
+  private resolveGl(map: any, gl: any): WebGL2RenderingContext {
+    const isWebGL2 =
+      gl &&
+      typeof (gl as any).getUniformLocation === "function" &&
+      typeof (gl as any).drawBuffers === "function";
+    if (isWebGL2) {
+      return gl as WebGL2RenderingContext;
+    }
 
-  private scaleLoc: WebGLUniformLocation | undefined;
-  private scaleXLoc: WebGLUniformLocation | undefined;
-  private scaleYLoc: WebGLUniformLocation | undefined;
-  private shiftXLoc: WebGLUniformLocation | undefined;
-  private shiftYLoc: WebGLUniformLocation | undefined;
-  private worldXOffsetLoc: WebGLUniformLocation | undefined;
-  private matrixLoc: WebGLUniformLocation | undefined;
-  private vminLoc: WebGLUniformLocation | undefined;
-  private vmaxLoc: WebGLUniformLocation | undefined;
-  private opacityLoc: WebGLUniformLocation | undefined;
-  private noDataLoc: WebGLUniformLocation | undefined;
-  private noDataMinLoc: WebGLUniformLocation | undefined;
-  private noDataMaxLoc: WebGLUniformLocation | undefined;
-  private useFillValueLoc: WebGLUniformLocation | undefined;
-  private fillValueLoc: WebGLUniformLocation | undefined;
-  private scaleFactorLoc: WebGLUniformLocation | undefined;
-  private addOffsetLoc: WebGLUniformLocation | undefined;
-
-  private vertexLoc: number = 0;
-  private cmapLoc: WebGLUniformLocation | undefined;
+    const describe = (obj: any) =>
+      obj
+        ? {
+            type: obj.constructor?.name,
+            keys: Object.keys(obj),
+          }
+        : null;
+    console.error("Invalid WebGL2 context passed to onAdd", {
+      providedGl: describe(gl),
+      painterGl: describe((map as any)?.painter?.context?.gl),
+      rendererGl: describe((map as any)?.renderer?.getContext?.()),
+    });
+    throw new Error("MapLibre did not provide a valid WebGL2 context");
+  }
 
   private vertexArr: Float32Array;
   private pixCoordArr: Float32Array;
   private singleImagePixCoordArr: Float32Array = new Float32Array();
-
-  private texLoc: WebGLUniformLocation | undefined;
-  private pixCoordLoc: number = 0;
-
-  private frameBuffers: {
-    current: {
-      framebuffer: WebGLFramebuffer;
-      texture: WebGLTexture;
-    } | null;
-    next: {
-      framebuffer: WebGLFramebuffer;
-      texture: WebGLTexture;
-    } | null;
-  };
-  private isUpdating: boolean = false;
-  private canvasWidth: number = 512;
-  private canvasHeight: number = 512;
-
-  private renderProgram: WebGLProgram | null = null;
-  private renderVertexLoc: number = 0;
-  private renderTexLoc: WebGLUniformLocation | undefined;
-  private vertexBuffer: WebGLBuffer | null = null;
 
   private zarrArray: zarr.Array<any> | null = null;
   private zarrStore: ZarrStore | null = null;
@@ -203,8 +171,6 @@ export class ZarrMaplibreLayer {
 
     if (noDataMin !== undefined) this.noDataMin = noDataMin;
     if (noDataMax !== undefined) this.noDataMax = noDataMax;
-
-    this.frameBuffers = { current: null, next: null };
 
     // Vertices in clip space [-1, 1] representing a tile quad
     // Order: top-left, bottom-left, top-right, bottom-right (triangle strip)
@@ -317,112 +283,19 @@ export class ZarrMaplibreLayer {
 
   async onAdd(map: any, gl: WebGL2RenderingContext) {
     this.map = map;
-    this.gl = gl;
+    const resolvedGl = this.resolveGl(map, gl);
+    this.gl = resolvedGl;
     this.invalidate = () => map.triggerRepaint();
-    this.tileCache = new TileRenderCache(gl, MAX_CACHED_TILES);
-
-    const vertexShader = createShader(
-      gl,
-      gl.VERTEX_SHADER,
-      maplibreVertexShaderSource
-    );
-    const fragmentShader = createShader(
-      gl,
-      gl.FRAGMENT_SHADER,
-      this.fragmentShaderSource
-    );
-    if (!vertexShader || !fragmentShader) {
-      throw new Error("Failed to create shaders");
-    }
-    this.program = createProgram(gl, vertexShader, fragmentShader);
-    if (!this.program) {
-      throw new Error("Failed to create program");
-    }
-
-    this.scaleLoc = mustGetUniformLocation(gl, this.program, "scale");
-    this.scaleXLoc = mustGetUniformLocation(gl, this.program, "scale_x");
-    this.scaleYLoc = mustGetUniformLocation(gl, this.program, "scale_y");
-    this.shiftXLoc = mustGetUniformLocation(gl, this.program, "shift_x");
-    this.shiftYLoc = mustGetUniformLocation(gl, this.program, "shift_y");
-    this.worldXOffsetLoc = mustGetUniformLocation(
-      gl,
-      this.program,
-      "u_worldXOffset"
-    );
-    this.matrixLoc = mustGetUniformLocation(gl, this.program, "matrix");
-
-    this.vminLoc = mustGetUniformLocation(gl, this.program, "vmin");
-    this.vmaxLoc = mustGetUniformLocation(gl, this.program, "vmax");
-    this.opacityLoc = mustGetUniformLocation(gl, this.program, "opacity");
-    this.noDataLoc = mustGetUniformLocation(gl, this.program, "nodata");
-
-    this.noDataMinLoc = mustGetUniformLocation(gl, this.program, "u_noDataMin");
-    this.noDataMaxLoc = mustGetUniformLocation(gl, this.program, "u_noDataMax");
-    this.useFillValueLoc = mustGetUniformLocation(
-      gl,
-      this.program,
-      "u_useFillValue"
-    );
-    this.fillValueLoc = mustGetUniformLocation(gl, this.program, "u_fillValue");
-    this.scaleFactorLoc = mustGetUniformLocation(
-      gl,
-      this.program,
-      "u_scaleFactor"
-    );
-    this.addOffsetLoc = mustGetUniformLocation(gl, this.program, "u_addOffset");
-
-    this.colormap.upload(gl);
-    this.cmapLoc = mustGetUniformLocation(gl, this.program, "cmap");
-
-    this.texLoc = mustGetUniformLocation(gl, this.program, "tex");
-
-    this.vertexLoc = gl.getAttribLocation(this.program, "vertex");
-    this.pixCoordLoc = gl.getAttribLocation(this.program, "pix_coord_in");
-
-    this.canvasWidth = gl.canvas.width;
-    this.canvasHeight = gl.canvas.height;
-    this.frameBuffers.current = mustCreateFramebuffer(
-      gl,
-      this.canvasWidth,
-      this.canvasHeight
-    );
-    this.frameBuffers.next = mustCreateFramebuffer(
-      gl,
-      this.canvasWidth,
-      this.canvasHeight
-    );
+    this.tileCache = new TileRenderCache(resolvedGl as WebGL2RenderingContext, MAX_CACHED_TILES);
+    this.colormap.upload(resolvedGl as WebGL2RenderingContext);
+    this.renderer = new ZarrRenderer(resolvedGl as WebGL2RenderingContext, this.fragmentShaderSource);
 
     await this.initialize();
     await this.prepareTiles();
 
-    this.vertexBuffer = mustCreateBuffer(gl);
-
     this.prefetchTileData().then(() => {
       this.invalidate();
     });
-
-    const renderVertShader = createShader(
-      gl,
-      gl.VERTEX_SHADER,
-      renderVertexShaderSource
-    );
-    const renderFragShader = createShader(
-      gl,
-      gl.FRAGMENT_SHADER,
-      renderFragmentShaderSource
-    );
-    if (!renderVertShader || !renderFragShader) {
-      throw new Error("Failed to create render shaders");
-    }
-    this.renderProgram = createProgram(gl, renderVertShader, renderFragShader);
-    if (!this.renderProgram) {
-      throw new Error("Failed to create render program");
-    }
-    this.renderVertexLoc = gl.getAttribLocation(this.renderProgram, "vertex");
-    this.renderTexLoc = mustGetUniformLocation(gl, this.renderProgram, "tex");
-
-    gl.deleteShader(renderVertShader);
-    gl.deleteShader(renderFragShader);
   }
 
   private async initialize(): Promise<void> {
@@ -666,323 +539,75 @@ export class ZarrMaplibreLayer {
     return tile.data;
   }
 
-  prerender(gl: WebGL2RenderingContext, matrix: number[]) {
-    if (this.isUpdating || !this.program) return;
-
-    gl.useProgram(this.program);
-    if (
-      gl.canvas.width !== this.canvasWidth ||
-      gl.canvas.height !== this.canvasHeight
-    ) {
-      this.canvasWidth = gl.canvas.width;
-      this.canvasHeight = gl.canvas.height;
-      this.frameBuffers.current = mustCreateFramebuffer(
-        gl,
-        this.canvasWidth,
-        this.canvasHeight
-      );
-      this.frameBuffers.next = mustCreateFramebuffer(
-        gl,
-        this.canvasWidth,
-        this.canvasHeight
-      );
-    }
-
-    // Render to the next framebuffer (clear it first, don't blit old content)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.frameBuffers.next!.framebuffer);
-    gl.viewport(0, 0, this.canvasWidth, this.canvasHeight);
-
-    // Clear the framebuffer completely for a fresh render
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-    const cmapTexture = this.colormap.ensureTexture(gl);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, cmapTexture);
-    gl.uniform1i(this.cmapLoc!, 1);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    gl.uniform1f(this.vminLoc!, this.vmin);
-    gl.uniform1f(this.vmaxLoc!, this.vmax);
-    gl.uniform1f(this.opacityLoc!, this.opacity);
-    gl.uniform1f(this.noDataLoc!, this.fillValue);
-    gl.uniform1f(this.noDataMinLoc!, this.noDataMin);
-    gl.uniform1f(this.noDataMaxLoc!, this.noDataMax);
-    gl.uniform1i(this.useFillValueLoc!, this.useFillValue ? 1 : 0);
-    gl.uniform1f(this.fillValueLoc!, this.fillValue);
-    gl.uniform1f(this.scaleFactorLoc!, this.scaleFactor);
-    gl.uniform1f(this.addOffsetLoc!, this.offset);
-
-    gl.uniformMatrix4fv(this.matrixLoc!, false, matrix);
-
-    const worldOffsets = this.getWorldOffsets();
-
-    if (!this.isMultiscale) {
-      this.prerenderSingleImage(gl, worldOffsets);
-    } else {
-      this.prerenderTiles(gl, worldOffsets);
-    }
-
-    const temp = this.frameBuffers.current;
-    this.frameBuffers.current = this.frameBuffers.next;
-    this.frameBuffers.next = temp;
-
-    this.isUpdating = false;
-  }
-
-  private prerenderSingleImage(
-    gl: WebGL2RenderingContext,
-    worldOffsets: number[]
-  ) {
-    if (
-      !this.singleImageData ||
-      !this.mercatorBounds ||
-      !this.singleImageTexture
-    ) {
-      this.prefetchTileData();
-      return;
-    }
-
-    const bounds = this.mercatorBounds;
-    const scaleX = (bounds.x1 - bounds.x0) / 2;
-    const scaleY = (bounds.y1 - bounds.y0) / 2;
-    const shiftX = (bounds.x0 + bounds.x1) / 2;
-    const shiftY = (bounds.y0 + bounds.y1) / 2;
-
-    gl.uniform1f(this.scaleLoc!, 0);
-    gl.uniform1f(this.scaleXLoc!, scaleX);
-    gl.uniform1f(this.scaleYLoc!, scaleY);
-    gl.uniform1f(this.shiftXLoc!, shiftX);
-    gl.uniform1f(this.shiftYLoc!, shiftY);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.singleImageVertexBuffer!);
-    gl.bufferData(gl.ARRAY_BUFFER, this.vertexArr, gl.STATIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.singleImagePixCoordBuffer!);
-    gl.bufferData(gl.ARRAY_BUFFER, this.singleImagePixCoordArr, gl.STATIC_DRAW);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.singleImageTexture);
-    gl.uniform1i(this.texLoc!, 0);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R32F,
-      this.singleImageWidth,
-      this.singleImageHeight,
-      0,
-      gl.RED,
-      gl.FLOAT,
-      this.singleImageData
-    );
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.singleImageVertexBuffer!);
-    gl.enableVertexAttribArray(this.vertexLoc);
-    gl.vertexAttribPointer(this.vertexLoc, 2, gl.FLOAT, false, 0, 0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.singleImagePixCoordBuffer!);
-    gl.enableVertexAttribArray(this.pixCoordLoc);
-    gl.vertexAttribPointer(this.pixCoordLoc, 2, gl.FLOAT, false, 0, 0);
-
-    for (const worldOffset of worldOffsets) {
-      gl.uniform1f(this.worldXOffsetLoc!, worldOffset);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    }
-  }
-
-  private findBestParentTile(
-    z: number,
-    x: number,
-    y: number
-  ): {
-    tile: TileRenderData;
-    ancestorZ: number;
-    ancestorX: number;
-    ancestorY: number;
-  } | null {
-    if (!this.tileCache) return null;
-
-    let ancestorZ = z - 1;
-    let ancestorX = Math.floor(x / 2);
-    let ancestorY = Math.floor(y / 2);
-
-    while (ancestorZ >= 0) {
-      const parentKey = tileToKey([ancestorZ, ancestorX, ancestorY]);
-      const parentTile = this.tileCache.get(parentKey);
-      if (parentTile && parentTile.data) {
-        return { tile: parentTile, ancestorZ, ancestorX, ancestorY };
-      }
-      ancestorZ--;
-      ancestorX = Math.floor(ancestorX / 2);
-      ancestorY = Math.floor(ancestorY / 2);
-    }
-    return null;
-  }
-
-  private getOverzoomTexCoords(
-    targetZ: number,
-    targetX: number,
-    targetY: number,
-    ancestorZ: number
-  ): Float32Array {
-    const levelDiff = targetZ - ancestorZ;
-    const divisor = Math.pow(2, levelDiff);
-
-    const localX = targetX % divisor;
-    const localY = targetY % divisor;
-
-    const texX0 = localX / divisor;
-    const texX1 = (localX + 1) / divisor;
-    const texY0 = localY / divisor;
-    const texY1 = (localY + 1) / divisor;
-
-    return new Float32Array([
-      texX0,
-      texY0,
-      texX0,
-      texY1,
-      texX1,
-      texY0,
-      texX1,
-      texY1,
-    ]);
-  }
-
-  private prerenderTiles(gl: WebGL2RenderingContext, worldOffsets: number[]) {
-    if (!this.tileCache) return;
-
-    const visibleTiles = this.getVisibleTiles();
-    this.prefetchTileData();
-
-    gl.uniform1f(this.scaleXLoc!, 0);
-    gl.uniform1f(this.scaleYLoc!, 0);
-
-    const tileWidth = this.tileSize;
-    const tileHeight = this.tileSize;
-
-    for (const worldOffset of worldOffsets) {
-      gl.uniform1f(this.worldXOffsetLoc!, worldOffset);
-
-      for (const tileTuple of visibleTiles) {
-        const [z, x, y] = tileTuple;
-        const tileKey = tileToKey(tileTuple);
-        const tile = this.tileCache.get(tileKey);
-
-        let tileToRender: TileRenderData | null = null;
-        let texCoords = this.pixCoordArr;
-
-        if (tile && tile.data) {
-          tileToRender = tile;
-        } else {
-          const parent = this.findBestParentTile(z, x, y);
-          if (parent) {
-            tileToRender = parent.tile;
-            texCoords = this.getOverzoomTexCoords(z, x, y, parent.ancestorZ);
-          }
-        }
-
-        if (!tileToRender || !tileToRender.data) continue;
-
-        const [scale, shiftX, shiftY] = tileToScale(tileTuple);
-        gl.uniform1f(this.scaleLoc!, scale);
-        gl.uniform1f(this.shiftXLoc!, shiftX);
-        gl.uniform1f(this.shiftYLoc!, shiftY);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.vertexBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, this.vertexArr, gl.STATIC_DRAW);
-        gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.pixCoordBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
-
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, tileToRender.tileTexture);
-        gl.uniform1i(this.texLoc!, 0);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.R16F,
-          tileWidth,
-          tileHeight,
-          0,
-          gl.RED,
-          gl.FLOAT,
-          tileToRender.data
-        );
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.vertexBuffer);
-        gl.enableVertexAttribArray(this.vertexLoc);
-        gl.vertexAttribPointer(this.vertexLoc, 2, gl.FLOAT, false, 0, 0);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.pixCoordBuffer);
-        gl.enableVertexAttribArray(this.pixCoordLoc);
-        gl.vertexAttribPointer(this.pixCoordLoc, 2, gl.FLOAT, false, 0, 0);
-
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      }
-    }
-  }
-
-  render(gl: WebGL2RenderingContext, _matrix: number[]) {
+  prerender(_gl: WebGL2RenderingContext, matrix: number[]) {
     if (
       this.isRemoved ||
-      !this.frameBuffers.current ||
-      !this.renderProgram ||
-      !this.vertexBuffer
+      !this.renderer ||
+      !this.gl ||
+      !this.tileCache
     )
       return;
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, this.canvasWidth, this.canvasHeight);
+    const worldOffsets = this.getWorldOffsets();
+    const colormapTexture = this.colormap.ensureTexture(this.gl);
 
-    gl.useProgram(this.renderProgram);
+    const uniforms = {
+      vmin: this.vmin,
+      vmax: this.vmax,
+      opacity: this.opacity,
+      fillValue: this.fillValue,
+      useFillValue: this.useFillValue,
+      noDataMin: this.noDataMin,
+      noDataMax: this.noDataMax,
+      scaleFactor: this.scaleFactor,
+      offset: this.offset,
+    };
 
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameBuffers.current.texture);
-    gl.uniform1i(this.renderTexLoc!, 0);
+    const visibleTiles = this.isMultiscale ? this.getVisibleTiles() : [];
+    if (this.isMultiscale) {
+      this.prefetchTileData();
+    } else if (!this.singleImageData) {
+      this.prefetchTileData();
+    }
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([-1, -1, -1, 1, 1, -1, 1, 1]),
-      gl.STATIC_DRAW
-    );
-    gl.enableVertexAttribArray(this.renderVertexLoc);
-    gl.vertexAttribPointer(this.renderVertexLoc, 2, gl.FLOAT, false, 0, 0);
+    this.renderer.prerender({
+      matrix,
+      colormapTexture,
+      uniforms,
+      worldOffsets,
+      isMultiscale: this.isMultiscale,
+      visibleTiles,
+      tileCache: this.tileCache,
+      tileSize: this.tileSize,
+      vertexArr: this.vertexArr,
+      pixCoordArr: this.pixCoordArr,
+      singleImage: this.isMultiscale
+        ? undefined
+        : {
+            data: this.singleImageData,
+            width: this.singleImageWidth,
+            height: this.singleImageHeight,
+            bounds: this.mercatorBounds,
+            texture: this.singleImageTexture,
+            vertexBuffer: this.singleImageVertexBuffer,
+            pixCoordBuffer: this.singleImagePixCoordBuffer,
+            pixCoordArr: this.singleImagePixCoordArr,
+          },
+    });
+  }
 
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  render(gl: WebGL2RenderingContext, _matrix: number[]) {
+    if (this.isRemoved || !this.renderer) return;
+    this.renderer.present();
   }
 
   onRemove(_map: any, gl: WebGL2RenderingContext) {
     this.isRemoved = true;
 
-    if (this.program) {
-      gl.deleteProgram(this.program);
-      this.program = null;
-    }
-
-    if (this.renderProgram) {
-      gl.deleteProgram(this.renderProgram);
-      this.renderProgram = null;
-    }
+    this.renderer?.dispose();
+    this.renderer = null;
 
     this.colormap.dispose(gl);
-
-    if (this.vertexBuffer) {
-      gl.deleteBuffer(this.vertexBuffer);
-      this.vertexBuffer = null;
-    }
 
     this.tileCache?.clear();
     this.tileCache = null;
@@ -998,17 +623,6 @@ export class ZarrMaplibreLayer {
     if (this.singleImagePixCoordBuffer) {
       gl.deleteBuffer(this.singleImagePixCoordBuffer);
       this.singleImagePixCoordBuffer = null;
-    }
-
-    if (this.frameBuffers.current) {
-      gl.deleteFramebuffer(this.frameBuffers.current.framebuffer);
-      gl.deleteTexture(this.frameBuffers.current.texture);
-      this.frameBuffers.current = null;
-    }
-    if (this.frameBuffers.next) {
-      gl.deleteFramebuffer(this.frameBuffers.next.framebuffer);
-      gl.deleteTexture(this.frameBuffers.next.texture);
-      this.frameBuffers.next = null;
     }
 
     if (this.zarrStore) {
