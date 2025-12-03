@@ -8,5 +8,5 @@ export default defineConfig({
   splitting: false,
   clean: true,
   external: ['maplibre-gl'],
-  noExternal: ['zarrita', 'proj4'],
+  noExternal: ['zarrita'],
 })

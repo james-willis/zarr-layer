@@ -23,7 +23,6 @@
     "maplibre-gl": "*"
   },
   "dependencies": {
-    "proj4": "^2.19.10",
     "zarrita": "^0.5.4"
   },
   "devDependencies": {

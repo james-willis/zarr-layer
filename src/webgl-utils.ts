@@ -8,8 +8,6 @@
  * to generate color-mapped textures and dynamic shader programs.
  */
 
-import { type ColorScaleProps } from './types'
-
 /**
  * Creates and compiles a WebGL shader from source code.
  *
@@ -136,73 +134,6 @@ export function createColorRampTexture(
 }
 
 /**
- * Updates an {@link ImageData} object with a new pixel color
- * derived from a numeric value and a {@link ColorScaleProps} colormap.
- *
- * @param value - Numeric data value to visualize.
- * @param pixelIdx - Byte offset within the `ImageData.data` array.
- * @param imgData - Target {@link ImageData} object to update.
- * @param colorScale - Colormap definition with `min`, `max`, and `colors` (see {@link ColorScaleProps}).
- * @param opacity - Global opacity multiplier between 0 and 1.
- * @returns The updated {@link ImageData} with modified pixel values.
- *
- * @example
- * ```ts
- * updateImgData(3.2, idx, imgData, { min: 0, max: 10, colors: viridis }, 0.9);
- * ```
- */
-export function updateImgData(
-  value: number,
-  pixelIdx: number,
-  imgData: ImageData,
-  colorScale: ColorScaleProps,
-  opacity: number
-): ImageData {
-  if (isNaN(value) || value === null || value === undefined) {
-    imgData.data[pixelIdx + 0] = 0
-    imgData.data[pixelIdx + 1] = 0
-    imgData.data[pixelIdx + 2] = 0
-    imgData.data[pixelIdx + 3] = 0
-  } else {
-    const normalized =
-      (value - colorScale.min) / (colorScale.max - colorScale.min)
-    const [r, g, b, a] = addColor(normalized, colorScale, opacity)
-    imgData.data[pixelIdx + 0] = Math.floor(r)
-    imgData.data[pixelIdx + 1] = Math.floor(g)
-    imgData.data[pixelIdx + 2] = Math.floor(b)
-    imgData.data[pixelIdx + 3] = Math.floor(a * 255)
-  }
-  return imgData
-}
-
-function addColor(
-  value: number,
-  colorScale: ColorScaleProps,
-  opacity: number
-): [number, number, number, number] {
-  const clamped = Math.min(Math.max(value, 0), 1)
-
-  const colors = colorScale.colors as number[][]
-  const n = colors.length
-
-  if (n === 0) {
-    return [1, 1, 1, opacity]
-  }
-
-  const scaled = clamped * (n - 1)
-  const idx = Math.floor(scaled)
-  const t = scaled - idx
-
-  const [r1, g1, b1] = colors[idx]
-  const [r2, g2, b2] = colors[Math.min(idx + 1, n - 1)]
-
-  const r = r1 + (r2 - r1) * t
-  const g = g1 + (g2 - g1) * t
-  const b = b1 + (b2 - b1) * t
-  return [r, g, b, opacity]
-}
-
-/**
  * Utility to fetch a uniform location with a helpful error if missing.
  */
 export function mustGetUniformLocation(
@@ -237,51 +168,4 @@ export function mustCreateBuffer(gl: WebGL2RenderingContext): WebGLBuffer {
     throw new Error('Failed to create buffer')
   }
   return buf
-}
-
-/**
- * Utility to create an RGBA framebuffer/texture pair sized to the canvas.
- */
-export function mustCreateFramebuffer(
-  gl: WebGL2RenderingContext,
-  width: number,
-  height: number
-): { framebuffer: WebGLFramebuffer; texture: WebGLTexture } {
-  const framebuffer = gl.createFramebuffer()
-  if (!framebuffer) {
-    throw new Error('Failed to create framebuffer')
-  }
-
-  const texture = gl.createTexture()
-  if (!texture) {
-    throw new Error('Failed to create texture for framebuffer')
-  }
-
-  gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    width,
-    height,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    null
-  )
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
-  gl.framebufferTexture2D(
-    gl.FRAMEBUFFER,
-    gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D,
-    texture,
-    0
-  )
-
-  return { framebuffer, texture }
 }
