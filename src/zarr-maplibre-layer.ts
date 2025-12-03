@@ -50,6 +50,7 @@ const MAX_CACHED_TILES = 64;
 interface TileData {
   chunkData: Float32Array | null;
   chunkShape: number[] | null;
+  chunkIndices?: number[];
   data: Float32Array | null;
   selectorHash: string | null;
   tileTexture: WebGLTexture;
@@ -320,53 +321,39 @@ export class ZarrMaplibreLayer {
     const currentHash = this.getSelectorHash();
     const visibleTiles = this.getVisibleTiles();
 
-    const levelPath = this.levelInfos[0];
-    if (!levelPath) return;
-
-    const levelArray = await this.zarrStore.getLevelArray(levelPath);
-    const useChunkCaching = this.shouldUseChunkCaching(levelArray);
-
-    if (!useChunkCaching) {
-      for (const tileTuple of visibleTiles) {
-        const tileKey = tileToKey(tileTuple);
-        const tile = this.tiles.get(tileKey);
-        if (tile && tile.selectorHash !== currentHash) {
-          tile.data = null;
-          tile.selectorHash = null;
-        }
-      }
-      this.prefetchTileData();
-      return;
-    }
-
     for (const tileTuple of visibleTiles) {
       const tileKey = tileToKey(tileTuple);
       const tile = this.tiles.get(tileKey);
+      if (!tile) continue;
 
-      if (
-        tile &&
+      const levelPath = this.levelInfos[tileTuple[0]];
+      if (!levelPath) continue;
+      const levelArray = await this.zarrStore.getLevelArray(levelPath);
+      const desiredChunkIndices = this.computeChunkIndices(levelArray, tileTuple);
+
+      const canReuseChunk =
         tile.chunkData &&
         tile.chunkShape &&
-        tile.selectorHash !== currentHash
-      ) {
-        const tileLevelPath = this.levelInfos[tileTuple[0]];
-        if (tileLevelPath) {
-          try {
-            const tileLevelArray = await this.zarrStore.getLevelArray(
-              tileLevelPath
-            );
-            tile.data = this.extractSliceFromChunk(
-              tile.chunkData,
-              tile.chunkShape,
-              tileLevelArray
-            );
-            tile.selectorHash = currentHash;
-          } catch (err) {
-            console.warn("Error re-extracting tile slice:", err);
-          }
-        }
+        this.arraysEqual(tile.chunkIndices, desiredChunkIndices);
+
+      if (canReuseChunk) {
+        tile.data = this.extractSliceFromChunk(
+          tile.chunkData!,
+          tile.chunkShape!,
+          levelArray,
+          desiredChunkIndices
+        );
+        tile.selectorHash = currentHash;
+      } else {
+        tile.data = null;
+        tile.selectorHash = null;
+        tile.chunkData = null;
+        tile.chunkShape = null;
+        tile.chunkIndices = undefined;
       }
     }
+
+    await this.prefetchTileData();
   }
 
   private updateColormapTexture() {
@@ -680,10 +667,20 @@ export class ZarrMaplibreLayer {
     return JSON.stringify(this.selector);
   }
 
+  private arraysEqual(a: number[] | undefined, b: number[] | undefined): boolean {
+    if (!a || !b) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
   private extractSliceFromChunk(
     chunkData: Float32Array,
     chunkShape: number[],
-    levelArray: zarr.Array<any>
+    levelArray: zarr.Array<any>,
+    chunkIndices: number[]
   ): Float32Array {
     const tileWidth = this.tileSize;
     const tileHeight = this.tileSize;
@@ -691,6 +688,7 @@ export class ZarrMaplibreLayer {
     paddedData.fill(this.fillValue);
 
     const dimensions = this.zarrStore?.dimensions || [];
+    const chunkSizes = levelArray.chunks;
 
     const selectorIndices: number[] = [];
     let latDimIdx = -1;
@@ -723,6 +721,8 @@ export class ZarrMaplibreLayer {
               ? (dimSelection.selected as number)
               : dimSelection;
         }
+        const chunkOffset = chunkIndices[i] * chunkSizes[i];
+        idx = Math.max(0, idx - chunkOffset);
         idx = Math.max(0, Math.min(idx, chunkShape[i] - 1));
         selectorIndices.push(idx);
       }
@@ -846,20 +846,47 @@ export class ZarrMaplibreLayer {
     }
   }
 
-  private shouldUseChunkCaching(levelArray: zarr.Array<any>): boolean {
+  private computeChunkIndices(
+    levelArray: zarr.Array<any>,
+    tileTuple: TileTuple
+  ): number[] {
+    const [_, x, y] = tileTuple;
     const dimensions = this.zarrStore?.dimensions || [];
-    const MAX_CACHEABLE_DIM_SIZE = 16;
+    const chunks = levelArray.chunks;
+    const chunkIndices: number[] = new Array(dimensions.length).fill(0);
 
     for (let i = 0; i < dimensions.length; i++) {
       const dimName = dimensions[i];
       const dimKey = this.getDimKeyForName(dimName);
-      if (dimKey !== "lon" && dimKey !== "lat") {
-        if (levelArray.shape[i] > MAX_CACHEABLE_DIM_SIZE) {
-          return false;
+
+      if (dimKey === "lon") {
+        chunkIndices[i] = x;
+      } else if (dimKey === "lat") {
+        chunkIndices[i] = y;
+      } else {
+        const dimSelection =
+          this.selectors[dimKey] ??
+          this.selectors[dimName] ??
+          this.selector[dimKey] ??
+          this.selector[dimName];
+        let idx = 0;
+        if (dimSelection !== undefined) {
+          idx =
+            typeof dimSelection === "object"
+              ? (dimSelection.selected as number)
+              : dimSelection;
         }
+        idx = Math.max(0, Math.min(idx, levelArray.shape[i] - 1));
+        const chunkIdx = Math.floor(idx / chunks[i]);
+        const maxChunkIdx = Math.max(
+          0,
+          Math.ceil(levelArray.shape[i] / chunks[i]) - 1
+        );
+        chunkIndices[i] = Math.min(chunkIdx, maxChunkIdx);
       }
     }
-    return true;
+
+    return chunkIndices;
   }
 
   private async fetchTileData(
@@ -880,99 +907,52 @@ export class ZarrMaplibreLayer {
     if (!levelPath) return null;
 
     const levelArray = await this.zarrStore.getLevelArray(levelPath);
-    const useChunkCaching = this.shouldUseChunkCaching(levelArray);
-
-    if (useChunkCaching && tile.chunkData && tile.chunkShape) {
-      tile.data = this.extractSliceFromChunk(
-        tile.chunkData,
-        tile.chunkShape,
-        levelArray
-      );
-      tile.selectorHash = currentHash;
-      return tile.data;
-    }
 
     if (tile.loading) return null;
 
     tile.loading = true;
 
     try {
-      const dimensions = this.zarrStore.dimensions || [];
-      const sliceArgs: any[] = new Array(levelArray.shape.length).fill(0);
-      const chunks = levelArray.chunks;
-      const chunkShape: number[] = [];
+      const chunkIndices = this.computeChunkIndices(levelArray, tileTuple);
 
-      for (let i = 0; i < dimensions.length; i++) {
-        const dimName = dimensions[i];
-        const dimKey = this.getDimKeyForName(dimName);
+      const canReuseChunk =
+        tile.chunkData &&
+        tile.chunkShape &&
+        this.arraysEqual(tile.chunkIndices, chunkIndices);
 
-        if (dimKey === "lon") {
-          const chunkSize = chunks[i];
-          const arrayWidth = levelArray.shape[i];
-          const startX = x * chunkSize;
-          const endX = Math.min((x + 1) * chunkSize, arrayWidth);
-          if (startX >= arrayWidth) {
-            tile.loading = false;
-            return null;
-          }
-          sliceArgs[i] = zarr.slice(startX, endX);
-          chunkShape.push(endX - startX);
-        } else if (dimKey === "lat") {
-          const chunkSize = chunks[i];
-          const arrayHeight = levelArray.shape[i];
-          const startY = y * chunkSize;
-          const endY = Math.min((y + 1) * chunkSize, arrayHeight);
-          if (startY >= arrayHeight) {
-            tile.loading = false;
-            return null;
-          }
-          sliceArgs[i] = zarr.slice(startY, endY);
-          chunkShape.push(endY - startY);
-        } else {
-          if (useChunkCaching) {
-            sliceArgs[i] = zarr.slice(0, levelArray.shape[i]);
-            chunkShape.push(levelArray.shape[i]);
-          } else {
-            const dimSelection =
-              this.selectors[dimKey] ??
-              this.selectors[dimName] ??
-              this.selector[dimKey] ??
-              this.selector[dimName];
-            let idx = 0;
-            if (dimSelection !== undefined) {
-              idx =
-                typeof dimSelection === "object"
-                  ? (dimSelection.selected as number)
-                  : dimSelection;
-            }
-            idx = Math.max(0, Math.min(idx, levelArray.shape[i] - 1));
-            sliceArgs[i] = idx;
-            chunkShape.push(1);
-          }
-        }
+      if (canReuseChunk) {
+        tile.data = this.extractSliceFromChunk(
+          tile.chunkData!,
+          tile.chunkShape!,
+          levelArray,
+          chunkIndices
+        );
+        tile.selectorHash = currentHash;
+        tile.loading = false;
+        return tile.data;
       }
 
-      const data = await zarr.get(levelArray, sliceArgs);
+      const chunk = await this.zarrStore.getChunk(levelPath, chunkIndices);
       if (this.isRemoved) {
         tile.loading = false;
         return null;
       }
 
-      const flatData = new Float32Array((data.data as Float32Array).buffer);
+      const chunkShape = (chunk.shape as number[]).map((n) => Number(n));
+      const chunkData =
+        chunk.data instanceof Float32Array
+          ? new Float32Array(chunk.data.buffer)
+          : Float32Array.from(chunk.data as any);
 
-      if (useChunkCaching) {
-        tile.chunkData = flatData;
-        tile.chunkShape = chunkShape;
-        tile.data = this.extractSliceFromChunk(
-          flatData,
-          chunkShape,
-          levelArray
-        );
-      } else {
-        tile.chunkData = null;
-        tile.chunkShape = null;
-        tile.data = this.padTileData(flatData, chunkShape);
-      }
+      tile.chunkData = chunkData;
+      tile.chunkShape = chunkShape;
+      tile.chunkIndices = chunkIndices;
+      tile.data = this.extractSliceFromChunk(
+        chunkData,
+        chunkShape,
+        levelArray,
+        chunkIndices
+      );
       tile.selectorHash = currentHash;
       tile.loading = false;
       this.invalidate();
@@ -983,43 +963,6 @@ export class ZarrMaplibreLayer {
       tile.loading = false;
       return null;
     }
-  }
-
-  private padTileData(
-    flatData: Float32Array,
-    chunkShape: number[]
-  ): Float32Array {
-    const tileWidth = this.tileSize;
-    const tileHeight = this.tileSize;
-    const paddedData = new Float32Array(tileWidth * tileHeight);
-    paddedData.fill(this.fillValue);
-
-    const dimensions = this.zarrStore?.dimensions || [];
-    let latDimIdx = -1;
-    let lonDimIdx = -1;
-
-    for (let i = 0; i < dimensions.length; i++) {
-      const dimKey = this.getDimKeyForName(dimensions[i]);
-      if (dimKey === "lat") latDimIdx = i;
-      else if (dimKey === "lon") lonDimIdx = i;
-    }
-
-    const latSize =
-      latDimIdx >= 0 ? Math.min(chunkShape[latDimIdx], tileHeight) : tileHeight;
-    const lonSize =
-      lonDimIdx >= 0 ? Math.min(chunkShape[lonDimIdx], tileWidth) : tileWidth;
-
-    for (let latIdx = 0; latIdx < latSize; latIdx++) {
-      for (let lonIdx = 0; lonIdx < lonSize; lonIdx++) {
-        const srcIdx = latIdx * lonSize + lonIdx;
-        const dstIdx = latIdx * tileWidth + lonIdx;
-        if (srcIdx < flatData.length) {
-          paddedData[dstIdx] = flatData[srcIdx];
-        }
-      }
-    }
-
-    return paddedData;
   }
 
   prerender(gl: WebGL2RenderingContext, matrix: number[]) {
