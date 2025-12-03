@@ -13,8 +13,8 @@
  * - Calculation of vertical exaggeration and Cesium-compatible XY indices
  */
 
-import proj4 from 'proj4';
-import * as zarr from 'zarrita';
+import proj4 from 'proj4'
+import * as zarr from 'zarrita'
 import {
   type ZarrSelectorsProps,
   type ZarrLevelMetadata,
@@ -23,22 +23,41 @@ import {
   type CRS,
   type DataSliceProps,
   type DimIndicesProps,
-  type SliceArgs
-} from './types';
+  type SliceArgs,
+} from './types'
 
-const DIMENSION_ALIASES_DEFAULT: { [key in keyof DimensionNamesProps]: string[] } = {
+const DIMENSION_ALIASES_DEFAULT: {
+  [key in keyof DimensionNamesProps]: string[]
+} = {
   lat: ['lat', 'latitude', 'y', 'Latitude', 'Y'],
   lon: ['lon', 'longitude', 'x', 'Longitude', 'X', 'lng'],
   time: ['time', 't', 'Time', 'time_counter'],
-  elevation: ['depth', 'z', 'Depth', 'level', 'lev', 'deptht', 'elevation', 'depthu', 'depthv']
-};
+  elevation: [
+    'depth',
+    'z',
+    'Depth',
+    'level',
+    'lev',
+    'deptht',
+    'elevation',
+    'depthu',
+    'depthv',
+  ],
+}
 
 const CF_MAPPINGS: { [key in keyof DimensionNamesProps]: string[] } = {
   lat: ['latitude'],
   lon: ['longitude'],
   time: ['time'],
-  elevation: ['height', 'depth', 'altitude', 'air_pressure', 'pressure', 'geopotential_height']
-};
+  elevation: [
+    'height',
+    'depth',
+    'altitude',
+    'air_pressure',
+    'pressure',
+    'geopotential_height',
+  ],
+}
 
 /**
  * Identify the indices of common dimensions (lat, lon, time, elevation)
@@ -54,49 +73,53 @@ export function identifyDimensionIndices(
   dimensionNames?: DimensionNamesProps,
   coordinates?: Record<string, any>
 ): DimIndicesProps {
-  let DIMENSION_ALIASES = { ...DIMENSION_ALIASES_DEFAULT };
-  const names = ['lat', 'lon', 'time', 'elevation'];
+  let DIMENSION_ALIASES = { ...DIMENSION_ALIASES_DEFAULT }
+  const names = ['lat', 'lon', 'time', 'elevation']
 
   if (coordinates) {
-    Object.keys(coordinates).forEach(coordName => {
-      const coordArr = coordinates[coordName];
-      const coordAttrs = coordArr.attrs as Record<string, any>;
-      const standardName = coordAttrs?.standard_name;
+    Object.keys(coordinates).forEach((coordName) => {
+      const coordArr = coordinates[coordName]
+      const coordAttrs = coordArr.attrs as Record<string, any>
+      const standardName = coordAttrs?.standard_name
       if (standardName) {
         for (const [dimKey, cfNames] of Object.entries(CF_MAPPINGS)) {
           if (cfNames.includes(standardName)) {
-            DIMENSION_ALIASES[dimKey as keyof DimensionNamesProps] = [coordName];
+            DIMENSION_ALIASES[dimKey as keyof DimensionNamesProps] = [coordName]
           }
         }
       }
-    });
+    })
   }
 
   if (dimensionNames) {
-    names.forEach(name => {
-      const dimName = name as keyof DimensionNamesProps;
+    names.forEach((name) => {
+      const dimName = name as keyof DimensionNamesProps
       if (dimensionNames[dimName]) {
-        DIMENSION_ALIASES[dimName] = [dimensionNames[dimName]] as string[];
+        DIMENSION_ALIASES[dimName] = [dimensionNames[dimName]] as string[]
       }
-    });
+    })
     if (dimensionNames.others) {
-      dimensionNames.others.forEach(otherName => {
-        DIMENSION_ALIASES[otherName as keyof DimensionNamesProps] = [otherName];
-      });
+      dimensionNames.others.forEach((otherName) => {
+        DIMENSION_ALIASES[otherName as keyof DimensionNamesProps] = [otherName]
+      })
     }
   }
 
-  const indices: DimIndicesProps = {};
+  const indices: DimIndicesProps = {}
   for (const [key, aliases] of Object.entries(DIMENSION_ALIASES)) {
     for (let i = 0; i < dimNames.length; i++) {
-      const name = dimNames[i].toLowerCase();
-      if (aliases.map(a => a.toLowerCase()).includes(name)) {
-        indices[key] = { name, index: i, array: coordinates ? coordinates[dimNames[i]] : null };
-        break;
+      const name = dimNames[i].toLowerCase()
+      if (aliases.map((a) => a.toLowerCase()).includes(name)) {
+        indices[key] = {
+          name,
+          index: i,
+          array: coordinates ? coordinates[dimNames[i]] : null,
+        }
+        break
       }
     }
   }
-  return indices;
+  return indices
 }
 
 /**
@@ -134,17 +157,17 @@ export async function calculateSliceArgs(
   zarrVersion: 2 | 3 | null,
   updateDimensionValues: boolean = false
 ): Promise<{
-  sliceArgs: SliceArgs;
-  dimensionValues: { [key: string]: Float64Array | number[] };
-  selectors: { [key: string]: ZarrSelectorsProps };
+  sliceArgs: SliceArgs
+  dimensionValues: { [key: string]: Float64Array | number[] }
+  selectors: { [key: string]: ZarrSelectorsProps }
 }> {
-  const sliceArgs: SliceArgs = new Array(shape.length).fill(0);
-  const newDimensionValues = structuredClone(dimensionValues);
-  const newSelectors = structuredClone(selectors);
+  const sliceArgs: SliceArgs = new Array(shape.length).fill(0)
+  const newDimensionValues = structuredClone(dimensionValues)
+  const newSelectors = structuredClone(selectors)
   for (const dimName of Object.keys(dimIndices)) {
-    const dimInfo = dimIndices[dimName];
+    const dimInfo = dimIndices[dimName]
     if (dimName === 'lon') {
-      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startX, dataSlice.endX);
+      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startX, dataSlice.endX)
       if (updateDimensionValues) {
         newDimensionValues[dimName] = await loadDimensionValues(
           newDimensionValues,
@@ -153,10 +176,10 @@ export async function calculateSliceArgs(
           root,
           zarrVersion,
           [dataSlice.startX, dataSlice.endX]
-        );
+        )
       }
     } else if (dimName === 'lat') {
-      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startY, dataSlice.endY);
+      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startY, dataSlice.endY)
       if (updateDimensionValues) {
         newDimensionValues[dimName] = await loadDimensionValues(
           newDimensionValues,
@@ -165,18 +188,21 @@ export async function calculateSliceArgs(
           root,
           zarrVersion,
           [dataSlice.startY, dataSlice.endY]
-        );
+        )
       }
     } else if (
       dimName === 'elevation' &&
       dataSlice.startElevation !== undefined &&
       dataSlice.endElevation !== undefined
     ) {
-      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startElevation, dataSlice.endElevation);
+      sliceArgs[dimInfo.index] = zarr.slice(
+        dataSlice.startElevation,
+        dataSlice.endElevation
+      )
       newSelectors[dimName] = {
         type: 'index',
-        selected: [dataSlice.startElevation, dataSlice.endElevation]
-      };
+        selected: [dataSlice.startElevation, dataSlice.endElevation],
+      }
       if (updateDimensionValues) {
         newDimensionValues[dimName] = await loadDimensionValues(
           newDimensionValues,
@@ -185,13 +211,13 @@ export async function calculateSliceArgs(
           root,
           zarrVersion,
           [dataSlice.startElevation, dataSlice.endElevation]
-        );
+        )
       }
     } else {
-      const dimSelection = newSelectors[dimName];
+      const dimSelection = newSelectors[dimName]
       if (!dimSelection) {
-        newSelectors[dimName] = { type: 'index', selected: 0 };
-        sliceArgs[dimInfo.index] = 0;
+        newSelectors[dimName] = { type: 'index', selected: 0 }
+        sliceArgs[dimInfo.index] = 0
       } else if (dimSelection.type === 'value') {
         try {
           newDimensionValues[dimName] = await loadDimensionValues(
@@ -200,19 +226,22 @@ export async function calculateSliceArgs(
             dimInfo,
             root,
             zarrVersion
-          );
+          )
           const nearestIdx = calculateNearestIndex(
             newDimensionValues[dimName],
             dimSelection.selected as number
-          );
-          newSelectors[dimName] = { type: 'index', selected: nearestIdx };
-          sliceArgs[dimInfo.index] = nearestIdx;
+          )
+          newSelectors[dimName] = { type: 'index', selected: nearestIdx }
+          sliceArgs[dimInfo.index] = nearestIdx
         } catch (err) {
-          sliceArgs[dimInfo.index] = 0;
+          sliceArgs[dimInfo.index] = 0
         }
       } else {
-        newSelectors[dimName] = { type: 'index', selected: dimSelection.selected };
-        sliceArgs[dimInfo.index] = dimSelection.selected as number;
+        newSelectors[dimName] = {
+          type: 'index',
+          selected: dimSelection.selected,
+        }
+        sliceArgs[dimInfo.index] = dimSelection.selected as number
       }
 
       newDimensionValues[dimName] = await loadDimensionValues(
@@ -221,10 +250,14 @@ export async function calculateSliceArgs(
         dimInfo,
         root,
         zarrVersion
-      );
+      )
     }
   }
-  return { sliceArgs, dimensionValues: newDimensionValues, selectors: newSelectors };
+  return {
+    sliceArgs,
+    dimensionValues: newDimensionValues,
+    selectors: newSelectors,
+  }
 }
 
 /**
@@ -252,19 +285,19 @@ export function calculateSliceArgsRequestImage(
   dimIndices: DimIndicesProps,
   selectors: { [key: string]: ZarrSelectorsProps }
 ): SliceArgs {
-  const sliceArgs: SliceArgs = new Array(shape.length).fill(0);
+  const sliceArgs: SliceArgs = new Array(shape.length).fill(0)
   for (const dimName of Object.keys(dimIndices)) {
-    const dimInfo = dimIndices[dimName];
+    const dimInfo = dimIndices[dimName]
     if (dimName === 'lon') {
-      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startX, dataSlice.endX);
+      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startX, dataSlice.endX)
     } else if (dimName === 'lat') {
-      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startY, dataSlice.endY);
+      sliceArgs[dimInfo.index] = zarr.slice(dataSlice.startY, dataSlice.endY)
     } else {
-      const dimSelection = selectors[dimName];
-      sliceArgs[dimInfo.index] = dimSelection.selected as number;
+      const dimSelection = selectors[dimName]
+      sliceArgs[dimInfo.index] = dimSelection.selected as number
     }
   }
-  return sliceArgs;
+  return sliceArgs
 }
 
 /**
@@ -273,18 +306,21 @@ export function calculateSliceArgsRequestImage(
  * @param target - Target value to find.
  * @returns Index of the nearest value.
  */
-export function calculateNearestIndex(values: Float64Array | number[], target: number): number {
-  const selectedValue = target;
-  let nearestIdx = 0;
-  let minDiff = Infinity;
+export function calculateNearestIndex(
+  values: Float64Array | number[],
+  target: number
+): number {
+  const selectedValue = target
+  let nearestIdx = 0
+  let minDiff = Infinity
   values.forEach((val, i) => {
-    const diff = Math.abs(val - selectedValue);
+    const diff = Math.abs(val - selectedValue)
     if (diff < minDiff) {
-      minDiff = diff;
-      nearestIdx = i;
+      minDiff = diff
+      nearestIdx = i
     }
-  });
-  return nearestIdx;
+  })
+  return nearestIdx
 }
 
 /**
@@ -322,8 +358,8 @@ export async function calculateElevationSlice(
   levelInfo: string | null,
   zarrVersion: 2 | 3 | null
 ): Promise<{
-  dimensionValuesWithElevation: { [key: string]: Float64Array | number[] };
-  elevationSlice: [number, number];
+  dimensionValuesWithElevation: { [key: string]: Float64Array | number[] }
+  elevationSlice: [number, number]
 }> {
   dimensionValuesWithElevation['elevation'] = await loadDimensionValues(
     dimensionValuesWithElevation,
@@ -331,60 +367,70 @@ export async function calculateElevationSlice(
     dimInfo,
     root,
     zarrVersion
-  );
+  )
 
-  let startElevation = 0;
-  let endElevation = shapeElevation;
+  let startElevation = 0
+  let endElevation = shapeElevation
   if (selectorsElevation?.selected === undefined) {
-    return { dimensionValuesWithElevation, elevationSlice: [startElevation, endElevation] };
+    return {
+      dimensionValuesWithElevation,
+      elevationSlice: [startElevation, endElevation],
+    }
   }
   if (selectorsElevation) {
-    let firstElevation: number | null = null;
-    let secondElevation;
+    let firstElevation: number | null = null
+    let secondElevation
     if (typeof selectorsElevation.selected === 'object') {
-      firstElevation = selectorsElevation.selected[0];
-      secondElevation = selectorsElevation.selected[1];
+      firstElevation = selectorsElevation.selected[0]
+      secondElevation = selectorsElevation.selected[1]
     } else {
-      secondElevation = selectorsElevation.selected as number;
+      secondElevation = selectorsElevation.selected as number
     }
     if (firstElevation !== null && firstElevation > secondElevation) {
-      console.warn('Invalid elevation selection: start value is greater than end value.');
-      return { dimensionValuesWithElevation, elevationSlice: [startElevation, endElevation] };
+      console.warn(
+        'Invalid elevation selection: start value is greater than end value.'
+      )
+      return {
+        dimensionValuesWithElevation,
+        elevationSlice: [startElevation, endElevation],
+      }
     }
     if (selectorsElevation.type !== 'value') {
-      startElevation = firstElevation !== null ? (firstElevation as number) : 0;
-      endElevation = Math.min(secondElevation + 1, shapeElevation);
+      startElevation = firstElevation !== null ? (firstElevation as number) : 0
+      endElevation = Math.min(secondElevation + 1, shapeElevation)
     } else {
-      const elevationValues = dimensionValuesWithElevation['elevation'];
+      const elevationValues = dimensionValuesWithElevation['elevation']
       if (firstElevation === null) {
-        firstElevation = Math.min(...(elevationValues as number[]));
+        firstElevation = Math.min(...(elevationValues as number[]))
       }
-      let nearestIdxFirst = 0;
-      let minDiffStartFirst = Infinity;
-      let nearestIdxSecond = 0;
-      let minDiffStartSecond = Infinity;
+      let nearestIdxFirst = 0
+      let minDiffStartFirst = Infinity
+      let nearestIdxSecond = 0
+      let minDiffStartSecond = Infinity
       elevationValues.forEach((val, i) => {
-        const diffFirst = Math.abs(val - (firstElevation as number));
-        const diffSecond = Math.abs(val - (secondElevation as number));
+        const diffFirst = Math.abs(val - (firstElevation as number))
+        const diffSecond = Math.abs(val - (secondElevation as number))
         if (diffFirst < minDiffStartFirst) {
-          minDiffStartFirst = diffFirst;
-          nearestIdxFirst = i;
+          minDiffStartFirst = diffFirst
+          nearestIdxFirst = i
         }
         if (diffSecond < minDiffStartSecond) {
-          minDiffStartSecond = diffSecond;
-          nearestIdxSecond = i;
+          minDiffStartSecond = diffSecond
+          nearestIdxSecond = i
         }
-      });
-      startElevation = nearestIdxFirst;
-      endElevation = nearestIdxSecond;
+      })
+      startElevation = nearestIdxFirst
+      endElevation = nearestIdxSecond
     }
   }
-  dimensionValuesWithElevation['elevation'] = dimensionValuesWithElevation['elevation'].slice(
-    startElevation,
-    endElevation
-  );
+  dimensionValuesWithElevation['elevation'] = dimensionValuesWithElevation[
+    'elevation'
+  ].slice(startElevation, endElevation)
 
-  return { dimensionValuesWithElevation, elevationSlice: [startElevation, endElevation] };
+  return {
+    dimensionValuesWithElevation,
+    elevationSlice: [startElevation, endElevation],
+  }
 }
 
 /**
@@ -414,34 +460,35 @@ export async function loadDimensionValues(
   zarrVersion: 2 | 3 | null,
   slice?: [number, number]
 ): Promise<Float64Array | number[]> {
-  if (dimensionValues[dimIndices.name]) return dimensionValues[dimIndices.name];
-  let targetRoot;
+  if (dimensionValues[dimIndices.name]) return dimensionValues[dimIndices.name]
+  let targetRoot
   if (levelInfo) {
-    targetRoot = await root.resolve(levelInfo);
+    targetRoot = await root.resolve(levelInfo)
   } else {
-    targetRoot = root;
+    targetRoot = root
   }
-  let coordArr;
+  let coordArr
   if (dimIndices.array) {
-    coordArr = dimIndices.array;
+    coordArr = dimIndices.array
   } else {
-    const coordVar = await targetRoot.resolve(dimIndices.name);
-    let localFunc = zarr.open as any;
+    const coordVar = await targetRoot.resolve(dimIndices.name)
+    let localFunc = zarr.open as any
     if (zarrVersion === 2) {
-      localFunc = zarr.open.v2;
+      localFunc = zarr.open.v2
     } else if (zarrVersion === 3) {
-      localFunc = zarr.open.v3;
+      localFunc = zarr.open.v3
     }
-    coordArr = await localFunc(coordVar, { kind: 'array' });
+    coordArr = await localFunc(coordVar, { kind: 'array' })
   }
-  const coordData = await zarr.get(coordArr);
-  const coordArray = Array.from(coordData.data as number[], (v: number | bigint) =>
-    typeof v === 'bigint' ? Number(v) : v
-  );
+  const coordData = await zarr.get(coordArr)
+  const coordArray = Array.from(
+    coordData.data as number[],
+    (v: number | bigint) => (typeof v === 'bigint' ? Number(v) : v)
+  )
   if (slice) {
-    return coordArray.slice(slice[0], slice[1]);
+    return coordArray.slice(slice[0], slice[1])
   }
-  return coordArray;
+  return coordArray
 }
 
 /**
@@ -478,105 +525,116 @@ export async function initZarrDataset(
   zarrVersion: 2 | 3 | null,
   multiscaleLevel?: number
 ): Promise<{
-  zarrArray: zarr.Array<any>;
-  levelInfos: string[];
-  dimIndices: DimIndicesProps;
-  attrs: Record<string, any>;
-  multiscaleLevel?: number;
+  zarrArray: zarr.Array<any>
+  levelInfos: string[]
+  dimIndices: DimIndicesProps
+  attrs: Record<string, any>
+  multiscaleLevel?: number
 }> {
-  let localFunc = zarr.open as any;
+  let localFunc = zarr.open as any
   if (zarrVersion === 2) {
-    localFunc = zarr.open.v2;
+    localFunc = zarr.open.v2
   } else if (zarrVersion === 3) {
-    localFunc = zarr.open.v3;
+    localFunc = zarr.open.v3
   }
-  const zarrGroup = await localFunc(root, { kind: 'group' });
-  const attrs = (zarrGroup.attrs ?? {}) as Record<string, any>;
-  let zarrArray: zarr.Array<any> | null = null;
-  let levelInfos: string[] = [];
-  let coordinates: Record<string, any> = {};
-  let datasets;
-  let pyramidMode = false;
+  const zarrGroup = await localFunc(root, { kind: 'group' })
+  const attrs = (zarrGroup.attrs ?? {}) as Record<string, any>
+  let zarrArray: zarr.Array<any> | null = null
+  let levelInfos: string[] = []
+  let coordinates: Record<string, any> = {}
+  let datasets
+  let pyramidMode = false
   if (attrs.multiscales && attrs.multiscales[0]?.datasets?.length) {
-    pyramidMode = true;
-    datasets = attrs.multiscales[0].datasets;
-    if (multiscaleLevel) datasets = [datasets[multiscaleLevel]];
+    pyramidMode = true
+    datasets = attrs.multiscales[0].datasets
+    if (multiscaleLevel) datasets = [datasets[multiscaleLevel]]
 
     for (let i = 0; i < datasets.length; i++) {
-      const levelPath = datasets[i].path;
-      levelInfos.push(levelPath);
-      const levelArr = await openLevelArray(root, levelPath, variable, levelCache);
-
-      const levelRoot = await root.resolve(levelPath);
-      const { existingCoordinates, array_dimensions } = await calculateCoordinatesFromAttrs(
-        levelArr,
-        levelRoot,
-        coordinates,
-        store,
+      const levelPath = datasets[i].path
+      levelInfos.push(levelPath)
+      const levelArr = await openLevelArray(
+        root,
+        levelPath,
         variable,
-        zarrVersion,
-        pyramidMode
-      );
-      coordinates = existingCoordinates;
-      const dims = identifyDimensionIndices(array_dimensions, dimensions, coordinates);
+        levelCache
+      )
 
-      const width = levelArr.shape[dims.lon.index];
-      const height = levelArr.shape[dims.lat.index];
+      const levelRoot = await root.resolve(levelPath)
+      const { existingCoordinates, array_dimensions } =
+        await calculateCoordinatesFromAttrs(
+          levelArr,
+          levelRoot,
+          coordinates,
+          store,
+          variable,
+          zarrVersion,
+          pyramidMode
+        )
+      coordinates = existingCoordinates
+      const dims = identifyDimensionIndices(
+        array_dimensions,
+        dimensions,
+        coordinates
+      )
 
-      levelMetadata.set(i, { width, height });
+      const width = levelArr.shape[dims.lon.index]
+      const height = levelArr.shape[dims.lat.index]
+
+      levelMetadata.set(i, { width, height })
     }
     if (multiscaleLevel) {
-      datasets = attrs.multiscales[0].datasets;
-      levelInfos = [];
+      datasets = attrs.multiscales[0].datasets
+      levelInfos = []
       for (let i = 0; i < datasets.length; i++) {
-        levelInfos.push(datasets[i].path);
+        levelInfos.push(datasets[i].path)
       }
     }
-    let levelInfo = levelInfos[multiscaleLevel || 0];
+    let levelInfo = levelInfos[multiscaleLevel || 0]
     if (!levelInfo) {
       console.error(
         'No level info found for multiscale level:',
         multiscaleLevel,
         '. Using 0 instead.'
-      );
-      multiscaleLevel = 0;
-      levelInfo = levelInfos[multiscaleLevel];
+      )
+      multiscaleLevel = 0
+      levelInfo = levelInfos[multiscaleLevel]
     }
-    zarrArray = await openLevelArray(root, levelInfo, variable, levelCache);
+    zarrArray = await openLevelArray(root, levelInfo, variable, levelCache)
   } else {
-    const arrayLocation = await root.resolve(variable);
-    let localFunc = zarr.open as any;
+    const arrayLocation = await root.resolve(variable)
+    let localFunc = zarr.open as any
     if (zarrVersion === 2) {
-      localFunc = zarr.open.v2;
+      localFunc = zarr.open.v2
     } else if (zarrVersion === 3) {
-      localFunc = zarr.open.v3;
+      localFunc = zarr.open.v3
     }
-    zarrArray = await localFunc(arrayLocation, { kind: 'array' });
+    zarrArray = await localFunc(arrayLocation, { kind: 'array' })
   }
   if (!zarrArray) {
-    throw new Error('Failed to initialize Zarr array');
+    throw new Error('Failed to initialize Zarr array')
   }
-  const { existingCoordinates, array_dimensions } = await calculateCoordinatesFromAttrs(
-    zarrArray,
-    root,
-    coordinates,
-    store,
-    variable,
-    zarrVersion,
-    pyramidMode
-  );
+  const { existingCoordinates, array_dimensions } =
+    await calculateCoordinatesFromAttrs(
+      zarrArray,
+      root,
+      coordinates,
+      store,
+      variable,
+      zarrVersion,
+      pyramidMode
+    )
   const dimIndices = await identifyDimensionIndices(
     array_dimensions,
     dimensions,
     existingCoordinates
-  );
+  )
   return {
     zarrArray,
     levelInfos,
     dimIndices,
     attrs,
-    multiscaleLevel
-  };
+    multiscaleLevel,
+  }
 }
 
 /**
@@ -603,34 +661,44 @@ async function calculateCoordinatesFromAttrs(
   variable: string,
   zarrVersion: 2 | 3 | null,
   isPyramid: boolean = false
-): Promise<{ existingCoordinates: Record<string, any>; array_dimensions: string[] }> {
-  let array_dimensions: string[] = (arr.attrs['_ARRAY_DIMENSIONS'] as string[]) || [];
+): Promise<{
+  existingCoordinates: Record<string, any>
+  array_dimensions: string[]
+}> {
+  let array_dimensions: string[] =
+    (arr.attrs['_ARRAY_DIMENSIONS'] as string[]) || []
   if (array_dimensions.length === 0) {
-    const location = zarr.root(store);
+    const location = zarr.root(store)
     const rootMetadata = JSON.parse(
-      new TextDecoder().decode(await store.get(location.resolve('zarr.json').path))
-    );
+      new TextDecoder().decode(
+        await store.get(location.resolve('zarr.json').path)
+      )
+    )
     if (isPyramid) {
       array_dimensions =
-        rootMetadata.consolidated_metadata.metadata[`0/${variable}`]['dimension_names'];
+        rootMetadata.consolidated_metadata.metadata[`0/${variable}`][
+          'dimension_names'
+        ]
     } else {
-      array_dimensions = rootMetadata.consolidated_metadata.metadata[variable]['dimension_names'];
+      array_dimensions =
+        rootMetadata.consolidated_metadata.metadata[variable]['dimension_names']
     }
   }
-  if (Object.keys(existingCoordinates).length > 0) return { existingCoordinates, array_dimensions };
+  if (Object.keys(existingCoordinates).length > 0)
+    return { existingCoordinates, array_dimensions }
 
   for (let i = 0; i < array_dimensions.length; i++) {
-    const dimName = array_dimensions[i];
-    const coordVar = await root.resolve(dimName);
-    let localFunc = zarr.open as any;
+    const dimName = array_dimensions[i]
+    const coordVar = await root.resolve(dimName)
+    let localFunc = zarr.open as any
     if (zarrVersion === 2) {
-      localFunc = zarr.open.v2;
+      localFunc = zarr.open.v2
     } else if (zarrVersion === 3) {
-      localFunc = zarr.open.v3;
+      localFunc = zarr.open.v3
     }
-    existingCoordinates[dimName] = await localFunc(coordVar, { kind: 'array' });
+    existingCoordinates[dimName] = await localFunc(coordVar, { kind: 'array' })
   }
-  return { existingCoordinates, array_dimensions };
+  return { existingCoordinates, array_dimensions }
 }
 
 /**
@@ -651,30 +719,34 @@ export async function getXYLimits(
   multiscale: boolean,
   zarrVersion: 2 | 3 | null
 ): Promise<XYLimitsProps> {
-  const levelRoot = multiscale ? await root.resolve(levelInfos[0]) : root;
-  let localFunc = zarr.open as any;
+  const levelRoot = multiscale ? await root.resolve(levelInfos[0]) : root
+  let localFunc = zarr.open as any
   if (zarrVersion === 2) {
-    localFunc = zarr.open.v2;
+    localFunc = zarr.open.v2
   } else if (zarrVersion === 3) {
-    localFunc = zarr.open.v3;
+    localFunc = zarr.open.v3
   }
   const xarr =
     dimIndices.lon.array ||
-    (await localFunc(await levelRoot.resolve(dimIndices.lon.name), { kind: 'array' }));
+    (await localFunc(await levelRoot.resolve(dimIndices.lon.name), {
+      kind: 'array',
+    }))
   const yarr =
     dimIndices.lat.array ||
-    (await localFunc(await levelRoot.resolve(dimIndices.lat.name), { kind: 'array' }));
+    (await localFunc(await levelRoot.resolve(dimIndices.lat.name), {
+      kind: 'array',
+    }))
 
-  const xdata = (await zarr.get(xarr)) as any;
-  const ydata = (await zarr.get(yarr)) as any;
+  const xdata = (await zarr.get(xarr)) as any
+  const ydata = (await zarr.get(yarr)) as any
 
   const xyLimits = {
     xMin: Math.min(...xdata.data),
     xMax: Math.max(...xdata.data),
     yMin: Math.min(...ydata.data),
-    yMax: Math.max(...ydata.data)
-  };
-  return xyLimits;
+    yMax: Math.max(...ydata.data),
+  }
+  return xyLimits
 }
 
 /**
@@ -696,27 +768,29 @@ export async function openLevelArray(
   levelCache: Map<number, any>,
   zarrVersion: 2 | 3 | null = null
 ): Promise<zarr.Array<any>> {
-  const existing = Array.from(levelCache.entries()).find(([_, val]) => val.path === levelPath);
-  if (existing) return existing[1];
+  const existing = Array.from(levelCache.entries()).find(
+    ([_, val]) => val.path === levelPath
+  )
+  if (existing) return existing[1]
 
-  const levelRoot = await root.resolve(levelPath);
-  const arrayLoc = variable ? await levelRoot.resolve(variable) : levelRoot;
-  let localFunc = zarr.open as any;
+  const levelRoot = await root.resolve(levelPath)
+  const arrayLoc = variable ? await levelRoot.resolve(variable) : levelRoot
+  let localFunc = zarr.open as any
   if (zarrVersion === 2) {
-    localFunc = zarr.open.v2;
+    localFunc = zarr.open.v2
   } else if (zarrVersion === 3) {
-    localFunc = zarr.open.v3;
+    localFunc = zarr.open.v3
   }
-  const arr = await localFunc(arrayLoc, { kind: 'array' });
+  const arr = await localFunc(arrayLoc, { kind: 'array' })
 
-  const levelIndex = levelCache.size;
-  levelCache.set(levelIndex, arr);
+  const levelIndex = levelCache.size
+  levelCache.set(levelIndex, arr)
   if (levelCache.size > 3) {
-    const firstKey = levelCache.keys().next().value as number;
-    levelCache.delete(firstKey);
+    const firstKey = levelCache.keys().next().value as number
+    levelCache.delete(firstKey)
   }
 
-  return arr;
+  return arr
 }
 
 /**
@@ -743,14 +817,14 @@ export function resolveNoDataRange(
   metadataMax: number | undefined
 ): { noDataMin: number; noDataMax: number } {
   if (userMin !== undefined && userMax !== undefined) {
-    return { noDataMin: userMin, noDataMax: userMax };
+    return { noDataMin: userMin, noDataMax: userMax }
   }
 
   if (metadataMin !== undefined && metadataMax !== undefined) {
-    return { noDataMin: metadataMin, noDataMax: metadataMax };
+    return { noDataMin: metadataMin, noDataMax: metadataMax }
   }
 
-  return { noDataMin: -9999, noDataMax: 9999 };
+  return { noDataMin: -9999, noDataMax: 9999 }
 }
 
 /**
@@ -767,30 +841,30 @@ export function resolveNoDataRange(
  *   - `useFillValue`: Whether to apply exact masking based on fill value.
  */
 export function extractNoDataMetadata(zarrArray: zarr.Array<any>): {
-  metadataMin: number | undefined;
-  metadataMax: number | undefined;
-  fillValue: number | undefined;
-  useFillValue: boolean;
+  metadataMin: number | undefined
+  metadataMax: number | undefined
+  fillValue: number | undefined
+  useFillValue: boolean
 } {
-  const attrs = zarrArray.attrs || {};
+  const attrs = zarrArray.attrs || {}
 
-  let metadataMin: number | undefined = undefined;
-  let metadataMax: number | undefined = undefined;
-  let fillValue: number | undefined = undefined;
-  let useFillValue = false;
+  let metadataMin: number | undefined = undefined
+  let metadataMax: number | undefined = undefined
+  let fillValue: number | undefined = undefined
+  let useFillValue = false
 
-  if (attrs.valid_min !== undefined) metadataMin = attrs.valid_min as number;
-  if (attrs.valid_max !== undefined) metadataMax = attrs.valid_max as number;
+  if (attrs.valid_min !== undefined) metadataMin = attrs.valid_min as number
+  if (attrs.valid_max !== undefined) metadataMax = attrs.valid_max as number
 
   if (attrs._FillValue !== undefined) {
-    fillValue = attrs._FillValue as number;
-    useFillValue = true;
+    fillValue = attrs._FillValue as number
+    useFillValue = true
   } else if (attrs.missing_value !== undefined) {
-    fillValue = attrs.missing_value as number;
-    useFillValue = true;
+    fillValue = attrs.missing_value as number
+    useFillValue = true
   }
 
-  return { metadataMin, metadataMax, fillValue, useFillValue };
+  return { metadataMin, metadataMax, fillValue, useFillValue }
 }
 
 /**
@@ -807,15 +881,15 @@ export async function detectCRS(
   arr: zarr.Array<any> | null,
   xyLimits?: XYLimitsProps
 ): Promise<CRS> {
-  const attrCRS = attrs?.multiscales?.[0]?.datasets?.[0]?.crs ?? arr?.attrs?.crs;
+  const attrCRS = attrs?.multiscales?.[0]?.datasets?.[0]?.crs ?? arr?.attrs?.crs
   if (attrCRS) {
-    return attrCRS;
+    return attrCRS
   }
   if (!xyLimits) {
-    return 'EPSG:4326';
+    return 'EPSG:4326'
   }
-  const xMax = xyLimits.xMax;
-  return xMax && Math.abs(xMax) > 360 ? 'EPSG:3857' : 'EPSG:4326';
+  const xMax = xyLimits.xMax
+  return xMax && Math.abs(xMax) > 360 ? 'EPSG:3857' : 'EPSG:4326'
 }
 
 /**
@@ -832,17 +906,25 @@ export async function detectCRS(
 export function getCubeDimensions(
   cubeDimensions: [number, number, number],
   dimIndices: DimIndicesProps
-): { nx: number; ny: number; nz: number; indicesOrder: string[]; strides: Record<string, number> } {
-  const [nx, ny, nz] = cubeDimensions;
-  const names = ['lat', 'lon', 'elevation'];
-  const indicesOrder = names.slice().sort((a, b) => dimIndices[a].index - dimIndices[b].index);
-  const dims: Record<string, number> = { lon: nx, lat: ny, elevation: nz };
-  const strides: Record<string, number> = {};
-  strides[indicesOrder[2]] = 1;
-  strides[indicesOrder[1]] = dims[indicesOrder[2]];
-  strides[indicesOrder[0]] = dims[indicesOrder[1]] * dims[indicesOrder[2]];
+): {
+  nx: number
+  ny: number
+  nz: number
+  indicesOrder: string[]
+  strides: Record<string, number>
+} {
+  const [nx, ny, nz] = cubeDimensions
+  const names = ['lat', 'lon', 'elevation']
+  const indicesOrder = names
+    .slice()
+    .sort((a, b) => dimIndices[a].index - dimIndices[b].index)
+  const dims: Record<string, number> = { lon: nx, lat: ny, elevation: nz }
+  const strides: Record<string, number> = {}
+  strides[indicesOrder[2]] = 1
+  strides[indicesOrder[1]] = dims[indicesOrder[2]]
+  strides[indicesOrder[0]] = dims[indicesOrder[1]] * dims[indicesOrder[2]]
 
-  return { nx, ny, nz, indicesOrder, strides };
+  return { nx, ny, nz, indicesOrder, strides }
 }
 
 /**
@@ -864,14 +946,18 @@ export function calculateHeightMeters(
   belowSeaLevel: boolean | undefined,
   flipElevation: boolean = false
 ): number {
-  const maxElevationValue = Math.max(...(elevationArray as number[]));
-  let firstElement: number;
+  const maxElevationValue = Math.max(...(elevationArray as number[]))
+  let firstElement: number
   if (belowSeaLevel) {
-    firstElement = -(flipElevation ? elevationValue : maxElevationValue - elevationValue);
+    firstElement = -(flipElevation
+      ? elevationValue
+      : maxElevationValue - elevationValue)
   } else {
-    firstElement = flipElevation ? maxElevationValue - elevationValue : elevationValue;
+    firstElement = flipElevation
+      ? maxElevationValue - elevationValue
+      : elevationValue
   }
-  return firstElement * verticalExaggeration;
+  return firstElement * verticalExaggeration
 }
 
 /**
@@ -891,23 +977,27 @@ export function calculateXYFromBounds(
   crs: CRS | null
 ): { x: [number, number]; y: [number, number] } {
   if (crs === 'EPSG:3857') {
-    const sourceCRS: CRS = 'EPSG:4326';
-    const [xWest, ySouth] = proj4(sourceCRS, crs, [bounds.west, bounds.south]);
-    const [xEast, yNorth] = proj4(sourceCRS, crs, [bounds.east, bounds.north]);
-    const worldExtent = 20037508.342789244;
-    const xMin = Math.floor(((xWest + worldExtent) / (2 * worldExtent)) * width);
-    const xMax = Math.floor(((xEast + worldExtent) / (2 * worldExtent)) * width);
-    const yMin = Math.floor(((worldExtent - yNorth) / (2 * worldExtent)) * height);
-    const yMax = Math.floor(((worldExtent - ySouth) / (2 * worldExtent)) * height);
-    return { x: [xMin, xMax], y: [yMin, yMax] };
+    const sourceCRS: CRS = 'EPSG:4326'
+    const [xWest, ySouth] = proj4(sourceCRS, crs, [bounds.west, bounds.south])
+    const [xEast, yNorth] = proj4(sourceCRS, crs, [bounds.east, bounds.north])
+    const worldExtent = 20037508.342789244
+    const xMin = Math.floor(((xWest + worldExtent) / (2 * worldExtent)) * width)
+    const xMax = Math.floor(((xEast + worldExtent) / (2 * worldExtent)) * width)
+    const yMin = Math.floor(
+      ((worldExtent - yNorth) / (2 * worldExtent)) * height
+    )
+    const yMax = Math.floor(
+      ((worldExtent - ySouth) / (2 * worldExtent)) * height
+    )
+    return { x: [xMin, xMax], y: [yMin, yMax] }
   } else {
-    const xMin = Math.floor(((bounds.west + 180) / 360) * width);
-    const xMax = Math.floor(((bounds.east + 180) / 360) * width);
-    const yMin = Math.floor(((90 - bounds.north) / 180) * height);
-    const yMax = Math.floor(((90 - bounds.south) / 180) * height);
+    const xMin = Math.floor(((bounds.west + 180) / 360) * width)
+    const xMax = Math.floor(((bounds.east + 180) / 360) * width)
+    const yMin = Math.floor(((90 - bounds.north) / 180) * height)
+    const yMax = Math.floor(((90 - bounds.south) / 180) * height)
     return {
       x: [xMin, xMax],
-      y: [yMin, yMax]
-    };
+      y: [yMin, yMax],
+    }
   }
 }

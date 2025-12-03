@@ -8,7 +8,7 @@
  * to generate color-mapped textures and dynamic shader programs.
  */
 
-import { type ColorScaleProps } from "./types";
+import { type ColorScaleProps } from './types'
 
 /**
  * Creates and compiles a WebGL shader from source code.
@@ -29,19 +29,19 @@ export function createShader(
   type: number,
   source: string
 ): WebGLShader | null {
-  const shader = gl.createShader(type);
-  if (!shader) return null;
+  const shader = gl.createShader(type)
+  if (!shader) return null
 
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
+  gl.shaderSource(shader, source)
+  gl.compileShader(shader)
 
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    console.error("Shader compile error:", gl.getShaderInfoLog(shader));
-    gl.deleteShader(shader);
-    return null;
+    console.error('Shader compile error:', gl.getShaderInfoLog(shader))
+    gl.deleteShader(shader)
+    return null
   }
 
-  return shader;
+  return shader
 }
 
 /**
@@ -63,20 +63,20 @@ export function createProgram(
   vertexShader: WebGLShader,
   fragmentShader: WebGLShader
 ): WebGLProgram | null {
-  const program = gl.createProgram();
-  if (!program) return null;
+  const program = gl.createProgram()
+  if (!program) return null
 
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
+  gl.attachShader(program, vertexShader)
+  gl.attachShader(program, fragmentShader)
+  gl.linkProgram(program)
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    console.error("Program link error:", gl.getProgramInfoLog(program));
-    gl.deleteProgram(program);
-    return null;
+    console.error('Program link error:', gl.getProgramInfoLog(program))
+    gl.deleteProgram(program)
+    return null
   }
 
-  return program;
+  return program
 }
 
 /**
@@ -98,20 +98,20 @@ export function createColorRampTexture(
   colors: number[][],
   opacity: number
 ): WebGLTexture | null {
-  if (!gl) return null;
+  if (!gl) return null
 
-  const colorTexture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, colorTexture);
+  const colorTexture = gl.createTexture()
+  gl.bindTexture(gl.TEXTURE_2D, colorTexture)
 
-  const flat = new Uint8Array(colors.length * 4);
-  const useFloat = colors[0][0] <= 1.0;
+  const flat = new Uint8Array(colors.length * 4)
+  const useFloat = colors[0][0] <= 1.0
 
   for (let i = 0; i < colors.length; i++) {
-    const c = colors[i];
-    flat[i * 4 + 0] = useFloat ? Math.round(c[0] * 255) : c[0];
-    flat[i * 4 + 1] = useFloat ? Math.round(c[1] * 255) : c[1];
-    flat[i * 4 + 2] = useFloat ? Math.round(c[2] * 255) : c[2];
-    flat[i * 4 + 3] = Math.floor(opacity * 255);
+    const c = colors[i]
+    flat[i * 4 + 0] = useFloat ? Math.round(c[0] * 255) : c[0]
+    flat[i * 4 + 1] = useFloat ? Math.round(c[1] * 255) : c[1]
+    flat[i * 4 + 2] = useFloat ? Math.round(c[2] * 255) : c[2]
+    flat[i * 4 + 3] = Math.floor(opacity * 255)
   }
 
   gl.texImage2D(
@@ -124,15 +124,15 @@ export function createColorRampTexture(
     gl.RGBA,
     gl.UNSIGNED_BYTE,
     flat
-  );
+  )
 
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
 
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  return colorTexture;
+  gl.bindTexture(gl.TEXTURE_2D, null)
+  return colorTexture
 }
 
 /**
@@ -159,20 +159,20 @@ export function updateImgData(
   opacity: number
 ): ImageData {
   if (isNaN(value) || value === null || value === undefined) {
-    imgData.data[pixelIdx + 0] = 0;
-    imgData.data[pixelIdx + 1] = 0;
-    imgData.data[pixelIdx + 2] = 0;
-    imgData.data[pixelIdx + 3] = 0;
+    imgData.data[pixelIdx + 0] = 0
+    imgData.data[pixelIdx + 1] = 0
+    imgData.data[pixelIdx + 2] = 0
+    imgData.data[pixelIdx + 3] = 0
   } else {
     const normalized =
-      (value - colorScale.min) / (colorScale.max - colorScale.min);
-    const [r, g, b, a] = addColor(normalized, colorScale, opacity);
-    imgData.data[pixelIdx + 0] = Math.floor(r);
-    imgData.data[pixelIdx + 1] = Math.floor(g);
-    imgData.data[pixelIdx + 2] = Math.floor(b);
-    imgData.data[pixelIdx + 3] = Math.floor(a * 255);
+      (value - colorScale.min) / (colorScale.max - colorScale.min)
+    const [r, g, b, a] = addColor(normalized, colorScale, opacity)
+    imgData.data[pixelIdx + 0] = Math.floor(r)
+    imgData.data[pixelIdx + 1] = Math.floor(g)
+    imgData.data[pixelIdx + 2] = Math.floor(b)
+    imgData.data[pixelIdx + 3] = Math.floor(a * 255)
   }
-  return imgData;
+  return imgData
 }
 
 function addColor(
@@ -180,26 +180,26 @@ function addColor(
   colorScale: ColorScaleProps,
   opacity: number
 ): [number, number, number, number] {
-  const clamped = Math.min(Math.max(value, 0), 1);
+  const clamped = Math.min(Math.max(value, 0), 1)
 
-  const colors = colorScale.colors as number[][];
-  const n = colors.length;
+  const colors = colorScale.colors as number[][]
+  const n = colors.length
 
   if (n === 0) {
-    return [1, 1, 1, opacity];
+    return [1, 1, 1, opacity]
   }
 
-  const scaled = clamped * (n - 1);
-  const idx = Math.floor(scaled);
-  const t = scaled - idx;
+  const scaled = clamped * (n - 1)
+  const idx = Math.floor(scaled)
+  const t = scaled - idx
 
-  const [r1, g1, b1] = colors[idx];
-  const [r2, g2, b2] = colors[Math.min(idx + 1, n - 1)];
+  const [r1, g1, b1] = colors[idx]
+  const [r2, g2, b2] = colors[Math.min(idx + 1, n - 1)]
 
-  const r = r1 + (r2 - r1) * t;
-  const g = g1 + (g2 - g1) * t;
-  const b = b1 + (b2 - b1) * t;
-  return [r, g, b, opacity];
+  const r = r1 + (r2 - r1) * t
+  const g = g1 + (g2 - g1) * t
+  const b = b1 + (b2 - b1) * t
+  return [r, g, b, opacity]
 }
 
 /**
@@ -210,33 +210,33 @@ export function mustGetUniformLocation(
   program: WebGLProgram,
   name: string
 ): WebGLUniformLocation {
-  const loc = gl.getUniformLocation(program, name);
+  const loc = gl.getUniformLocation(program, name)
   if (!loc) {
-    throw new Error(`Failed to get uniform location for ${name}`);
+    throw new Error(`Failed to get uniform location for ${name}`)
   }
-  return loc;
+  return loc
 }
 
 /**
  * Utility to create a texture or throw.
  */
 export function mustCreateTexture(gl: WebGL2RenderingContext): WebGLTexture {
-  const tex = gl.createTexture();
+  const tex = gl.createTexture()
   if (!tex) {
-    throw new Error("Failed to create texture");
+    throw new Error('Failed to create texture')
   }
-  return tex;
+  return tex
 }
 
 /**
  * Utility to create a buffer or throw.
  */
 export function mustCreateBuffer(gl: WebGL2RenderingContext): WebGLBuffer {
-  const buf = gl.createBuffer();
+  const buf = gl.createBuffer()
   if (!buf) {
-    throw new Error("Failed to create buffer");
+    throw new Error('Failed to create buffer')
   }
-  return buf;
+  return buf
 }
 
 /**
@@ -247,17 +247,17 @@ export function mustCreateFramebuffer(
   width: number,
   height: number
 ): { framebuffer: WebGLFramebuffer; texture: WebGLTexture } {
-  const framebuffer = gl.createFramebuffer();
+  const framebuffer = gl.createFramebuffer()
   if (!framebuffer) {
-    throw new Error("Failed to create framebuffer");
+    throw new Error('Failed to create framebuffer')
   }
 
-  const texture = gl.createTexture();
+  const texture = gl.createTexture()
   if (!texture) {
-    throw new Error("Failed to create texture for framebuffer");
+    throw new Error('Failed to create texture for framebuffer')
   }
 
-  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
@@ -268,20 +268,20 @@ export function mustCreateFramebuffer(
     gl.RGBA,
     gl.UNSIGNED_BYTE,
     null
-  );
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  )
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
-  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
   gl.framebufferTexture2D(
     gl.FRAMEBUFFER,
     gl.COLOR_ATTACHMENT0,
     gl.TEXTURE_2D,
     texture,
     0
-  );
+  )
 
-  return { framebuffer, texture };
+  return { framebuffer, texture }
 }

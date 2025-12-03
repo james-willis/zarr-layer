@@ -5,7 +5,7 @@
  * Provides tile management, zoom level conversion, and coordinate transformations.
  */
 
-export type TileTuple = [number, number, number];
+export type TileTuple = [number, number, number]
 
 /**
  * Converts longitude to tile X coordinate at given zoom level.
@@ -14,7 +14,7 @@ export type TileTuple = [number, number, number];
  * @returns Tile X coordinate.
  */
 export function lon2tile(lon: number, zoom: number): number {
-  return Math.floor(((lon + 180) / 360) * Math.pow(2, zoom));
+  return Math.floor(((lon + 180) / 360) * Math.pow(2, zoom))
 }
 
 /**
@@ -27,10 +27,13 @@ export function lon2tile(lon: number, zoom: number): number {
 export function lat2tile(lat: number, zoom: number): number {
   return Math.floor(
     ((1 -
-      Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) /
+      Math.log(
+        Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)
+      ) /
+        Math.PI) /
       2) *
       Math.pow(2, zoom)
-  );
+  )
 }
 
 /**
@@ -45,33 +48,33 @@ export function getTilesAtZoom(
   zoom: number,
   bounds: [[number, number], [number, number]]
 ): TileTuple[] {
-  const [[west, south], [east, north]] = bounds;
-  let nwX = lon2tile(west, zoom);
-  let seX = lon2tile(east, zoom);
-  const nwY = lat2tile(north, zoom);
-  const seY = lat2tile(south, zoom);
+  const [[west, south], [east, north]] = bounds
+  let nwX = lon2tile(west, zoom)
+  let seX = lon2tile(east, zoom)
+  const nwY = lat2tile(north, zoom)
+  const seY = lat2tile(south, zoom)
 
-  const maxTiles = Math.pow(2, zoom);
-  const tiles: TileTuple[] = [];
-  const seenTiles = new Set<string>();
+  const maxTiles = Math.pow(2, zoom)
+  const tiles: TileTuple[] = []
+  const seenTiles = new Set<string>()
 
   if (nwX > seX) {
-    seX += maxTiles;
+    seX += maxTiles
   }
 
   for (let x = nwX; x <= seX; x++) {
-    const wrappedX = ((x % maxTiles) + maxTiles) % maxTiles;
+    const wrappedX = ((x % maxTiles) + maxTiles) % maxTiles
     for (let y = nwY; y <= seY; y++) {
-      const clampedY = Math.max(0, Math.min(maxTiles - 1, y));
-      const key = `${zoom},${wrappedX},${clampedY}`;
+      const clampedY = Math.max(0, Math.min(maxTiles - 1, y))
+      const key = `${zoom},${wrappedX},${clampedY}`
       if (!seenTiles.has(key)) {
-        seenTiles.add(key);
-        tiles.push([zoom, wrappedX, clampedY]);
+        seenTiles.add(key)
+        tiles.push([zoom, wrappedX, clampedY])
       }
     }
   }
 
-  return tiles;
+  return tiles
 }
 
 /**
@@ -80,7 +83,7 @@ export function getTilesAtZoom(
  * @returns String key "z,x,y".
  */
 export function tileToKey(tile: TileTuple): string {
-  return tile.join(',');
+  return tile.join(',')
 }
 
 /**
@@ -89,7 +92,7 @@ export function tileToKey(tile: TileTuple): string {
  * @returns Tile tuple [zoom, x, y].
  */
 export function keyToTile(key: string): TileTuple {
-  return key.split(',').map(d => parseInt(d)) as TileTuple;
+  return key.split(',').map((d) => parseInt(d)) as TileTuple
 }
 
 /**
@@ -107,11 +110,11 @@ export function keyToTile(key: string): TileTuple {
  * @returns [scale, shiftX, shiftY] for vertex shader uniforms.
  */
 export function tileToScale(tile: TileTuple): [number, number, number] {
-  const [z, x, y] = tile;
-  const scale = 1 / 2 ** (z + 1);
-  const shiftX = (2 * x + 1) * scale;
-  const shiftY = (2 * y + 1) * scale;
-  return [scale, shiftX, shiftY];
+  const [z, x, y] = tile
+  const scale = 1 / 2 ** (z + 1)
+  const shiftX = (2 * x + 1) * scale
+  const shiftY = (2 * y + 1) * scale
+  return [scale, shiftX, shiftY]
 }
 
 /**
@@ -122,11 +125,11 @@ export function tileToScale(tile: TileTuple): [number, number, number] {
  * @returns Pyramid level (integer).
  */
 export function zoomToLevel(zoom: number, maxZoom: number): number {
-  if (maxZoom) return Math.min(Math.max(3, Math.floor(zoom)), maxZoom);
-  return Math.max(0, Math.floor(zoom));
+  if (maxZoom) return Math.min(Math.max(3, Math.floor(zoom)), maxZoom)
+  return Math.max(0, Math.floor(zoom))
 }
 
-const MERCATOR_LAT_LIMIT = 85.05112878;
+const MERCATOR_LAT_LIMIT = 85.05112878
 
 /**
  * Converts longitude in degrees to normalized Web Mercator X coordinate [0, 1].
@@ -135,13 +138,13 @@ const MERCATOR_LAT_LIMIT = 85.05112878;
  * @returns Normalized mercator X coordinate.
  */
 export function lonToMercatorNorm(lon: number): number {
-  let normalizedLon = lon;
+  let normalizedLon = lon
   if (lon > 180) {
-    normalizedLon = lon - 360;
+    normalizedLon = lon - 360
   } else if (lon < -180) {
-    normalizedLon = lon + 360;
+    normalizedLon = lon + 360
   }
-  return (normalizedLon + 180) / 360;
+  return (normalizedLon + 180) / 360
 }
 
 /**
@@ -152,20 +155,26 @@ export function lonToMercatorNorm(lon: number): number {
  * @returns Normalized mercator Y coordinate.
  */
 export function latToMercatorNorm(lat: number): number {
-  const clamped = Math.max(-MERCATOR_LAT_LIMIT, Math.min(MERCATOR_LAT_LIMIT, lat));
+  const clamped = Math.max(
+    -MERCATOR_LAT_LIMIT,
+    Math.min(MERCATOR_LAT_LIMIT, lat)
+  )
   return (
     (1 -
-      Math.log(Math.tan((clamped * Math.PI) / 180) + 1 / Math.cos((clamped * Math.PI) / 180)) /
+      Math.log(
+        Math.tan((clamped * Math.PI) / 180) +
+          1 / Math.cos((clamped * Math.PI) / 180)
+      ) /
         Math.PI) /
     2
-  );
+  )
 }
 
 export interface MercatorBounds {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
+  x0: number
+  y0: number
+  x1: number
+  y1: number
 }
 
 /**
@@ -180,27 +189,27 @@ export function boundsToMercatorNorm(
   crs: 'EPSG:4326' | 'EPSG:3857' | null
 ): MercatorBounds {
   if (crs === 'EPSG:3857') {
-    const worldExtent = 20037508.342789244;
+    const worldExtent = 20037508.342789244
     return {
       x0: (xyLimits.xMin + worldExtent) / (2 * worldExtent),
       y0: (worldExtent - xyLimits.yMax) / (2 * worldExtent),
       x1: (xyLimits.xMax + worldExtent) / (2 * worldExtent),
-      y1: (worldExtent - xyLimits.yMin) / (2 * worldExtent)
-    };
+      y1: (worldExtent - xyLimits.yMin) / (2 * worldExtent),
+    }
   }
 
-  let yMin = xyLimits.yMin;
-  let yMax = xyLimits.yMax;
+  let yMin = xyLimits.yMin
+  let yMax = xyLimits.yMax
   if (yMin > yMax) {
-    [yMin, yMax] = [yMax, yMin];
+    ;[yMin, yMax] = [yMax, yMin]
   }
 
   return {
     x0: lonToMercatorNorm(xyLimits.xMin),
     y0: latToMercatorNorm(yMax),
     x1: lonToMercatorNorm(xyLimits.xMax),
-    y1: latToMercatorNorm(yMin)
-  };
+    y1: latToMercatorNorm(yMin),
+  }
 }
 
 /**
@@ -210,11 +219,13 @@ export function boundsToMercatorNorm(
  * @param bounds - Normalized mercator bounds { x0, y0, x1, y1 }.
  * @returns [scale, shiftX, shiftY] for vertex shader uniforms.
  */
-export function boundsToScale(bounds: MercatorBounds): [number, number, number] {
-  const scaleX = (bounds.x1 - bounds.x0) / 2;
-  const scaleY = (bounds.y1 - bounds.y0) / 2;
-  const scale = Math.max(scaleX, scaleY);
-  const shiftX = (bounds.x0 + bounds.x1) / 2;
-  const shiftY = (bounds.y0 + bounds.y1) / 2;
-  return [scale, shiftX, shiftY];
+export function boundsToScale(
+  bounds: MercatorBounds
+): [number, number, number] {
+  const scaleX = (bounds.x1 - bounds.x0) / 2
+  const scaleY = (bounds.y1 - bounds.y0) / 2
+  const scale = Math.max(scaleX, scaleY)
+  const shiftX = (bounds.x0 + bounds.x1) / 2
+  const shiftY = (bounds.y0 + bounds.y1) / 2
+  return [scale, shiftX, shiftY]
 }

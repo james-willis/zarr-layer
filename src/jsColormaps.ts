@@ -12,7 +12,7 @@
  * It also provides builder utilities to create color ramps for
  * visualization layers or GLSL shader textures.
  */
-import { type ColorMapInfo } from './types';
+import { type ColorMapInfo } from './types'
 
 /**
  * Internal storage for all color map definitions.
@@ -29,8 +29,8 @@ const data: ColorMapInfo = {
       [0.2196, 0.4235, 0.6902],
       [0.9412, 0.0078, 0.498],
       [0.749, 0.3569, 0.0902],
-      [0.4, 0.4, 0.4]
-    ]
+      [0.4, 0.4, 0.4],
+    ],
   },
   Blues: {
     interpolate: true,
@@ -290,8 +290,8 @@ const data: ColorMapInfo = {
       [0.0314, 0.2004, 0.4377],
       [0.0314, 0.1964, 0.4317],
       [0.0314, 0.1923, 0.4256],
-      [0.0314, 0.1882, 0.4196]
-    ]
+      [0.0314, 0.1882, 0.4196],
+    ],
   },
   BrBG: {
     interpolate: true,
@@ -551,8 +551,8 @@ const data: ColorMapInfo = {
       [0.0005, 0.2547, 0.2095],
       [0.0003, 0.2482, 0.2024],
       [0.0002, 0.2418, 0.1953],
-      [0.0, 0.2353, 0.1882]
-    ]
+      [0.0, 0.2353, 0.1882],
+    ],
   },
   BuGn: {
     interpolate: true,
@@ -812,8 +812,8 @@ const data: ColorMapInfo = {
       [0.0, 0.2818, 0.1122],
       [0.0, 0.2768, 0.1101],
       [0.0, 0.2717, 0.108],
-      [0.0, 0.2667, 0.1059]
-    ]
+      [0.0, 0.2667, 0.1059],
+    ],
   },
   BuPu: {
     interpolate: true,
@@ -1073,8 +1073,8 @@ const data: ColorMapInfo = {
       [0.3212, 0.0055, 0.3122],
       [0.3148, 0.0037, 0.3062],
       [0.3084, 0.0018, 0.3001],
-      [0.302, 0.0, 0.2941]
-    ]
+      [0.302, 0.0, 0.2941],
+    ],
   },
   CMRmap: {
     interpolate: true,
@@ -1334,8 +1334,8 @@ const data: ColorMapInfo = {
       [0.9906, 0.9906, 0.9529],
       [0.9937, 0.9937, 0.9686],
       [0.9969, 0.9969, 0.9843],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   Dark2: {
     interpolate: false,
@@ -1347,8 +1347,8 @@ const data: ColorMapInfo = {
       [0.4, 0.651, 0.1176],
       [0.902, 0.6706, 0.0078],
       [0.651, 0.4627, 0.1137],
-      [0.4, 0.4, 0.4]
-    ]
+      [0.4, 0.4, 0.4],
+    ],
   },
   GnBu: {
     interpolate: true,
@@ -1608,8 +1608,8 @@ const data: ColorMapInfo = {
       [0.0314, 0.2657, 0.5218],
       [0.0314, 0.2608, 0.5165],
       [0.0314, 0.2559, 0.5112],
-      [0.0314, 0.251, 0.5059]
-    ]
+      [0.0314, 0.251, 0.5059],
+    ],
   },
   Greens: {
     interpolate: true,
@@ -1869,8 +1869,8 @@ const data: ColorMapInfo = {
       [0.0, 0.2818, 0.1122],
       [0.0, 0.2768, 0.1101],
       [0.0, 0.2717, 0.108],
-      [0.0, 0.2667, 0.1059]
-    ]
+      [0.0, 0.2667, 0.1059],
+    ],
   },
   Greys: {
     interpolate: true,
@@ -2130,8 +2130,8 @@ const data: ColorMapInfo = {
       [0.0137, 0.0137, 0.0137],
       [0.0091, 0.0091, 0.0091],
       [0.0046, 0.0046, 0.0046],
-      [0.0, 0.0, 0.0]
-    ]
+      [0.0, 0.0, 0.0],
+    ],
   },
   OrRd: {
     interpolate: true,
@@ -2391,8 +2391,8 @@ const data: ColorMapInfo = {
       [0.5172, 0.0, 0.0],
       [0.5108, 0.0, 0.0],
       [0.5044, 0.0, 0.0],
-      [0.498, 0.0, 0.0]
-    ]
+      [0.498, 0.0, 0.0],
+    ],
   },
   Oranges: {
     interpolate: true,
@@ -2652,8 +2652,8 @@ const data: ColorMapInfo = {
       [0.5124, 0.1585, 0.0153],
       [0.5076, 0.1566, 0.0154],
       [0.5028, 0.1548, 0.0156],
-      [0.498, 0.1529, 0.0157]
-    ]
+      [0.498, 0.1529, 0.0157],
+    ],
   },
   PRGn: {
     interpolate: true,
@@ -2913,8 +2913,8 @@ const data: ColorMapInfo = {
       [0.0125, 0.2907, 0.1188],
       [0.0083, 0.2827, 0.1145],
       [0.0042, 0.2747, 0.1102],
-      [0.0, 0.2667, 0.1059]
-    ]
+      [0.0, 0.2667, 0.1059],
+    ],
   },
   Paired: {
     interpolate: false,
@@ -2930,8 +2930,8 @@ const data: ColorMapInfo = {
       [0.7922, 0.698, 0.8392],
       [0.4157, 0.2392, 0.6039],
       [1.0, 1.0, 0.6],
-      [0.6941, 0.349, 0.1569]
-    ]
+      [0.6941, 0.349, 0.1569],
+    ],
   },
   Pastel1: {
     interpolate: false,
@@ -2944,8 +2944,8 @@ const data: ColorMapInfo = {
       [1.0, 1.0, 0.8],
       [0.898, 0.8471, 0.7412],
       [0.9922, 0.8549, 0.9255],
-      [0.949, 0.949, 0.949]
-    ]
+      [0.949, 0.949, 0.949],
+    ],
   },
   Pastel2: {
     interpolate: false,
@@ -2957,8 +2957,8 @@ const data: ColorMapInfo = {
       [0.902, 0.9608, 0.7882],
       [1.0, 0.949, 0.6824],
       [0.9451, 0.8863, 0.8],
-      [0.8, 0.8, 0.8]
-    ]
+      [0.8, 0.8, 0.8],
+    ],
   },
   PiYG: {
     interpolate: true,
@@ -3218,8 +3218,8 @@ const data: ColorMapInfo = {
       [0.1705, 0.4134, 0.1017],
       [0.1646, 0.4063, 0.1005],
       [0.1588, 0.3992, 0.0993],
-      [0.1529, 0.3922, 0.098]
-    ]
+      [0.1529, 0.3922, 0.098],
+    ],
   },
   PuBu: {
     interpolate: true,
@@ -3479,8 +3479,8 @@ const data: ColorMapInfo = {
       [0.0086, 0.2322, 0.3647],
       [0.0083, 0.228, 0.3581],
       [0.0081, 0.2238, 0.3516],
-      [0.0078, 0.2196, 0.3451]
-    ]
+      [0.0078, 0.2196, 0.3451],
+    ],
   },
   PuBuGn: {
     interpolate: true,
@@ -3740,8 +3740,8 @@ const data: ColorMapInfo = {
       [0.0039, 0.2885, 0.2247],
       [0.0039, 0.2839, 0.2204],
       [0.0039, 0.2792, 0.2161],
-      [0.0039, 0.2745, 0.2118]
-    ]
+      [0.0039, 0.2745, 0.2118],
+    ],
   },
   PuOr: {
     interpolate: true,
@@ -4001,8 +4001,8 @@ const data: ColorMapInfo = {
       [0.1945, 0.018, 0.3223],
       [0.1885, 0.012, 0.3129],
       [0.1825, 0.006, 0.3035],
-      [0.1765, 0.0, 0.2941]
-    ]
+      [0.1765, 0.0, 0.2941],
+    ],
   },
   PuRd: {
     interpolate: true,
@@ -4262,8 +4262,8 @@ const data: ColorMapInfo = {
       [0.422, 0.0, 0.1349],
       [0.416, 0.0, 0.1304],
       [0.41, 0.0, 0.126],
-      [0.4039, 0.0, 0.1216]
-    ]
+      [0.4039, 0.0, 0.1216],
+    ],
   },
   Purples: {
     interpolate: true,
@@ -4523,8 +4523,8 @@ const data: ColorMapInfo = {
       [0.2548, 0.0144, 0.4968],
       [0.2522, 0.0096, 0.4946],
       [0.2496, 0.0048, 0.4924],
-      [0.2471, 0.0, 0.4902]
-    ]
+      [0.2471, 0.0, 0.4902],
+    ],
   },
   RdBu: {
     interpolate: true,
@@ -4784,8 +4784,8 @@ const data: ColorMapInfo = {
       [0.0325, 0.2131, 0.415],
       [0.0282, 0.2048, 0.4035],
       [0.0239, 0.1965, 0.3919],
-      [0.0196, 0.1882, 0.3804]
-    ]
+      [0.0196, 0.1882, 0.3804],
+    ],
   },
   RdGy: {
     interpolate: true,
@@ -5045,8 +5045,8 @@ const data: ColorMapInfo = {
       [0.1255, 0.1255, 0.1255],
       [0.1176, 0.1176, 0.1176],
       [0.1098, 0.1098, 0.1098],
-      [0.102, 0.102, 0.102]
-    ]
+      [0.102, 0.102, 0.102],
+    ],
   },
   RdPu: {
     interpolate: true,
@@ -5306,8 +5306,8 @@ const data: ColorMapInfo = {
       [0.3044, 0.0004, 0.4205],
       [0.2983, 0.0002, 0.4189],
       [0.2923, 0.0001, 0.4173],
-      [0.2863, 0.0, 0.4157]
-    ]
+      [0.2863, 0.0, 0.4157],
+    ],
   },
   RdYlBu: {
     interpolate: true,
@@ -5567,8 +5567,8 @@ const data: ColorMapInfo = {
       [0.2014, 0.2408, 0.5986],
       [0.1983, 0.2311, 0.5938],
       [0.1952, 0.2215, 0.5891],
-      [0.1922, 0.2118, 0.5843]
-    ]
+      [0.1922, 0.2118, 0.5843],
+    ],
   },
   RdYlGn: {
     interpolate: true,
@@ -5828,8 +5828,8 @@ const data: ColorMapInfo = {
       [0.012, 0.43, 0.2272],
       [0.008, 0.4226, 0.2234],
       [0.004, 0.4152, 0.2195],
-      [0.0, 0.4078, 0.2157]
-    ]
+      [0.0, 0.4078, 0.2157],
+    ],
   },
   Reds: {
     interpolate: true,
@@ -6089,8 +6089,8 @@ const data: ColorMapInfo = {
       [0.4268, 0.0055, 0.0539],
       [0.4192, 0.0037, 0.0529],
       [0.4115, 0.0018, 0.052],
-      [0.4039, 0.0, 0.051]
-    ]
+      [0.4039, 0.0, 0.051],
+    ],
   },
   Set1: {
     interpolate: false,
@@ -6103,8 +6103,8 @@ const data: ColorMapInfo = {
       [1.0, 1.0, 0.2],
       [0.651, 0.3373, 0.1569],
       [0.9686, 0.5059, 0.749],
-      [0.6, 0.6, 0.6]
-    ]
+      [0.6, 0.6, 0.6],
+    ],
   },
   Set2: {
     interpolate: false,
@@ -6116,8 +6116,8 @@ const data: ColorMapInfo = {
       [0.651, 0.8471, 0.3294],
       [1.0, 0.851, 0.1843],
       [0.898, 0.7686, 0.5804],
-      [0.702, 0.702, 0.702]
-    ]
+      [0.702, 0.702, 0.702],
+    ],
   },
   Set3: {
     interpolate: false,
@@ -6133,8 +6133,8 @@ const data: ColorMapInfo = {
       [0.851, 0.851, 0.851],
       [0.7373, 0.502, 0.7412],
       [0.8, 0.9216, 0.7725],
-      [1.0, 0.9294, 0.4353]
-    ]
+      [1.0, 0.9294, 0.4353],
+    ],
   },
   Spectral: {
     interpolate: true,
@@ -6394,8 +6394,8 @@ const data: ColorMapInfo = {
       [0.3483, 0.3361, 0.6478],
       [0.3551, 0.3273, 0.6436],
       [0.3619, 0.3186, 0.6394],
-      [0.3686, 0.3098, 0.6353]
-    ]
+      [0.3686, 0.3098, 0.6353],
+    ],
   },
   Wistia: {
     interpolate: true,
@@ -6655,8 +6655,8 @@ const data: ColorMapInfo = {
       [0.9888, 0.5041, 0.0],
       [0.9886, 0.5021, 0.0],
       [0.9884, 0.5001, 0.0],
-      [0.9882, 0.498, 0.0]
-    ]
+      [0.9882, 0.498, 0.0],
+    ],
   },
   YlGn: {
     interpolate: true,
@@ -6916,8 +6916,8 @@ const data: ColorMapInfo = {
       [0.0, 0.2835, 0.166],
       [0.0, 0.2792, 0.1642],
       [0.0, 0.2749, 0.1625],
-      [0.0, 0.2706, 0.1608]
-    ]
+      [0.0, 0.2706, 0.1608],
+    ],
   },
   YlGnBu: {
     interpolate: true,
@@ -7177,8 +7177,8 @@ const data: ColorMapInfo = {
       [0.0421, 0.1222, 0.3672],
       [0.0385, 0.1194, 0.3599],
       [0.0349, 0.1166, 0.3525],
-      [0.0314, 0.1137, 0.3451]
-    ]
+      [0.0314, 0.1137, 0.3451],
+    ],
   },
   YlOrBr: {
     interpolate: true,
@@ -7438,8 +7438,8 @@ const data: ColorMapInfo = {
       [0.4188, 0.1506, 0.0228],
       [0.4125, 0.1488, 0.023],
       [0.4063, 0.1469, 0.0233],
-      [0.4, 0.1451, 0.0235]
-    ]
+      [0.4, 0.1451, 0.0235],
+    ],
   },
   YlOrRd: {
     interpolate: true,
@@ -7699,8 +7699,8 @@ const data: ColorMapInfo = {
       [0.5245, 0.0, 0.149],
       [0.517, 0.0, 0.149],
       [0.5095, 0.0, 0.149],
-      [0.502, 0.0, 0.149]
-    ]
+      [0.502, 0.0, 0.149],
+    ],
   },
   afmhot: {
     interpolate: true,
@@ -7960,8 +7960,8 @@ const data: ColorMapInfo = {
       [1.0, 1.0, 0.9765],
       [1.0, 1.0, 0.9843],
       [1.0, 1.0, 0.9922],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   autumn: {
     interpolate: true,
@@ -8221,8 +8221,8 @@ const data: ColorMapInfo = {
       [1.0, 0.9882, 0.0],
       [1.0, 0.9922, 0.0],
       [1.0, 0.9961, 0.0],
-      [1.0, 1.0, 0.0]
-    ]
+      [1.0, 1.0, 0.0],
+    ],
   },
   binary: {
     interpolate: true,
@@ -8482,8 +8482,8 @@ const data: ColorMapInfo = {
       [0.0118, 0.0118, 0.0118],
       [0.0078, 0.0078, 0.0078],
       [0.0039, 0.0039, 0.0039],
-      [0.0, 0.0, 0.0]
-    ]
+      [0.0, 0.0, 0.0],
+    ],
   },
   bone: {
     interpolate: true,
@@ -8743,8 +8743,8 @@ const data: ColorMapInfo = {
       [0.9839, 0.9897, 0.9897],
       [0.9893, 0.9931, 0.9931],
       [0.9946, 0.9966, 0.9966],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   brg: {
     interpolate: true,
@@ -9004,8 +9004,8 @@ const data: ColorMapInfo = {
       [0.0235, 0.9765, 0.0],
       [0.0157, 0.9843, 0.0],
       [0.0078, 0.9922, 0.0],
-      [0.0, 1.0, 0.0]
-    ]
+      [0.0, 1.0, 0.0],
+    ],
   },
   bwr: {
     interpolate: true,
@@ -9265,8 +9265,8 @@ const data: ColorMapInfo = {
       [1.0, 0.0235, 0.0235],
       [1.0, 0.0157, 0.0157],
       [1.0, 0.0078, 0.0078],
-      [1.0, 0.0, 0.0]
-    ]
+      [1.0, 0.0, 0.0],
+    ],
   },
   cividis: {
     interpolate: true,
@@ -9526,8 +9526,8 @@ const data: ColorMapInfo = {
       [0.9948, 0.893, 0.2034],
       [0.9952, 0.8984, 0.2076],
       [0.9955, 0.9039, 0.2124],
-      [0.9957, 0.9093, 0.2178]
-    ]
+      [0.9957, 0.9093, 0.2178],
+    ],
   },
   cool: {
     interpolate: true,
@@ -9787,8 +9787,8 @@ const data: ColorMapInfo = {
       [0.9882, 0.0118, 1.0],
       [0.9922, 0.0078, 1.0],
       [0.9961, 0.0039, 1.0],
-      [1.0, 0.0, 1.0]
-    ]
+      [1.0, 0.0, 1.0],
+    ],
   },
   coolwarm: {
     interpolate: true,
@@ -10048,8 +10048,8 @@ const data: ColorMapInfo = {
       [0.7233, 0.0689, 0.163],
       [0.7174, 0.0511, 0.1587],
       [0.7116, 0.0333, 0.1545],
-      [0.7057, 0.0156, 0.1502]
-    ]
+      [0.7057, 0.0156, 0.1502],
+    ],
   },
   copper: {
     interpolate: true,
@@ -10309,8 +10309,8 @@ const data: ColorMapInfo = {
       [1.0, 0.772, 0.4916],
       [1.0, 0.7751, 0.4936],
       [1.0, 0.7781, 0.4955],
-      [1.0, 0.7812, 0.4975]
-    ]
+      [1.0, 0.7812, 0.4975],
+    ],
   },
   cubehelix: {
     interpolate: true,
@@ -10570,8 +10570,8 @@ const data: ColorMapInfo = {
       [0.9791, 0.9937, 0.9836],
       [0.9862, 0.9958, 0.9888],
       [0.9931, 0.9979, 0.9943],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   flag: {
     interpolate: true,
@@ -10831,8 +10831,8 @@ const data: ColorMapInfo = {
       [0.0, 0.0, 0.7774],
       [0.0, 0.0, 0.4931],
       [0.0, 0.0, 0.2098],
-      [0.0, 0.0, 0.0]
-    ]
+      [0.0, 0.0, 0.0],
+    ],
   },
   gist_earth: {
     interpolate: true,
@@ -11092,8 +11092,8 @@ const data: ColorMapInfo = {
       [0.979, 0.9503, 0.9488],
       [0.9834, 0.9618, 0.9607],
       [0.9878, 0.9732, 0.9725],
-      [0.9922, 0.9843, 0.9843]
-    ]
+      [0.9922, 0.9843, 0.9843],
+    ],
   },
   gist_gray: {
     interpolate: true,
@@ -11353,8 +11353,8 @@ const data: ColorMapInfo = {
       [0.9882, 0.9882, 0.9882],
       [0.9922, 0.9922, 0.9922],
       [0.9961, 0.9961, 0.9961],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   gist_heat: {
     interpolate: true,
@@ -11614,8 +11614,8 @@ const data: ColorMapInfo = {
       [1.0, 0.9765, 0.9529],
       [1.0, 0.9843, 0.9686],
       [1.0, 0.9922, 0.9843],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   gist_ncar: {
     interpolate: true,
@@ -11875,8 +11875,8 @@ const data: ColorMapInfo = {
       [0.9877, 0.918, 0.9889],
       [0.9905, 0.9362, 0.9913],
       [0.9933, 0.9543, 0.9937],
-      [0.9961, 0.9725, 0.9961]
-    ]
+      [0.9961, 0.9725, 0.9961],
+    ],
   },
   gist_rainbow: {
     interpolate: true,
@@ -12136,8 +12136,8 @@ const data: ColorMapInfo = {
       [1.0, 0.0, 0.8139],
       [1.0, 0.0, 0.7926],
       [1.0, 0.0, 0.7713],
-      [1.0, 0.0, 0.75]
-    ]
+      [1.0, 0.0, 0.75],
+    ],
   },
   gist_stern: {
     interpolate: true,
@@ -12397,8 +12397,8 @@ const data: ColorMapInfo = {
       [0.9882, 0.9882, 0.9556],
       [0.9922, 0.9922, 0.9704],
       [0.9961, 0.9961, 0.9852],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   gist_yarg: {
     interpolate: true,
@@ -12658,8 +12658,8 @@ const data: ColorMapInfo = {
       [0.0118, 0.0118, 0.0118],
       [0.0078, 0.0078, 0.0078],
       [0.0039, 0.0039, 0.0039],
-      [0.0, 0.0, 0.0]
-    ]
+      [0.0, 0.0, 0.0],
+    ],
   },
   gnuplot: {
     interpolate: true,
@@ -12919,8 +12919,8 @@ const data: ColorMapInfo = {
       [0.9941, 0.9651, 0.0],
       [0.9961, 0.9767, 0.0],
       [0.998, 0.9883, 0.0],
-      [1.0, 1.0, 0.0]
-    ]
+      [1.0, 1.0, 0.0],
+    ],
   },
   gnuplot2: {
     interpolate: true,
@@ -13180,8 +13180,8 @@ const data: ColorMapInfo = {
       [1.0, 1.0, 0.8529],
       [1.0, 1.0, 0.902],
       [1.0, 1.0, 0.951],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   gray: {
     interpolate: true,
@@ -13441,8 +13441,8 @@ const data: ColorMapInfo = {
       [0.9882, 0.9882, 0.9882],
       [0.9922, 0.9922, 0.9922],
       [0.9961, 0.9961, 0.9961],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   hot: {
     interpolate: true,
@@ -13702,8 +13702,8 @@ const data: ColorMapInfo = {
       [1.0, 1.0, 0.9537],
       [1.0, 1.0, 0.9691],
       [1.0, 1.0, 0.9846],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   hsv: {
     interpolate: true,
@@ -13963,8 +13963,8 @@ const data: ColorMapInfo = {
       [1.0, 0.0, 0.1632],
       [1.0, 0.0, 0.1401],
       [1.0, 0.0, 0.1169],
-      [1.0, 0.0, 0.0938]
-    ]
+      [1.0, 0.0, 0.0938],
+    ],
   },
   inferno: {
     interpolate: true,
@@ -14224,8 +14224,8 @@ const data: ColorMapInfo = {
       [0.9712, 0.9853, 0.6022],
       [0.9765, 0.9898, 0.6168],
       [0.9823, 0.9941, 0.631],
-      [0.9884, 0.9984, 0.6449]
-    ]
+      [0.9884, 0.9984, 0.6449],
+    ],
   },
   jet: {
     interpolate: true,
@@ -14485,8 +14485,8 @@ const data: ColorMapInfo = {
       [0.5535, 0.0, 0.0],
       [0.5357, 0.0, 0.0],
       [0.5178, 0.0, 0.0],
-      [0.5, 0.0, 0.0]
-    ]
+      [0.5, 0.0, 0.0],
+    ],
   },
   magma: {
     interpolate: true,
@@ -14746,8 +14746,8 @@ const data: ColorMapInfo = {
       [0.988, 0.97, 0.7271],
       [0.9877, 0.9772, 0.7345],
       [0.9874, 0.9843, 0.742],
-      [0.9871, 0.9914, 0.7495]
-    ]
+      [0.9871, 0.9914, 0.7495],
+    ],
   },
   nipy_spectral: {
     interpolate: true,
@@ -15007,8 +15007,8 @@ const data: ColorMapInfo = {
       [0.8, 0.6118, 0.6118],
       [0.8, 0.6745, 0.6745],
       [0.8, 0.7373, 0.7373],
-      [0.8, 0.8, 0.8]
-    ]
+      [0.8, 0.8, 0.8],
+    ],
   },
   ocean: {
     interpolate: true,
@@ -15268,8 +15268,8 @@ const data: ColorMapInfo = {
       [0.9647, 0.9824, 0.9882],
       [0.9765, 0.9882, 0.9922],
       [0.9882, 0.9941, 0.9961],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   pink: {
     interpolate: true,
@@ -15529,8 +15529,8 @@ const data: ColorMapInfo = {
       [0.9961, 0.9961, 0.9883],
       [0.9974, 0.9974, 0.9922],
       [0.9987, 0.9987, 0.9961],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   plasma: {
     interpolate: true,
@@ -15790,8 +15790,8 @@ const data: ColorMapInfo = {
       [0.9466, 0.9552, 0.1503],
       [0.9442, 0.9619, 0.1469],
       [0.9419, 0.9686, 0.141],
-      [0.94, 0.9752, 0.1313]
-    ]
+      [0.94, 0.9752, 0.1313],
+    ],
   },
   prism: {
     interpolate: true,
@@ -16051,8 +16051,8 @@ const data: ColorMapInfo = {
       [0.8925, 1.0, 0.0],
       [0.7028, 1.0, 0.0],
       [0.5109, 1.0, 0.0],
-      [0.3295, 0.9983, 0.0]
-    ]
+      [0.3295, 0.9983, 0.0],
+    ],
   },
   rainbow: {
     interpolate: true,
@@ -16312,8 +16312,8 @@ const data: ColorMapInfo = {
       [1.0, 0.037, 0.0185],
       [1.0, 0.0246, 0.0123],
       [1.0, 0.0123, 0.0062],
-      [1.0, 0.0, 0.0]
-    ]
+      [1.0, 0.0, 0.0],
+    ],
   },
   seismic: {
     interpolate: true,
@@ -16573,8 +16573,8 @@ const data: ColorMapInfo = {
       [0.5235, 0.0, 0.0],
       [0.5157, 0.0, 0.0],
       [0.5078, 0.0, 0.0],
-      [0.5, 0.0, 0.0]
-    ]
+      [0.5, 0.0, 0.0],
+    ],
   },
   spring: {
     interpolate: true,
@@ -16834,8 +16834,8 @@ const data: ColorMapInfo = {
       [1.0, 0.9882, 0.0118],
       [1.0, 0.9922, 0.0078],
       [1.0, 0.9961, 0.0039],
-      [1.0, 1.0, 0.0]
-    ]
+      [1.0, 1.0, 0.0],
+    ],
   },
   summer: {
     interpolate: true,
@@ -17095,8 +17095,8 @@ const data: ColorMapInfo = {
       [0.9882, 0.9941, 0.4],
       [0.9922, 0.9961, 0.4],
       [0.9961, 0.998, 0.4],
-      [1.0, 1.0, 0.4]
-    ]
+      [1.0, 1.0, 0.4],
+    ],
   },
   tab10: {
     interpolate: false,
@@ -17110,8 +17110,8 @@ const data: ColorMapInfo = {
       [0.8902, 0.4667, 0.7608],
       [0.498, 0.498, 0.498],
       [0.7373, 0.7412, 0.1333],
-      [0.0902, 0.7451, 0.8118]
-    ]
+      [0.0902, 0.7451, 0.8118],
+    ],
   },
   tab20: {
     interpolate: false,
@@ -17135,8 +17135,8 @@ const data: ColorMapInfo = {
       [0.7373, 0.7412, 0.1333],
       [0.8588, 0.8588, 0.5529],
       [0.0902, 0.7451, 0.8118],
-      [0.6196, 0.8549, 0.898]
-    ]
+      [0.6196, 0.8549, 0.898],
+    ],
   },
   tab20b: {
     interpolate: false,
@@ -17160,8 +17160,8 @@ const data: ColorMapInfo = {
       [0.4824, 0.2549, 0.451],
       [0.6471, 0.3176, 0.5804],
       [0.8078, 0.4275, 0.7412],
-      [0.8706, 0.6196, 0.8392]
-    ]
+      [0.8706, 0.6196, 0.8392],
+    ],
   },
   tab20c: {
     interpolate: false,
@@ -17185,8 +17185,8 @@ const data: ColorMapInfo = {
       [0.3882, 0.3882, 0.3882],
       [0.5882, 0.5882, 0.5882],
       [0.7412, 0.7412, 0.7412],
-      [0.851, 0.851, 0.851]
-    ]
+      [0.851, 0.851, 0.851],
+    ],
   },
   terrain: {
     interpolate: true,
@@ -17446,8 +17446,8 @@ const data: ColorMapInfo = {
       [0.9765, 0.9699, 0.9685],
       [0.9843, 0.9799, 0.979],
       [0.9922, 0.99, 0.9895],
-      [1.0, 1.0, 1.0]
-    ]
+      [1.0, 1.0, 1.0],
+    ],
   },
   turbo: {
     interpolate: true,
@@ -17707,8 +17707,8 @@ const data: ColorMapInfo = {
       [0.5199, 0.0276, 0.0078],
       [0.5066, 0.0235, 0.0086],
       [0.4932, 0.0196, 0.0096],
-      [0.4796, 0.0158, 0.0106]
-    ]
+      [0.4796, 0.0158, 0.0106],
+    ],
   },
   twilight: {
     interpolate: true,
@@ -18222,8 +18222,8 @@ const data: ColorMapInfo = {
       [0.8849, 0.8491, 0.8783],
       [0.8853, 0.8496, 0.8809],
       [0.8855, 0.8499, 0.8834],
-      [0.8857, 0.85, 0.8857]
-    ]
+      [0.8857, 0.85, 0.8857],
+    ],
   },
   twilight_shifted: {
     interpolate: true,
@@ -18737,8 +18737,8 @@ const data: ColorMapInfo = {
       [0.1932, 0.0736, 0.2154],
       [0.1905, 0.0753, 0.2147],
       [0.1877, 0.0773, 0.2139],
-      [0.1849, 0.0794, 0.2131]
-    ]
+      [0.1849, 0.0794, 0.2131],
+    ],
   },
   viridis: {
     interpolate: true,
@@ -18998,8 +18998,8 @@ const data: ColorMapInfo = {
       [0.9649, 0.9023, 0.1239],
       [0.9744, 0.9036, 0.1302],
       [0.9839, 0.9049, 0.1369],
-      [0.9932, 0.9062, 0.1439]
-    ]
+      [0.9932, 0.9062, 0.1439],
+    ],
   },
   winter: {
     interpolate: true,
@@ -19259,178 +19259,177 @@ const data: ColorMapInfo = {
       [0.0, 0.9882, 0.5059],
       [0.0, 0.9922, 0.5039],
       [0.0, 0.9961, 0.502],
-      [0.0, 1.0, 0.5]
-    ]
-  }
-};
+      [0.0, 1.0, 0.5],
+    ],
+  },
+}
 
-export const Accent = partial('Accent');
-export const AccentR = partial('Accent_r');
-export const Blues = partial('Blues');
-export const BluesR = partial('Blues_r');
-export const BrBG = partial('BrBG');
-export const BrBGR = partial('BrBG_r');
-export const BuGn = partial('BuGn');
-export const BuGnR = partial('BuGn_r');
-export const BuPu = partial('BuPu');
-export const BuPuR = partial('BuPu_r');
-export const CMRmap = partial('CMRmap');
-export const CMRmapR = partial('CMRmap_r');
-export const Dark2 = partial('Dark2');
-export const Dark2R = partial('Dark2_r');
-export const GnBu = partial('GnBu');
-export const GnBuR = partial('GnBu_r');
-export const Greens = partial('Greens');
-export const GreensR = partial('Greens_r');
-export const Greys = partial('Greys');
-export const GreysR = partial('Greys_r');
-export const OrRd = partial('OrRd');
-export const OrRdR = partial('OrRd_r');
-export const Oranges = partial('Oranges');
-export const OrangesR = partial('Oranges_r');
-export const PRGn = partial('PRGn');
-export const PRGnR = partial('PRGn_r');
-export const Paired = partial('Paired');
-export const PairedR = partial('Paired_r');
-export const Pastel1 = partial('Pastel1');
-export const Pastel1R = partial('Pastel1_r');
-export const Pastel2 = partial('Pastel2');
-export const Pastel2R = partial('Pastel2_r');
-export const PiYG = partial('PiYG');
-export const PiYGR = partial('PiYG_r');
-export const PuBu = partial('PuBu');
-export const PuBuR = partial('PuBu_r');
-export const PuBuGn = partial('PuBuGn');
-export const PuBuGnR = partial('PuBuGn_r');
-export const PuOr = partial('PuOr');
-export const PuOrR = partial('PuOr_r');
-export const PuRd = partial('PuRd');
-export const PuRdR = partial('PuRd_r');
-export const Purples = partial('Purples');
-export const PurplesR = partial('Purples_r');
-export const RdBu = partial('RdBu');
-export const RdBuR = partial('RdBu_r');
-export const RdGy = partial('RdGy');
-export const RdGyR = partial('RdGy_r');
-export const RdPu = partial('RdPu');
-export const RdPuR = partial('RdPu_r');
-export const RdYlBu = partial('RdYlBu');
-export const RdYlBuR = partial('RdYlBu_r');
-export const RdYlGn = partial('RdYlGn');
-export const RdYlGnR = partial('RdYlGn_r');
-export const Reds = partial('Reds');
-export const RedsR = partial('Reds_r');
-export const Set1 = partial('Set1');
-export const Set1R = partial('Set1_r');
-export const Set2 = partial('Set2');
-export const Set2R = partial('Set2_r');
-export const Set3 = partial('Set3');
-export const Set3R = partial('Set3_r');
-export const Spectral = partial('Spectral');
-export const SpectralR = partial('Spectral_r');
-export const Wistia = partial('Wistia');
-export const WistiaR = partial('Wistia_r');
-export const YlGn = partial('YlGn');
-export const YlGnR = partial('YlGn_r');
-export const YlGnBu = partial('YlGnBu');
-export const YlGnBuR = partial('YlGnBu_r');
-export const YlOrBr = partial('YlOrBr');
-export const YlOrBrR = partial('YlOrBr_r');
-export const YlOrRd = partial('YlOrRd');
-export const YlOrRdR = partial('YlOrRd_r');
-export const afmhot = partial('afmhot');
-export const afmhotR = partial('afmhot_r');
-export const autumn = partial('autumn');
-export const autumnR = partial('autumn_r');
-export const binary = partial('binary');
-export const binaryR = partial('binary_r');
-export const bone = partial('bone');
-export const boneR = partial('bone_r');
-export const brg = partial('brg');
-export const brgR = partial('brg_r');
-export const bwr = partial('bwr');
-export const bwrR = partial('bwr_r');
-export const cividis = partial('cividis');
-export const cividisR = partial('cividis_r');
-export const cool = partial('cool');
-export const coolR = partial('cool_r');
-export const coolwarm = partial('coolwarm');
-export const coolwarmR = partial('coolwarm_r');
-export const copper = partial('copper');
-export const copperR = partial('copper_r');
-export const cubehelix = partial('cubehelix');
-export const cubehelixR = partial('cubehelix_r');
-export const flag = partial('flag');
-export const flagR = partial('flag_r');
-export const gistEarth = partial('gist_earth');
-export const gistEarthR = partial('gist_earth_r');
-export const gistGray = partial('gist_gray');
-export const gistGrayR = partial('gist_gray_r');
-export const gistHeat = partial('gist_heat');
-export const gistHeatR = partial('gist_heat_r');
-export const gistNcar = partial('gist_ncar');
-export const gistNcarR = partial('gist_ncar_r');
-export const gistRainbow = partial('gist_rainbow');
-export const gistRainbowR = partial('gist_rainbow_r');
-export const gistStern = partial('gist_stern');
-export const gistSternR = partial('gist_stern_r');
-export const gistYarg = partial('gist_yarg');
-export const gistYargR = partial('gist_yarg_r');
-export const gnuplot = partial('gnuplot');
-export const gnuplotR = partial('gnuplot_r');
-export const gnuplot2 = partial('gnuplot2');
-export const gnuplot2R = partial('gnuplot2_r');
-export const gray = partial('gray');
-export const grayR = partial('gray_r');
-export const hot = partial('hot');
-export const hotR = partial('hot_r');
-export const hsv = partial('hsv');
-export const hsvR = partial('hsv_r');
-export const inferno = partial('inferno');
-export const infernoR = partial('inferno_r');
-export const jet = partial('jet');
-export const jetR = partial('jet_r');
-export const magma = partial('magma');
-export const magmaR = partial('magma_r');
-export const nipySpectral = partial('nipy_spectral');
-export const nipySpectralR = partial('nipy_spectral_r');
-export const ocean = partial('ocean');
-export const oceanR = partial('ocean_r');
-export const pink = partial('pink');
-export const pinkR = partial('pink_r');
-export const plasma = partial('plasma');
-export const plasmaR = partial('plasma_r');
-export const prism = partial('prism');
-export const prismR = partial('prism_r');
-export const rainbow = partial('rainbow');
-export const rainbowR = partial('rainbow_r');
-export const seismic = partial('seismic');
-export const seismicR = partial('seismic_r');
-export const spring = partial('spring');
-export const springR = partial('spring_r');
-export const summer = partial('summer');
-export const summerR = partial('summer_r');
-export const tab10 = partial('tab10');
-export const tab10R = partial('tab10_r');
-export const tab20 = partial('tab20');
-export const tab20R = partial('tab20_r');
-export const tab20b = partial('tab20b');
-export const tab20bR = partial('tab20b_r');
-export const tab20c = partial('tab20c');
-export const tab20cR = partial('tab20c_r');
-export const terrain = partial('terrain');
-export const terrainR = partial('terrain_r');
-export const turbo = partial('turbo');
-export const turboR = partial('turbo_r');
-export const twilight = partial('twilight');
-export const twilightR = partial('twilight_r');
-export const twilightShifted = partial('twilightSifted');
-export const twilightShiftedR = partial('twiligS_shifted_r');
-export const viridis = partial('viridis');
-export const viridisR = partial('viridis_r');
-export const winter = partial('winter');
-export const winterR = partial('winter_r');
-
+export const Accent = partial('Accent')
+export const AccentR = partial('Accent_r')
+export const Blues = partial('Blues')
+export const BluesR = partial('Blues_r')
+export const BrBG = partial('BrBG')
+export const BrBGR = partial('BrBG_r')
+export const BuGn = partial('BuGn')
+export const BuGnR = partial('BuGn_r')
+export const BuPu = partial('BuPu')
+export const BuPuR = partial('BuPu_r')
+export const CMRmap = partial('CMRmap')
+export const CMRmapR = partial('CMRmap_r')
+export const Dark2 = partial('Dark2')
+export const Dark2R = partial('Dark2_r')
+export const GnBu = partial('GnBu')
+export const GnBuR = partial('GnBu_r')
+export const Greens = partial('Greens')
+export const GreensR = partial('Greens_r')
+export const Greys = partial('Greys')
+export const GreysR = partial('Greys_r')
+export const OrRd = partial('OrRd')
+export const OrRdR = partial('OrRd_r')
+export const Oranges = partial('Oranges')
+export const OrangesR = partial('Oranges_r')
+export const PRGn = partial('PRGn')
+export const PRGnR = partial('PRGn_r')
+export const Paired = partial('Paired')
+export const PairedR = partial('Paired_r')
+export const Pastel1 = partial('Pastel1')
+export const Pastel1R = partial('Pastel1_r')
+export const Pastel2 = partial('Pastel2')
+export const Pastel2R = partial('Pastel2_r')
+export const PiYG = partial('PiYG')
+export const PiYGR = partial('PiYG_r')
+export const PuBu = partial('PuBu')
+export const PuBuR = partial('PuBu_r')
+export const PuBuGn = partial('PuBuGn')
+export const PuBuGnR = partial('PuBuGn_r')
+export const PuOr = partial('PuOr')
+export const PuOrR = partial('PuOr_r')
+export const PuRd = partial('PuRd')
+export const PuRdR = partial('PuRd_r')
+export const Purples = partial('Purples')
+export const PurplesR = partial('Purples_r')
+export const RdBu = partial('RdBu')
+export const RdBuR = partial('RdBu_r')
+export const RdGy = partial('RdGy')
+export const RdGyR = partial('RdGy_r')
+export const RdPu = partial('RdPu')
+export const RdPuR = partial('RdPu_r')
+export const RdYlBu = partial('RdYlBu')
+export const RdYlBuR = partial('RdYlBu_r')
+export const RdYlGn = partial('RdYlGn')
+export const RdYlGnR = partial('RdYlGn_r')
+export const Reds = partial('Reds')
+export const RedsR = partial('Reds_r')
+export const Set1 = partial('Set1')
+export const Set1R = partial('Set1_r')
+export const Set2 = partial('Set2')
+export const Set2R = partial('Set2_r')
+export const Set3 = partial('Set3')
+export const Set3R = partial('Set3_r')
+export const Spectral = partial('Spectral')
+export const SpectralR = partial('Spectral_r')
+export const Wistia = partial('Wistia')
+export const WistiaR = partial('Wistia_r')
+export const YlGn = partial('YlGn')
+export const YlGnR = partial('YlGn_r')
+export const YlGnBu = partial('YlGnBu')
+export const YlGnBuR = partial('YlGnBu_r')
+export const YlOrBr = partial('YlOrBr')
+export const YlOrBrR = partial('YlOrBr_r')
+export const YlOrRd = partial('YlOrRd')
+export const YlOrRdR = partial('YlOrRd_r')
+export const afmhot = partial('afmhot')
+export const afmhotR = partial('afmhot_r')
+export const autumn = partial('autumn')
+export const autumnR = partial('autumn_r')
+export const binary = partial('binary')
+export const binaryR = partial('binary_r')
+export const bone = partial('bone')
+export const boneR = partial('bone_r')
+export const brg = partial('brg')
+export const brgR = partial('brg_r')
+export const bwr = partial('bwr')
+export const bwrR = partial('bwr_r')
+export const cividis = partial('cividis')
+export const cividisR = partial('cividis_r')
+export const cool = partial('cool')
+export const coolR = partial('cool_r')
+export const coolwarm = partial('coolwarm')
+export const coolwarmR = partial('coolwarm_r')
+export const copper = partial('copper')
+export const copperR = partial('copper_r')
+export const cubehelix = partial('cubehelix')
+export const cubehelixR = partial('cubehelix_r')
+export const flag = partial('flag')
+export const flagR = partial('flag_r')
+export const gistEarth = partial('gist_earth')
+export const gistEarthR = partial('gist_earth_r')
+export const gistGray = partial('gist_gray')
+export const gistGrayR = partial('gist_gray_r')
+export const gistHeat = partial('gist_heat')
+export const gistHeatR = partial('gist_heat_r')
+export const gistNcar = partial('gist_ncar')
+export const gistNcarR = partial('gist_ncar_r')
+export const gistRainbow = partial('gist_rainbow')
+export const gistRainbowR = partial('gist_rainbow_r')
+export const gistStern = partial('gist_stern')
+export const gistSternR = partial('gist_stern_r')
+export const gistYarg = partial('gist_yarg')
+export const gistYargR = partial('gist_yarg_r')
+export const gnuplot = partial('gnuplot')
+export const gnuplotR = partial('gnuplot_r')
+export const gnuplot2 = partial('gnuplot2')
+export const gnuplot2R = partial('gnuplot2_r')
+export const gray = partial('gray')
+export const grayR = partial('gray_r')
+export const hot = partial('hot')
+export const hotR = partial('hot_r')
+export const hsv = partial('hsv')
+export const hsvR = partial('hsv_r')
+export const inferno = partial('inferno')
+export const infernoR = partial('inferno_r')
+export const jet = partial('jet')
+export const jetR = partial('jet_r')
+export const magma = partial('magma')
+export const magmaR = partial('magma_r')
+export const nipySpectral = partial('nipy_spectral')
+export const nipySpectralR = partial('nipy_spectral_r')
+export const ocean = partial('ocean')
+export const oceanR = partial('ocean_r')
+export const pink = partial('pink')
+export const pinkR = partial('pink_r')
+export const plasma = partial('plasma')
+export const plasmaR = partial('plasma_r')
+export const prism = partial('prism')
+export const prismR = partial('prism_r')
+export const rainbow = partial('rainbow')
+export const rainbowR = partial('rainbow_r')
+export const seismic = partial('seismic')
+export const seismicR = partial('seismic_r')
+export const spring = partial('spring')
+export const springR = partial('spring_r')
+export const summer = partial('summer')
+export const summerR = partial('summer_r')
+export const tab10 = partial('tab10')
+export const tab10R = partial('tab10_r')
+export const tab20 = partial('tab20')
+export const tab20R = partial('tab20_r')
+export const tab20b = partial('tab20b')
+export const tab20bR = partial('tab20b_r')
+export const tab20c = partial('tab20c')
+export const tab20cR = partial('tab20c_r')
+export const terrain = partial('terrain')
+export const terrainR = partial('terrain_r')
+export const turbo = partial('turbo')
+export const turboR = partial('turbo_r')
+export const twilight = partial('twilight')
+export const twilightR = partial('twilight_r')
+export const twilightShifted = partial('twilightSifted')
+export const twilightShiftedR = partial('twiligS_shifted_r')
+export const viridis = partial('viridis')
+export const viridisR = partial('viridis_r')
+export const winter = partial('winter')
+export const winterR = partial('winter_r')
 
 /**
  * Returns a color scale function for a given colormap name.
@@ -19450,8 +19449,8 @@ export const winterR = partial('winter_r');
  * ```
  */
 export const colorScaleByName = (color: string) => {
-  return partial(color);
-};
+  return partial(color)
+}
 
 /**
  * List of all available colormap names (including reversed versions).
@@ -19618,8 +19617,8 @@ export const allColorScales = [
   'viridis',
   'viridis_r',
   'winter',
-  'winter_r'
-] as const;
+  'winter_r',
+] as const
 
 /**
  * Builds a color ramp (discrete or continuous) from a specified colormap.
@@ -19643,75 +19642,80 @@ export function colormapBuilder(
   n: number = 255,
   opacity: number = 1
 ): string[] | number[][] {
-  const colorScale = colorScaleByName(color);
-  const listColors: string[] | number[][] = [];
+  const colorScale = colorScaleByName(color)
+  const listColors: string[] | number[][] = []
   for (let i = 0; i < n; i++) {
-    let color: number[] | string = colorScale((1 / (n - 1)) * i);
+    let color: number[] | string = colorScale((1 / (n - 1)) * i)
     if (opacity < 1) {
-      (color as number[]).push(opacity);
+      ;(color as number[]).push(opacity)
     }
     if (convertTo === 'hex') {
-      color = rgbToHex(color);
+      color = rgbToHex(color)
     } else if (convertTo === 'css') {
       if (opacity < 1) {
-        color = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${color[3]})`;
+        color = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${color[3]})`
       } else {
-        color = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+        color = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
       }
     }
-    listColors.push(color as any);
+    listColors.push(color as any)
   }
-  return listColors;
+  return listColors
 }
 
 function rgbToHex(rgbArray: number[]) {
-  return `#${((1 << 24) + (rgbArray[0] << 16) + (rgbArray[1] << 8) + rgbArray[2])
+  return `#${(
+    (1 << 24) +
+    (rgbArray[0] << 16) +
+    (rgbArray[1] << 8) +
+    rgbArray[2]
+  )
     .toString(16)
-    .slice(1)}`;
+    .slice(1)}`
 }
 
 function evaluateCmap(x: number, name: string, reverse: boolean) {
   if (reverse === true) {
-    x = 1 - x;
+    x = 1 - x
   }
-  const colors = data[name].colors;
-  const interpolate = data[name].interpolate;
+  const colors = data[name].colors
+  const interpolate = data[name].interpolate
 
   if (interpolate === true) {
-    return interpolated(x, colors);
+    return interpolated(x, colors)
   } else {
-    return qualitative(x, colors);
+    return qualitative(x, colors)
   }
 }
 
 function interpolated(x: number, colors: number[][]) {
-  const lo = Math.floor(x * (colors.length - 1));
-  const hi = Math.ceil(x * (colors.length - 1));
-  const r = Math.round(((colors[lo][0] + colors[hi][0]) / 2) * 255);
-  const g = Math.round(((colors[lo][1] + colors[hi][1]) / 2) * 255);
-  const b = Math.round(((colors[lo][2] + colors[hi][2]) / 2) * 255);
-  return [r, g, b];
+  const lo = Math.floor(x * (colors.length - 1))
+  const hi = Math.ceil(x * (colors.length - 1))
+  const r = Math.round(((colors[lo][0] + colors[hi][0]) / 2) * 255)
+  const g = Math.round(((colors[lo][1] + colors[hi][1]) / 2) * 255)
+  const b = Math.round(((colors[lo][2] + colors[hi][2]) / 2) * 255)
+  return [r, g, b]
 }
 
 function qualitative(x: number, colors: number[][]) {
-  let idx = 0;
+  let idx = 0
   while (x > (idx + 1) / (colors.length - 0)) {
-    idx++;
+    idx++
   }
-  const r = Math.round(colors[idx][0] * 255);
-  const g = Math.round(colors[idx][1] * 255);
-  const b = Math.round(colors[idx][2] * 255);
-  return [r, g, b];
+  const r = Math.round(colors[idx][0] * 255)
+  const g = Math.round(colors[idx][1] * 255)
+  const b = Math.round(colors[idx][2] * 255)
+  return [r, g, b]
 }
 
 function partial(name: string) {
   if (name.endsWith('_r')) {
     return function (x: number) {
-      return evaluateCmap(x, name.substring(0, name.length - 2), true);
-    };
+      return evaluateCmap(x, name.substring(0, name.length - 2), true)
+    }
   } else {
     return function (x: number) {
-      return evaluateCmap(x, name, false);
-    };
+      return evaluateCmap(x, name, false)
+    }
   }
 }

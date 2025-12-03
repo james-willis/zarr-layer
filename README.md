@@ -21,30 +21,30 @@ npm run build
 ## Usage
 
 ```ts
-import maplibregl from "maplibre-gl";
-import { ZarrLayer } from "zarr-maplibre";
+import maplibregl from 'maplibre-gl'
+import { ZarrLayer } from 'zarr-maplibre'
 
 const map = new maplibregl.Map({
-  container: "map",
-  style: "https://demotiles.maplibre.org/style.json",
+  container: 'map',
+  style: 'https://demotiles.maplibre.org/style.json',
   center: [0, 20],
   zoom: 2,
-});
+})
 
-map.on("load", () => {
+map.on('load', () => {
   map.addLayer(
     new ZarrLayer({
-      id: "zarr-layer",
-      source: "https://example.com/my.zarr",
-      variable: "temperature",
+      id: 'zarr-layer',
+      source: 'https://example.com/my.zarr',
+      variable: 'temperature',
       vmin: 270,
       vmax: 310,
-      colormap: "viridis",
+      colormap: 'viridis',
       selector: { time: 0 },
       zarrVersion: 3,
     })
-  );
-});
+  )
+})
 ```
 
 ## Demo

@@ -1,4 +1,4 @@
-import { defineConfig } from 'tsup';
+import { defineConfig } from 'tsup'
 
 export default defineConfig({
   entry: ['src/index.ts'],
@@ -9,5 +9,4 @@ export default defineConfig({
   clean: true,
   external: ['maplibre-gl'],
   noExternal: ['zarrita', 'proj4'],
-});
-
+})

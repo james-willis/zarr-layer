@@ -35,7 +35,7 @@ void main() {
   gl_Position = matrix * vec4(a, 0.0, 1.0);
   pix_coord = pix_coord_in;
 }
-`;
+`
 
 /**
  * Fragment shader for tile rendering with colormap and nodata handling.
@@ -79,7 +79,7 @@ void main() {
   vec4 c = texture(cmap, vec2(cla, 0.5));
   color = vec4(c.r, c.g, c.b, opacity);
 }
-`;
+`
 
 /**
  * Simple vertex shader for rendering framebuffer to screen.
@@ -91,7 +91,7 @@ void main() {
   gl_Position = vec4(vertex, 0.0, 1.0);
   texCoord = vertex * 0.5 + 0.5;
 }
-`;
+`
 
 /**
  * Simple fragment shader for rendering framebuffer texture to screen.
@@ -104,4 +104,4 @@ out vec4 fragColor;
 void main() {
   fragColor = texture(tex, texCoord);
 }
-`;
+`
