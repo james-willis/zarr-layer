@@ -8,6 +8,8 @@ export interface TileDataCache {
   chunkShape: number[] | null
   chunkIndices?: number[]
   data: Float32Array | null
+  bandData: Map<string, Float32Array>
+  channels: number
   selectorHash: string | null
   loading: boolean
   lastUsed: number
@@ -19,6 +21,7 @@ interface TilesOptions {
   fillValue: number
   dimIndices: DimIndicesProps
   maxCachedTiles?: number
+  bandNames?: string[]
 }
 
 export class Tiles {
@@ -29,6 +32,7 @@ export class Tiles {
   private maxCachedTiles: number
   private tiles: Map<string, TileDataCache> = new Map()
   private accessOrder: string[] = []
+  private bandNames: string[]
 
   constructor({
     store,
@@ -36,12 +40,18 @@ export class Tiles {
     fillValue,
     dimIndices,
     maxCachedTiles = 64,
+    bandNames = [],
   }: TilesOptions) {
     this.store = store
     this.selectors = selectors
     this.fillValue = fillValue
     this.dimIndices = dimIndices
     this.maxCachedTiles = maxCachedTiles
+    this.bandNames = bandNames
+  }
+
+  updateBandNames(bandNames: string[]) {
+    this.bandNames = bandNames
   }
 
   updateSelector(selectors: Record<string, any>) {
@@ -67,6 +77,42 @@ export class Tiles {
     return true
   }
 
+  private normalizeSelection(dimSelection: any): number[] {
+    if (dimSelection === undefined) return [0]
+
+    let items: any[]
+    if (Array.isArray(dimSelection)) {
+      items = dimSelection
+    } else if (
+      typeof dimSelection === 'object' &&
+      dimSelection !== null &&
+      'selected' in dimSelection
+    ) {
+      const s = (dimSelection as any).selected
+      items = Array.isArray(s) ? s : [s]
+    } else {
+      items = [dimSelection]
+    }
+
+    return items.map((v, idx) => {
+      // Unwrap per-item { selected: ... } if present
+      const val =
+        typeof v === 'object' && v !== null && 'selected' in v ? v.selected : v
+      return typeof val === 'string' ? idx : Number(val) || 0
+    })
+  }
+
+  /**
+   * Compute which chunk indices to fetch for a given tile.
+   *
+   * Selectors can be in several formats:
+   *   - Direct number: `this.selectors['band'] = 0`
+   *   - Wrapped object with single value: `{ selected: 0, type: 'index' }`
+   *   - Wrapped object with array (multi-band): `{ selected: [0, 1], type: 'index' }`
+   *
+   * For multi-band selectors like [0, 1], we use the first value's chunk index.
+   * If bands span multiple chunks, a warning is logged and only one chunk is fetched.
+   */
   private computeChunkIndices(
     levelArray: zarr.Array<any>,
     tileTuple: TileTuple
@@ -89,15 +135,23 @@ export class Tiles {
           this.selectors[dimKey] ??
           this.selectors[dimName] ??
           this.selectors[this.dimIndices[dimKey]?.name]
-        let idx = 0
-        if (dimSelection !== undefined) {
-          idx =
-            typeof dimSelection === 'object'
-              ? (dimSelection.selected as number)
-              : dimSelection
+
+        const selectionValues = this.normalizeSelection(dimSelection)
+
+        const normalized = selectionValues.map((v) =>
+          Math.max(0, Math.min(v, levelArray.shape[i] - 1))
+        )
+        const chunkIdx = Math.floor(normalized[0] / chunks[i])
+        const spansMultipleChunks = normalized.some(
+          (v) => Math.floor(v / chunks[i]) !== chunkIdx
+        )
+        if (spansMultipleChunks) {
+          console.warn(
+            `Selector for dimension '${dimName}' spans multiple chunks – using chunk index ${chunkIdx} for tile ${tileTuple.join(
+              ','
+            )}`
+          )
         }
-        idx = Math.max(0, Math.min(idx, levelArray.shape[i] - 1))
-        const chunkIdx = Math.floor(idx / chunks[i])
         const maxChunkIdx = Math.max(
           0,
           Math.ceil(levelArray.shape[i] / chunks[i]) - 1
@@ -109,16 +163,33 @@ export class Tiles {
     return chunkIndices
   }
 
+  /**
+   * Extract a 2D slice (+ optional extra channels) from a loaded chunk.
+   *
+   * When the selector includes multiple values for a non-spatial dimension
+   * (e.g., `{ band: [0, 1] }`), this method packs them into separate channels
+   * of the output texture:
+   *   - 1 value  → R channel only (single band)
+   *   - 2 values → R and G channels (e.g., tavg + prec)
+   *   - 3 values → R, G, B channels
+   *   - 4 values → R, G, B, A channels
+   *
+   * The fragment shader can then access these via texture(tex, coord).r, .g, etc.
+   */
+
   private extractSliceFromChunk(
     chunkData: Float32Array,
     chunkShape: number[],
     levelArray: zarr.Array<any>,
     chunkIndices: number[]
-  ): Float32Array {
+  ): {
+    data: Float32Array
+    channels: number
+    bandData: Map<string, Float32Array>
+  } {
     const tileWidth = this.store.tileSize
     const tileHeight = this.store.tileSize
-    const paddedData = new Float32Array(tileWidth * tileHeight)
-    paddedData.fill(this.fillValue)
+    let channels = 1
 
     const dimensions = this.store.dimensions || []
     const chunkSizes = levelArray.chunks
@@ -128,6 +199,9 @@ export class Tiles {
     let lonDimIdx = -1
     let latSize = tileHeight
     let lonSize = tileWidth
+
+    const selectionSets: number[][] = []
+    const varyingDims: number[] = []
 
     for (let i = 0; i < dimensions.length; i++) {
       const dimName = dimensions[i]
@@ -142,21 +216,27 @@ export class Tiles {
         lonSize = Math.min(chunkShape[i], tileWidth)
         selectorIndices.push(-1)
       } else {
-        let idx = 0
         const dimSelection =
           this.selectors[dimKey] ??
           this.selectors[dimName] ??
           this.selectors[this.dimIndices[dimKey]?.name]
-        if (dimSelection !== undefined) {
-          idx =
-            typeof dimSelection === 'object'
-              ? (dimSelection.selected as number)
-              : dimSelection
-        }
+
+        const selectedValues = this.normalizeSelection(dimSelection)
+
         const chunkOffset = chunkIndices[i] * chunkSizes[i]
-        idx = Math.max(0, idx - chunkOffset)
-        idx = Math.max(0, Math.min(idx, chunkShape[i] - 1))
-        selectorIndices.push(idx)
+        const withinChunk = selectedValues.map((v) => {
+          const adjusted = Math.max(
+            0,
+            Math.min(v - chunkOffset, chunkShape[i] - 1)
+          )
+          return adjusted
+        })
+
+        selectionSets[i] = withinChunk
+        selectorIndices.push(withinChunk[0])
+        if (withinChunk.length > 1) {
+          varyingDims.push(i)
+        }
       }
     }
 
@@ -170,22 +250,62 @@ export class Tiles {
       return idx
     }
 
+    let channelSelections: number[][] = [[]]
+    varyingDims.forEach((dimIdx) => {
+      const choices = selectionSets[dimIdx]
+      const next: number[][] = []
+      channelSelections.forEach((combo) => {
+        choices.forEach((choice) => {
+          next.push([...combo, choice])
+        })
+      })
+      channelSelections = next
+    })
+    channels = channelSelections.length || 1
+
+    const paddedData = new Float32Array(tileWidth * tileHeight * channels)
+    paddedData.fill(this.fillValue)
+
+    const bandData = new Map<string, Float32Array>()
+    const bandArrays: Float32Array[] = []
+    for (let c = 0; c < channels; c++) {
+      const arr = new Float32Array(tileWidth * tileHeight)
+      arr.fill(this.fillValue)
+      bandArrays.push(arr)
+    }
+
     for (let latIdx = 0; latIdx < latSize; latIdx++) {
       for (let lonIdx = 0; lonIdx < lonSize; lonIdx++) {
-        const indices = [...selectorIndices]
-        if (latDimIdx >= 0) indices[latDimIdx] = latIdx
-        if (lonDimIdx >= 0) indices[lonDimIdx] = lonIdx
+        if (latDimIdx >= 0) selectorIndices[latDimIdx] = latIdx
+        if (lonDimIdx >= 0) selectorIndices[lonDimIdx] = lonIdx
 
-        const srcIdx = getChunkIndex(indices)
-        const dstIdx = latIdx * tileWidth + lonIdx
+        channelSelections.forEach((selectionCombo, channelIdx) => {
+          const indices = [...selectorIndices]
+          let comboIdx = 0
+          for (let i = 0; i < varyingDims.length; i++) {
+            indices[varyingDims[i]] = selectionCombo[comboIdx++]
+          }
 
-        if (srcIdx < chunkData.length) {
-          paddedData[dstIdx] = chunkData[srcIdx]
-        }
+          const srcIdx = getChunkIndex(indices)
+          // Pre-calculate destination index to avoid repeated arithmetic
+          const baseDstIdx = latIdx * tileWidth + lonIdx
+          const dstIdx = baseDstIdx * channels + channelIdx
+
+          if (srcIdx < chunkData.length) {
+            const val = chunkData[srcIdx]
+            paddedData[dstIdx] = val
+            bandArrays[channelIdx][baseDstIdx] = val
+          }
+        })
       }
     }
 
-    return paddedData
+    for (let c = 0; c < channels; c++) {
+      const bandName = this.bandNames[c] || `band_${c}`
+      bandData.set(bandName, bandArrays[c])
+    }
+
+    return { data: paddedData, channels, bandData }
   }
 
   private getOrCreateTile(tileKey: string): TileDataCache {
@@ -196,6 +316,8 @@ export class Tiles {
         chunkShape: null,
         chunkIndices: undefined,
         data: null,
+        bandData: new Map(),
+        channels: 1,
         selectorHash: null,
         loading: false,
         lastUsed: Date.now(),
@@ -246,15 +368,19 @@ export class Tiles {
         tile.chunkShape &&
         this.arraysEqual(tile.chunkIndices, desiredChunkIndices)
       if (canReuseChunk) {
-        tile.data = this.extractSliceFromChunk(
+        const sliced = this.extractSliceFromChunk(
           tile.chunkData!,
           tile.chunkShape!,
           levelArray,
           desiredChunkIndices
         )
+        tile.data = sliced.data
+        tile.channels = sliced.channels
+        tile.bandData = sliced.bandData
         tile.selectorHash = selectorHash
       } else {
         tile.data = null
+        tile.bandData = new Map()
         tile.selectorHash = null
         tile.chunkData = null
         tile.chunkShape = null
@@ -290,12 +416,15 @@ export class Tiles {
         this.arraysEqual(tile.chunkIndices, chunkIndices)
 
       if (canReuseChunk) {
-        tile.data = this.extractSliceFromChunk(
+        const sliced = this.extractSliceFromChunk(
           tile.chunkData!,
           tile.chunkShape!,
           levelArray,
           chunkIndices
         )
+        tile.data = sliced.data
+        tile.channels = sliced.channels
+        tile.bandData = sliced.bandData
         tile.selectorHash = selectorHash
         tile.loading = false
         return tile
@@ -311,12 +440,15 @@ export class Tiles {
       tile.chunkData = chunkData
       tile.chunkShape = chunkShape
       tile.chunkIndices = chunkIndices
-      tile.data = this.extractSliceFromChunk(
+      const sliced = this.extractSliceFromChunk(
         chunkData,
         chunkShape,
         levelArray,
         chunkIndices
       )
+      tile.data = sliced.data
+      tile.channels = sliced.channels
+      tile.bandData = sliced.bandData
       tile.selectorHash = selectorHash
       tile.loading = false
       return tile

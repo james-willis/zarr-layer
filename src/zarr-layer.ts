@@ -6,7 +6,11 @@
  */
 
 import * as zarr from 'zarrita'
-import { calculateNearestIndex, loadDimensionValues } from './zarr-utils'
+import {
+  calculateNearestIndex,
+  loadDimensionValues,
+  getBands,
+} from './zarr-utils'
 import { ZarrStore } from './zarr-store'
 import { Tiles } from './tiles'
 import { mustCreateBuffer, mustCreateTexture } from './webgl-utils'
@@ -24,7 +28,7 @@ import {
   zoomToLevel,
 } from './maplibre-utils'
 import { ColormapState } from './zarr-colormap'
-import { ZarrRenderer } from './zarr-renderer'
+import { ZarrRenderer, type MultiBandShaderConfig } from './zarr-renderer'
 import { TileRenderCache } from './zarr-tile-cache'
 import type {
   ColorMapName,
@@ -50,7 +54,7 @@ export class ZarrLayer {
   private variable: string
   private zarrVersion: 2 | 3 | null = null
   private dimensionNames: DimensionNamesProps
-  private selector: Record<string, number>
+  private selector: Record<string, number | number[]>
   private invalidate: () => void
 
   private colormap: ColormapState
@@ -147,10 +151,15 @@ export class ZarrLayer {
   private selectors: { [key: string]: ZarrSelectorsProps } = {}
   private isRemoved: boolean = false
   private fragmentShaderSource: string = maplibreFragmentShaderSource
+  private customFrag: string | undefined
+  private customUniforms: Record<string, number> = {}
+  private bandNames: string[] = []
+  private multiBandConfig: MultiBandShaderConfig | null = null
 
-  private static createSubdividedQuad(
-    subdivisions: number
-  ): { vertexArr: Float32Array; texCoordArr: Float32Array } {
+  private static createSubdividedQuad(subdivisions: number): {
+    vertexArr: Float32Array
+    texCoordArr: Float32Array
+  } {
     const vertices: number[] = []
     const texCoords: number[] = []
     const step = 2 / subdivisions
@@ -218,6 +227,8 @@ export class ZarrLayer {
     noDataMin,
     noDataMax,
     customFragmentSource,
+    customFrag,
+    uniforms,
   }: MaplibreLayerOptions) {
     this.id = id
     this.url = source
@@ -239,10 +250,21 @@ export class ZarrLayer {
       this.fragmentShaderSource = customFragmentSource
     }
 
+    this.customFrag = customFrag
+    this.customUniforms = uniforms || {}
+
+    this.bandNames = getBands(variable, selector)
+    if (this.bandNames.length > 1 || customFrag) {
+      this.multiBandConfig = {
+        bands: this.bandNames,
+        customFrag: customFrag,
+        customUniforms: this.customUniforms,
+      }
+    }
+
     if (noDataMin !== undefined) this.noDataMin = noDataMin
     if (noDataMax !== undefined) this.noDataMax = noDataMax
 
-    // Default to unsubdivided geometry; globe mode will enable finer grids.
     this.updateGeometryForProjection(false)
   }
 
@@ -265,6 +287,14 @@ export class ZarrLayer {
     this.invalidate()
   }
 
+  setUniforms(uniforms: Record<string, number>) {
+    this.customUniforms = { ...this.customUniforms, ...uniforms }
+    if (this.multiBandConfig) {
+      this.multiBandConfig.customUniforms = this.customUniforms
+    }
+    this.invalidate()
+  }
+
   async setVariable(variable: string) {
     this.variable = variable
     this.clearAllTiles()
@@ -280,12 +310,25 @@ export class ZarrLayer {
     }
   }
 
-  async setSelector(selector: Record<string, number>) {
+  async setSelector(selector: Record<string, number | number[]>) {
     this.selector = selector
     for (const [dimName, value] of Object.entries(selector)) {
       this.selectors[dimName] = { selected: value, type: 'index' }
     }
+
+    this.bandNames = getBands(this.variable, selector)
+    if (this.bandNames.length > 1 || this.customFrag) {
+      this.multiBandConfig = {
+        bands: this.bandNames,
+        customFrag: this.customFrag,
+        customUniforms: this.customUniforms,
+      }
+    } else {
+      this.multiBandConfig = null
+    }
+
     this.tilesManager?.updateSelector(this.selectors)
+    this.tilesManager?.updateBandNames(this.bandNames)
     if (!this.isMultiscale) {
       this.singleImageData = null
       await this.prefetchTileData()
@@ -309,7 +352,11 @@ export class ZarrLayer {
       const cache = this.tilesManager.getTile(tileTuple)
       if (!tile || !cache) continue
       tile.data = cache.data
+      tile.textureUploaded = false
+      tile.bandTexturesUploaded.clear()
+      tile.channels = cache.channels
       tile.selectorHash = cache.selectorHash
+      tile.bandData = cache.bandData
     }
 
     await this.prefetchTileData()
@@ -400,6 +447,7 @@ export class ZarrLayer {
         fillValue: this.fillValue,
         dimIndices: this.dimIndices,
         maxCachedTiles: MAX_CACHED_TILES,
+        bandNames: this.bandNames,
       })
     } catch (err) {
       console.error('Failed to initialize Zarr layer:', err)
@@ -596,7 +644,11 @@ export class ZarrLayer {
     }
 
     tile.data = cache.data
+    tile.textureUploaded = false
+    tile.bandTexturesUploaded.clear()
     tile.selectorHash = cache.selectorHash
+    tile.channels = cache.channels
+    tile.bandData = cache.bandData
     this.invalidate()
 
     return tile.data
@@ -710,6 +762,7 @@ export class ZarrLayer {
           },
       shaderData,
       projectionData,
+      multiBandConfig: this.multiBandConfig || undefined,
     })
   }
 

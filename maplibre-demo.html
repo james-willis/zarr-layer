@@ -166,6 +166,7 @@
             <select id="band">
                 <option value="0">tavg (Temperature Avg)</option>
                 <option value="1">prec (Precipitation)</option>
+                <option value="combined">Combined (temp + precip)</option>
             </select>
         </div>
 
@@ -196,6 +197,39 @@
 
     <script type="module">
         import { ZarrLayer } from './dist/index.mjs'
+
+        /**
+         * Custom fragment shader.
+         * 
+         * When using selector: { band: ['tavg', 'prec'], month: X }, the library
+         * automatically generates named samplers for each band:
+         *   - uniform sampler2D tavg;
+         *   - uniform sampler2D prec;
+         * 
+         * The customFrag body has access to these as float variables:
+         *   - float tavg (already scaled and offset)
+         *   - float prec (already scaled and offset)
+         * 
+         * Available uniforms in customFrag:
+         *   - vec2 clim - color limits (vmin, vmax)
+         *   - float opacity
+         *   - sampler2D colormap
+         *   - Any custom uniforms you pass in the uniforms option
+         * 
+         * Output: assign to `fragColor` (vec4)
+         */
+        const combinedBandsCustomFrag = `
+  if (tavg > 1e20 || prec > 1e20) {
+    discard;
+  }
+  
+  float combined = tavg + prec;
+  
+  float norm = (combined - clim.x) / (clim.y - clim.x);
+  float cla = clamp(norm, 0.0, 1.0);
+  vec4 c = texture(colormap, vec2(cla, 0.5));
+  fragColor = vec4(c.r, c.g, c.b, opacity);
+`
 
         // Initialize MapLibre map
         const map = new maplibregl.Map({
@@ -443,15 +477,95 @@
         })
 
         document.getElementById('band').addEventListener('change', async (e) => {
-            const bandIndex = parseInt(e.target.value)
+            const bandValue = e.target.value
             const config = datasets[currentDataset]
-            if (zarrLayer && config.has4D) {
-                const monthIndex = parseInt(document.getElementById('month').value)
-                await zarrLayer.setSelector({ band: bandIndex, month: monthIndex })
+            if (!config.has4D) return
 
-                // Update vmin/vmax based on band
+            const monthIndex = parseInt(document.getElementById('month').value)
+
+            if (bandValue === 'combined') {
+                document.getElementById('loading').style.display = 'block'
+                try {
+                    if (zarrLayer && map.getLayer('zarr-layer')) {
+                        map.removeLayer('zarr-layer')
+                    }
+
+                    zarrLayer = new ZarrLayer({
+                        id: 'zarr-layer',
+                        source: config.source,
+                        variable: config.variable,
+                        vmin: -10,
+                        vmax: 40,
+                        colormap: 'turbo',
+                        opacity: parseFloat(document.getElementById('opacity').value),
+                        selector: { band: ['tavg', 'prec'], month: monthIndex },
+                        zarrVersion: config.zarrVersion,
+                        minRenderZoom: config.minRenderZoom ?? 0,
+                        noDataMin: config.noDataMin,
+                        noDataMax: config.noDataMax,
+                        dimensionNames: config.dimensionNames,
+                        customFrag: combinedBandsCustomFrag,
+                        uniforms: {},
+                    })
+
+                    map.addLayer(zarrLayer)
+
+                    zarrLayer.setVminVmax(-10, 40)
+                    document.getElementById('vmin').value = -10
+                    document.getElementById('vmax').value = 40
+                    document.getElementById('vmin-value').textContent = '-10'
+                    document.getElementById('vmax-value').textContent = '40'
+                    zarrLayer.setColormap('turbo')
+                    document.getElementById('colormap').value = 'turbo'
+
+                    document.getElementById('loading').style.display = 'none'
+                    console.log('Switched to combined bands mode (tavg + prec/50)')
+                } catch (error) {
+                    console.error('Error switching to combined mode:', error)
+                    document.getElementById('loading').textContent =
+                        'Error: ' + error.message
+                    document.getElementById('loading').style.color = 'red'
+                }
+            } else {
+                const bandIndex = parseInt(bandValue)
+
+                const needsRecreate = zarrLayer?.fragmentShaderSource !== undefined
+                if (needsRecreate) {
+                    document.getElementById('loading').style.display = 'block'
+                    try {
+                        if (zarrLayer && map.getLayer('zarr-layer')) {
+                            map.removeLayer('zarr-layer')
+                        }
+
+                        zarrLayer = new ZarrLayer({
+                            id: 'zarr-layer',
+                            source: config.source,
+                            variable: config.variable,
+                            vmin: bandIndex === 0 ? -20 : 0,
+                            vmax: bandIndex === 0 ? 30 : 500,
+                            colormap: bandIndex === 0 ? 'coolwarm' : 'viridis',
+                            opacity: parseFloat(document.getElementById('opacity').value),
+                            selector: { band: bandIndex, month: monthIndex },
+                            zarrVersion: config.zarrVersion,
+                            minRenderZoom: config.minRenderZoom ?? 0,
+                            noDataMin: config.noDataMin,
+                            noDataMax: config.noDataMax,
+                            dimensionNames: config.dimensionNames,
+                        })
+
+                        map.addLayer(zarrLayer)
+                        document.getElementById('loading').style.display = 'none'
+                    } catch (error) {
+                        console.error('Error switching bands:', error)
+                        document.getElementById('loading').textContent =
+                            'Error: ' + error.message
+                        document.getElementById('loading').style.color = 'red'
+                    }
+                } else if (zarrLayer) {
+                    await zarrLayer.setSelector({ band: bandIndex, month: monthIndex })
+                }
+
                 if (bandIndex === 0) {
-                    // Temperature: -20 to 30°C
                     zarrLayer.setVminVmax(-20, 30)
                     document.getElementById('vmin').value = -20
                     document.getElementById('vmax').value = 30
@@ -460,7 +574,6 @@
                     zarrLayer.setColormap('coolwarm')
                     document.getElementById('colormap').value = 'coolwarm'
                 } else {
-                    // Precipitation: 0 to 500mm
                     zarrLayer.setVminVmax(0, 500)
                     document.getElementById('vmin').value = 0
                     document.getElementById('vmax').value = 500
@@ -477,8 +590,13 @@
             document.getElementById('month-value').textContent =
                 getMonthName(monthIndex)
             if (zarrLayer && datasets[currentDataset].has4D) {
-                const bandIndex = parseInt(document.getElementById('band').value)
-                await zarrLayer.setSelector({ band: bandIndex, month: monthIndex })
+                const bandValue = document.getElementById('band').value
+                if (bandValue === 'combined') {
+                    await zarrLayer.setSelector({ band: ['tavg', 'prec'], month: monthIndex })
+                } else {
+                    const bandIndex = parseInt(bandValue)
+                    await zarrLayer.setSelector({ band: bandIndex, month: monthIndex })
+                }
             }
         })
 

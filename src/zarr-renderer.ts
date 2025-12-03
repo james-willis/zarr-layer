@@ -6,6 +6,7 @@ import {
 } from './webgl-utils'
 import {
   createVertexShaderSource,
+  createFragmentShaderSource,
   type ProjectionData,
   type ShaderData,
 } from './maplibre-shaders'
@@ -23,6 +24,12 @@ interface RendererUniforms {
   noDataMax: number
   scaleFactor: number
   offset: number
+}
+
+export interface MultiBandShaderConfig {
+  bands: string[]
+  customFrag?: string
+  customUniforms?: Record<string, number>
 }
 
 function toFloat32Array(
@@ -59,6 +66,7 @@ interface RenderParams {
   singleImage?: SingleImageParams
   shaderData?: ShaderData
   projectionData?: ProjectionData
+  multiBandConfig?: MultiBandShaderConfig
 }
 
 interface ShaderProgram {
@@ -75,23 +83,28 @@ interface ShaderProgram {
   tileMercatorCoordsLoc: WebGLUniformLocation | null
   clippingPlaneLoc: WebGLUniformLocation | null
   projectionTransitionLoc: WebGLUniformLocation | null
-  vminLoc: WebGLUniformLocation
-  vmaxLoc: WebGLUniformLocation
+  vminLoc: WebGLUniformLocation | null
+  vmaxLoc: WebGLUniformLocation | null
+  climLoc: WebGLUniformLocation | null
   opacityLoc: WebGLUniformLocation
-  noDataLoc: WebGLUniformLocation
-  noDataMinLoc: WebGLUniformLocation
-  noDataMaxLoc: WebGLUniformLocation
-  useFillValueLoc: WebGLUniformLocation
-  fillValueLoc: WebGLUniformLocation
-  scaleFactorLoc: WebGLUniformLocation
-  addOffsetLoc: WebGLUniformLocation
-  cmapLoc: WebGLUniformLocation
-  texLoc: WebGLUniformLocation
+  noDataLoc: WebGLUniformLocation | null
+  noDataMinLoc: WebGLUniformLocation | null
+  noDataMaxLoc: WebGLUniformLocation | null
+  useFillValueLoc: WebGLUniformLocation | null
+  fillValueLoc: WebGLUniformLocation | null
+  scaleFactorLoc: WebGLUniformLocation | null
+  addOffsetLoc: WebGLUniformLocation | null
+  cmapLoc: WebGLUniformLocation | null
+  colormapLoc: WebGLUniformLocation | null
+  texLoc: WebGLUniformLocation | null
   texScaleLoc: WebGLUniformLocation
   texOffsetLoc: WebGLUniformLocation
   vertexLoc: number
   pixCoordLoc: number
   isGlobe: boolean
+  isMultiBand: boolean
+  bandTexLocs: Map<string, WebGLUniformLocation>
+  customUniformLocs: Map<string, WebGLUniformLocation>
 }
 
 export class ZarrRenderer {
@@ -99,11 +112,38 @@ export class ZarrRenderer {
   private fragmentShaderSource: string
   private shaderCache: Map<string, ShaderProgram> = new Map()
   private singleImageGeometryUploaded = false
+  private multiBandConfig: MultiBandShaderConfig | null = null
+  private canUseLinearFloat: boolean = false
+  private canUseLinearHalfFloat: boolean = false
 
-  constructor(gl: WebGL2RenderingContext, fragmentShaderSource: string) {
+  constructor(
+    gl: WebGL2RenderingContext,
+    fragmentShaderSource: string,
+    multiBandConfig?: MultiBandShaderConfig
+  ) {
     this.gl = ZarrRenderer.resolveGl(gl)
+    this.canUseLinearFloat = !!this.gl.getExtension('OES_texture_float_linear')
+    this.canUseLinearHalfFloat = !!this.gl.getExtension(
+      'OES_texture_half_float_linear'
+    )
     this.fragmentShaderSource = fragmentShaderSource
-    this.getOrCreateProgram(undefined)
+    this.multiBandConfig = multiBandConfig || null
+    this.getOrCreateProgram(undefined, multiBandConfig)
+  }
+
+  updateMultiBandConfig(config: MultiBandShaderConfig | null) {
+    if (config && this.multiBandConfig) {
+      const bandsChanged =
+        JSON.stringify(config.bands) !==
+        JSON.stringify(this.multiBandConfig.bands)
+      const fragChanged = config.customFrag !== this.multiBandConfig.customFrag
+      if (bandsChanged || fragChanged) {
+        this.shaderCache.clear()
+      }
+    } else if (config !== this.multiBandConfig) {
+      this.shaderCache.clear()
+    }
+    this.multiBandConfig = config
   }
 
   private static resolveGl(gl: WebGL2RenderingContext): WebGL2RenderingContext {
@@ -112,13 +152,22 @@ export class ZarrRenderer {
       typeof gl.getUniformLocation === 'function' &&
       typeof gl.drawBuffers === 'function'
     if (hasWebGL2Methods) {
+      gl.getExtension('EXT_color_buffer_float')
+      gl.getExtension('OES_texture_float_linear')
       return gl
     }
     throw new Error('Invalid WebGL2 context: missing required WebGL2 methods')
   }
 
-  private getOrCreateProgram(shaderData?: ShaderData): ShaderProgram {
-    const variantName = shaderData?.variantName ?? 'mercator'
+  private getOrCreateProgram(
+    shaderData?: ShaderData,
+    multiBandConfig?: MultiBandShaderConfig
+  ): ShaderProgram {
+    const config = multiBandConfig || this.multiBandConfig
+    const isMultiBand = config && config.bands.length > 0
+    const variantName = isMultiBand
+      ? `multiband_${config.bands.join('_')}${shaderData?.variantName ?? ''}`
+      : shaderData?.variantName ?? 'mercator'
 
     const cached = this.shaderCache.get(variantName)
     if (cached) {
@@ -128,6 +177,19 @@ export class ZarrRenderer {
     const isGlobe = shaderData && shaderData.vertexShaderPrelude ? true : false
     const vertexSource = createVertexShaderSource(shaderData)
 
+    let fragmentSource: string
+    if (isMultiBand && config) {
+      fragmentSource = createFragmentShaderSource({
+        bands: config.bands,
+        customUniforms: config.customUniforms
+          ? Object.keys(config.customUniforms)
+          : [],
+        customFrag: config.customFrag,
+      })
+    } else {
+      fragmentSource = this.fragmentShaderSource
+    }
+
     const vertexShader = createShader(
       this.gl,
       this.gl.VERTEX_SHADER,
@@ -136,7 +198,7 @@ export class ZarrRenderer {
     const fragmentShader = createShader(
       this.gl,
       this.gl.FRAGMENT_SHADER,
-      this.fragmentShaderSource
+      fragmentSource
     )
     if (!vertexShader || !fragmentShader) {
       throw new Error(`Failed to create shaders for variant: ${variantName}`)
@@ -145,6 +207,27 @@ export class ZarrRenderer {
     const program = createProgram(this.gl, vertexShader, fragmentShader)
     if (!program) {
       throw new Error(`Failed to create program for variant: ${variantName}`)
+    }
+
+    const bandTexLocs = new Map<string, WebGLUniformLocation>()
+    const customUniformLocs = new Map<string, WebGLUniformLocation>()
+
+    if (isMultiBand && config) {
+      for (const bandName of config.bands) {
+        const loc = this.gl.getUniformLocation(program, bandName)
+        if (loc) {
+          bandTexLocs.set(bandName, loc)
+        }
+      }
+
+      if (config.customUniforms) {
+        for (const uniformName of Object.keys(config.customUniforms)) {
+          const loc = this.gl.getUniformLocation(program, uniformName)
+          if (loc) {
+            customUniformLocs.set(uniformName, loc)
+          }
+        }
+      }
     }
 
     const shaderProgram: ShaderProgram = {
@@ -180,27 +263,34 @@ export class ZarrRenderer {
       projectionTransitionLoc: isGlobe
         ? this.gl.getUniformLocation(program, 'u_projection_transition')
         : null,
-      vminLoc: mustGetUniformLocation(this.gl, program, 'vmin'),
-      vmaxLoc: mustGetUniformLocation(this.gl, program, 'vmax'),
+      // Shared uniforms
       opacityLoc: mustGetUniformLocation(this.gl, program, 'opacity'),
-      noDataLoc: mustGetUniformLocation(this.gl, program, 'nodata'),
-      noDataMinLoc: mustGetUniformLocation(this.gl, program, 'u_noDataMin'),
-      noDataMaxLoc: mustGetUniformLocation(this.gl, program, 'u_noDataMax'),
-      useFillValueLoc: mustGetUniformLocation(
-        this.gl,
-        program,
-        'u_useFillValue'
-      ),
-      fillValueLoc: mustGetUniformLocation(this.gl, program, 'u_fillValue'),
-      scaleFactorLoc: mustGetUniformLocation(this.gl, program, 'u_scaleFactor'),
-      addOffsetLoc: mustGetUniformLocation(this.gl, program, 'u_addOffset'),
-      cmapLoc: mustGetUniformLocation(this.gl, program, 'cmap'),
-      texLoc: mustGetUniformLocation(this.gl, program, 'tex'),
       texScaleLoc: mustGetUniformLocation(this.gl, program, 'u_texScale'),
       texOffsetLoc: mustGetUniformLocation(this.gl, program, 'u_texOffset'),
       vertexLoc: this.gl.getAttribLocation(program, 'vertex'),
       pixCoordLoc: this.gl.getAttribLocation(program, 'pix_coord_in'),
+
+      // Conditional uniforms (single vs multi-band)
+      vminLoc: isMultiBand ? null : this.gl.getUniformLocation(program, 'vmin'),
+      vmaxLoc: isMultiBand ? null : this.gl.getUniformLocation(program, 'vmax'),
+      climLoc: isMultiBand ? this.gl.getUniformLocation(program, 'clim') : null,
+
+      noDataLoc: this.gl.getUniformLocation(program, 'nodata'),
+      noDataMinLoc: this.gl.getUniformLocation(program, 'u_noDataMin'),
+      noDataMaxLoc: this.gl.getUniformLocation(program, 'u_noDataMax'),
+      useFillValueLoc: this.gl.getUniformLocation(program, 'u_useFillValue'),
+      fillValueLoc: this.gl.getUniformLocation(program, 'u_fillValue'),
+      scaleFactorLoc: this.gl.getUniformLocation(program, 'u_scaleFactor'),
+      addOffsetLoc: this.gl.getUniformLocation(program, 'u_addOffset'),
+
+      cmapLoc: isMultiBand ? null : this.gl.getUniformLocation(program, 'cmap'),
+      colormapLoc: this.gl.getUniformLocation(program, 'colormap'),
+      texLoc: isMultiBand ? null : this.gl.getUniformLocation(program, 'tex'),
+
       isGlobe,
+      isMultiBand: !!isMultiBand,
+      bandTexLocs,
+      customUniformLocs,
     }
 
     this.gl.deleteShader(vertexShader)
@@ -225,9 +315,10 @@ export class ZarrRenderer {
       singleImage,
       shaderData,
       projectionData,
+      multiBandConfig,
     } = params
 
-    const shaderProgram = this.getOrCreateProgram(shaderData)
+    const shaderProgram = this.getOrCreateProgram(shaderData, multiBandConfig)
 
     const gl = this.gl
     gl.useProgram(shaderProgram.program)
@@ -237,24 +328,65 @@ export class ZarrRenderer {
 
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, colormapTexture)
-    gl.uniform1i(shaderProgram.cmapLoc, 1)
+    if (shaderProgram.cmapLoc) {
+      gl.uniform1i(shaderProgram.cmapLoc, 1)
+    }
+    if (shaderProgram.colormapLoc) {
+      gl.uniform1i(shaderProgram.colormapLoc, 1)
+    }
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
-    gl.uniform1f(shaderProgram.vminLoc, uniforms.vmin)
-    gl.uniform1f(shaderProgram.vmaxLoc, uniforms.vmax)
+    if (shaderProgram.isMultiBand) {
+      if (shaderProgram.climLoc) {
+        gl.uniform2f(shaderProgram.climLoc, uniforms.vmin, uniforms.vmax)
+      }
+    } else {
+      if (shaderProgram.vminLoc) {
+        gl.uniform1f(shaderProgram.vminLoc, uniforms.vmin)
+      }
+      if (shaderProgram.vmaxLoc) {
+        gl.uniform1f(shaderProgram.vmaxLoc, uniforms.vmax)
+      }
+    }
+
     gl.uniform1f(shaderProgram.opacityLoc, uniforms.opacity)
-    gl.uniform1f(shaderProgram.noDataLoc, uniforms.fillValue)
-    gl.uniform1f(shaderProgram.noDataMinLoc, uniforms.noDataMin)
-    gl.uniform1f(shaderProgram.noDataMaxLoc, uniforms.noDataMax)
-    gl.uniform1i(shaderProgram.useFillValueLoc, uniforms.useFillValue ? 1 : 0)
-    gl.uniform1f(shaderProgram.fillValueLoc, uniforms.fillValue)
-    gl.uniform1f(shaderProgram.scaleFactorLoc, uniforms.scaleFactor)
-    gl.uniform1f(shaderProgram.addOffsetLoc, uniforms.offset)
+    if (shaderProgram.noDataLoc) {
+      gl.uniform1f(shaderProgram.noDataLoc, uniforms.fillValue)
+    }
+    if (shaderProgram.noDataMinLoc) {
+      gl.uniform1f(shaderProgram.noDataMinLoc, uniforms.noDataMin)
+    }
+    if (shaderProgram.noDataMaxLoc) {
+      gl.uniform1f(shaderProgram.noDataMaxLoc, uniforms.noDataMax)
+    }
+    if (shaderProgram.useFillValueLoc) {
+      gl.uniform1i(shaderProgram.useFillValueLoc, uniforms.useFillValue ? 1 : 0)
+    }
+    if (shaderProgram.fillValueLoc) {
+      gl.uniform1f(shaderProgram.fillValueLoc, uniforms.fillValue)
+    }
+    if (shaderProgram.scaleFactorLoc) {
+      gl.uniform1f(shaderProgram.scaleFactorLoc, uniforms.scaleFactor)
+    }
+    if (shaderProgram.addOffsetLoc) {
+      gl.uniform1f(shaderProgram.addOffsetLoc, uniforms.offset)
+    }
     gl.uniform2f(shaderProgram.texScaleLoc, 1.0, 1.0)
     gl.uniform2f(shaderProgram.texOffsetLoc, 0.0, 0.0)
+
+    if (multiBandConfig?.customUniforms) {
+      for (const [name, value] of Object.entries(
+        multiBandConfig.customUniforms
+      )) {
+        const loc = shaderProgram.customUniformLocs.get(name)
+        if (loc) {
+          gl.uniform1f(loc, value)
+        }
+      }
+    }
 
     if (shaderProgram.isGlobe && projectionData) {
       if (shaderProgram.projMatrixLoc) {
@@ -305,7 +437,8 @@ export class ZarrRenderer {
         tileCache,
         tileSize,
         vertexArr,
-        pixCoordArr
+        pixCoordArr,
+        multiBandConfig
       )
     } else if (singleImage) {
       this.renderSingleImage(
@@ -417,7 +550,8 @@ export class ZarrRenderer {
     tileCache: TileRenderCache,
     tileSize: number,
     vertexArr: Float32Array,
-    pixCoordArr: Float32Array
+    pixCoordArr: Float32Array,
+    multiBandConfig?: MultiBandShaderConfig
   ) {
     const gl = this.gl
 
@@ -435,6 +569,7 @@ export class ZarrRenderer {
         const tile = tileCache.get(tileKey)
 
         let tileToRender: TileRenderData | null = null
+        let renderTileKey = tileKey
         let texScale: [number, number] = [1, 1]
         let texOffset: [number, number] = [0, 0]
 
@@ -444,6 +579,11 @@ export class ZarrRenderer {
           const parent = this.findBestParentTile(z, x, y, tileCache)
           if (parent) {
             tileToRender = parent.tile
+            renderTileKey = tileToKey([
+              parent.ancestorZ,
+              parent.ancestorX,
+              parent.ancestorY,
+            ])
             const levelDiff = z - parent.ancestorZ
             const divisor = Math.pow(2, levelDiff)
             const localX = x % divisor
@@ -472,24 +612,113 @@ export class ZarrRenderer {
           tileToRender.geometryUploaded = true
         }
 
-        gl.activeTexture(gl.TEXTURE0)
-        gl.bindTexture(gl.TEXTURE_2D, tileToRender.tileTexture)
-        gl.uniform1i(shaderProgram.texLoc, 0)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.R16F,
-          tileSize,
-          tileSize,
-          0,
-          gl.RED,
-          gl.FLOAT,
-          tileToRender.data
-        )
+        if (shaderProgram.isMultiBand && multiBandConfig) {
+          let textureUnit = 2
+          let missingBandData = false
+          for (const bandName of multiBandConfig.bands) {
+            const bandData = tileToRender.bandData.get(bandName)
+            if (!bandData) {
+              missingBandData = true
+              break
+            }
+
+            let bandTex = tileToRender.bandTextures.get(bandName)
+            if (!bandTex) {
+              const newTex = tileCache.ensureBandTexture(
+                renderTileKey,
+                bandName
+              )
+              if (newTex) {
+                bandTex = newTex
+                tileToRender.bandTextures.set(bandName, bandTex)
+              }
+            }
+            if (!bandTex) {
+              missingBandData = true
+              break
+            }
+
+            gl.activeTexture(gl.TEXTURE0 + textureUnit)
+            gl.bindTexture(gl.TEXTURE_2D, bandTex)
+            gl.texParameteri(
+              gl.TEXTURE_2D,
+              gl.TEXTURE_MIN_FILTER,
+              this.canUseLinearFloat ? gl.LINEAR : gl.NEAREST
+            )
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+            if (!tileToRender.bandTexturesUploaded.has(bandName)) {
+              gl.texImage2D(
+                gl.TEXTURE_2D,
+                0,
+                gl.R32F,
+                tileSize,
+                tileSize,
+                0,
+                gl.RED,
+                gl.FLOAT,
+                bandData
+              )
+              tileToRender.bandTexturesUploaded.add(bandName)
+            }
+
+            const loc = shaderProgram.bandTexLocs.get(bandName)
+            if (loc) {
+              gl.uniform1i(loc, textureUnit)
+            }
+            textureUnit++
+          }
+          if (missingBandData) {
+            continue
+          }
+        } else {
+          gl.activeTexture(gl.TEXTURE0)
+          gl.bindTexture(gl.TEXTURE_2D, tileToRender.tileTexture)
+          if (shaderProgram.texLoc) {
+            gl.uniform1i(shaderProgram.texLoc, 0)
+          }
+          gl.texParameteri(
+            gl.TEXTURE_2D,
+            gl.TEXTURE_MIN_FILTER,
+            this.canUseLinearHalfFloat ? gl.LINEAR : gl.NEAREST
+          )
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+          const channels = tileToRender.channels ?? 1
+          const format =
+            channels === 2
+              ? gl.RG
+              : channels === 3
+              ? gl.RGB
+              : channels >= 4
+              ? gl.RGBA
+              : gl.RED
+          const internalFormat =
+            channels === 2
+              ? gl.RG16F
+              : channels === 3
+              ? gl.RGB16F
+              : channels >= 4
+              ? gl.RGBA16F
+              : gl.R16F
+
+          if (!tileToRender.textureUploaded) {
+            gl.texImage2D(
+              gl.TEXTURE_2D,
+              0,
+              internalFormat,
+              tileSize,
+              tileSize,
+              0,
+              format,
+              gl.FLOAT,
+              tileToRender.data
+            )
+            tileToRender.textureUploaded = true
+          }
+        }
 
         gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.vertexBuffer)
         gl.enableVertexAttribArray(shaderProgram.vertexLoc)

@@ -152,3 +152,146 @@ void main() {
   fragColor = texture(tex, texCoord);
 }
 `
+
+export interface FragmentShaderOptions {
+  bands: string[]
+  customUniforms?: string[]
+  customFrag?: string
+}
+
+export function createFragmentShaderSource(
+  options: FragmentShaderOptions
+): string {
+  const { bands, customUniforms = [], customFrag } = options
+  const hasBands = bands.length > 0
+
+  const bandSamplers = bands
+    .map((name) => `uniform sampler2D ${name};`)
+    .join('\n')
+
+  const customUniformDecls = customUniforms
+    .map((name) => `uniform float ${name};`)
+    .join('\n')
+
+  const bandReads = bands
+    .map(
+      (name) =>
+        `  float ${name}_val = texture(${name}, sample_coord).r * u_scaleFactor + u_addOffset;`
+    )
+    .join('\n')
+
+  const bandAliases = bands
+    .map((name) => `  float ${name} = ${name}_val;`)
+    .join('\n')
+
+  const nodataChecks = bands
+    .map((name) => `${name} == nodata`)
+    .join(' || ')
+
+  const commonDiscardChecks = hasBands
+    ? `
+  bool anyNaN = false;
+  bool anyNoData = false;
+  bool anyFill = false;
+${bands.map((name) => `  anyNaN = anyNaN || (${name} != ${name});`).join('\n')}
+${bands
+  .map(
+    (name) =>
+      `  anyNoData = anyNoData || (${name} < u_noDataMin || ${name} > u_noDataMax);`
+  )
+  .join('\n')}
+${bands
+  .map(
+    (name) =>
+      `  anyFill = anyFill || (u_useFillValue && abs(${name} - u_fillValue) < 1e-6);`
+  )
+  .join('\n')}
+  
+  if (anyNaN || anyNoData || anyFill${nodataChecks ? ` || ${nodataChecks}` : ''}) {
+    discard;
+  }
+`
+    : ''
+
+  const fragBody = customFrag
+    ? `
+${commonDiscardChecks}
+${customFrag.replace(/gl_FragColor/g, 'fragColor')}`
+    : bands.length === 1
+    ? `
+  float value = ${bands[0]};
+  
+  bool isNaN = (value != value);
+  bool isNoData = (value < u_noDataMin || value > u_noDataMax);
+  bool isFill = (u_useFillValue && abs(value - u_fillValue) < 1e-6);
+  
+  if (isNaN || isNoData || isFill || value == nodata) {
+    discard;
+  }
+  
+  float norm = (value - clim.x) / (clim.y - clim.x);
+  float cla = clamp(norm, 0.0, 1.0);
+  vec4 c = texture(colormap, vec2(cla, 0.5));
+  fragColor = vec4(c.r, c.g, c.b, opacity);
+`
+    : `
+  bool anyNaN = false;
+  bool anyNoData = false;
+  bool anyFill = false;
+${bands.map((name) => `  anyNaN = anyNaN || (${name} != ${name});`).join('\n')}
+${bands
+  .map(
+    (name) =>
+      `  anyNoData = anyNoData || (${name} < u_noDataMin || ${name} > u_noDataMax);`
+  )
+  .join('\n')}
+${bands
+  .map(
+    (name) =>
+      `  anyFill = anyFill || (u_useFillValue && abs(${name} - u_fillValue) < 1e-6);`
+  )
+  .join('\n')}
+  
+  if (anyNaN || anyNoData || anyFill) {
+    discard;
+  }
+  
+  float value = ${bands[0]};
+  float norm = (value - clim.x) / (clim.y - clim.x);
+  float cla = clamp(norm, 0.0, 1.0);
+  vec4 c = texture(colormap, vec2(cla, 0.5));
+  fragColor = vec4(c.r, c.g, c.b, opacity);
+`
+
+  return `#version 300 es
+precision highp float;
+
+uniform float nodata;
+uniform float opacity;
+uniform vec2 clim;
+
+uniform float u_noDataMin;
+uniform float u_noDataMax;
+uniform bool u_useFillValue;
+uniform float u_fillValue;
+uniform float u_scaleFactor;
+uniform float u_addOffset;
+uniform vec2 u_texScale;
+uniform vec2 u_texOffset;
+
+uniform sampler2D colormap;
+
+${bandSamplers}
+${customUniformDecls}
+
+in vec2 pix_coord;
+out vec4 fragColor;
+
+void main() {
+  vec2 sample_coord = pix_coord * u_texScale + u_texOffset;
+${bandReads}
+${bandAliases}
+${fragBody}
+}
+`
+}

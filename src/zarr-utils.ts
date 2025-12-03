@@ -1001,3 +1001,41 @@ export function calculateXYFromBounds(
     }
   }
 }
+
+export interface BandInfo {
+  band: number | string
+  index: number
+}
+
+export function getBandInformation(
+  selector: Record<string, any>
+): Record<string, BandInfo> {
+  const result: Record<string, BandInfo> = {}
+
+  for (const [key, value] of Object.entries(selector)) {
+    if (Array.isArray(value)) {
+      value.forEach((v, idx) => {
+        const bandValue = typeof v === 'object' ? v.selected ?? v : v
+        const bandName =
+          typeof bandValue === 'string' ? bandValue : `${key}_${bandValue}`
+        result[bandName] = { band: bandValue, index: idx }
+      })
+    }
+  }
+
+  return result
+}
+
+export function getBands(
+  variable: string,
+  selector: Record<string, any>
+): string[] {
+  const bandInfo = getBandInformation(selector)
+  const bandNames = Object.keys(bandInfo)
+
+  if (bandNames.length === 0) {
+    return [variable]
+  }
+
+  return bandNames
+}

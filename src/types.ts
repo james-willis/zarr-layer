@@ -11,7 +11,7 @@ export interface ColorMapInfo {
 }
 
 export interface ZarrSelectorsProps {
-  selected: number | string | [number, number]
+  selected: number | number[] | string | [number, number]
   type?: 'index' | 'value'
 }
 
@@ -45,7 +45,7 @@ export interface MaplibreLayerOptions {
   id: string
   source: string
   variable: string
-  selector?: Record<string, number>
+  selector?: Record<string, number | number[]>
   colormap?: ColorMapName | number[][] | string[]
   vmin: number
   vmax: number
@@ -56,6 +56,8 @@ export interface MaplibreLayerOptions {
   noDataMin?: number
   noDataMax?: number
   customFragmentSource?: string
+  customFrag?: string
+  uniforms?: Record<string, number>
 }
 
 export type CRS = 'EPSG:4326' | 'EPSG:3857'

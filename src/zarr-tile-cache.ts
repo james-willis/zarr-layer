@@ -2,8 +2,13 @@ import { mustCreateBuffer, mustCreateTexture } from './webgl-utils'
 
 export interface TileRenderData {
   data: Float32Array | null
+  bandData: Map<string, Float32Array>
+  channels: number
   selectorHash: string | null
   tileTexture: WebGLTexture
+  bandTextures: Map<string, WebGLTexture>
+  bandTexturesUploaded: Set<string>
+  textureUploaded: boolean
   vertexBuffer: WebGLBuffer
   pixCoordBuffer: WebGLBuffer
   geometryUploaded?: boolean
@@ -27,8 +32,13 @@ export class TileRenderCache {
     if (!tile) {
       tile = {
         data: null,
+        bandData: new Map(),
+        channels: 1,
         selectorHash: null,
         tileTexture: mustCreateTexture(gl),
+        bandTextures: new Map(),
+        bandTexturesUploaded: new Set(),
+        textureUploaded: false,
         vertexBuffer: mustCreateBuffer(gl),
         pixCoordBuffer: mustCreateBuffer(gl),
         geometryUploaded: false,
@@ -49,9 +59,24 @@ export class TileRenderCache {
     return tile
   }
 
+  ensureBandTexture(tileKey: string, bandName: string): WebGLTexture | null {
+    const tile = this.tiles.get(tileKey)
+    if (!tile) return null
+
+    let tex = tile.bandTextures.get(bandName)
+    if (!tex) {
+      tex = mustCreateTexture(this.gl)
+      tile.bandTextures.set(bandName, tex)
+    }
+    return tex
+  }
+
   clear() {
     for (const tile of this.tiles.values()) {
       this.gl.deleteTexture(tile.tileTexture)
+      for (const tex of tile.bandTextures.values()) {
+        this.gl.deleteTexture(tex)
+      }
       this.gl.deleteBuffer(tile.vertexBuffer)
       this.gl.deleteBuffer(tile.pixCoordBuffer)
     }
@@ -66,6 +91,9 @@ export class TileRenderCache {
       const tile = this.tiles.get(oldestKey)
       if (tile) {
         this.gl.deleteTexture(tile.tileTexture)
+        for (const tex of tile.bandTextures.values()) {
+          this.gl.deleteTexture(tex)
+        }
         this.gl.deleteBuffer(tile.vertexBuffer)
         this.gl.deleteBuffer(tile.pixCoordBuffer)
       }
