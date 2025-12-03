@@ -9,6 +9,7 @@ import * as zarr from "zarrita";
 import { colormapBuilder } from "./jsColormaps";
 import { calculateNearestIndex, loadDimensionValues } from "./zarr-utils";
 import { ZarrStore } from "./zarr-store";
+import { Tiles } from "./tiles";
 import {
   createColorRampTexture,
   createProgram,
@@ -48,15 +49,11 @@ const DEFAULT_TILE_SIZE = 128;
 const MAX_CACHED_TILES = 64;
 
 interface TileData {
-  chunkData: Float32Array | null;
-  chunkShape: number[] | null;
-  chunkIndices?: number[];
   data: Float32Array | null;
   selectorHash: string | null;
   tileTexture: WebGLTexture;
   vertexBuffer: WebGLBuffer;
   pixCoordBuffer: WebGLBuffer;
-  loading: boolean;
   lastUsed: number;
 }
 
@@ -99,6 +96,7 @@ export class ZarrMaplibreLayer {
 
   private tiles: Map<string, TileData> = new Map();
   private tileAccessOrder: string[] = [];
+  private tilesManager: Tiles | null = null;
   private maxZoom: number = 4;
   private tileSize: number = DEFAULT_TILE_SIZE;
   private isMultiscale: boolean = true;
@@ -178,6 +176,7 @@ export class ZarrMaplibreLayer {
   private dimensionValues: { [key: string]: Float64Array | number[] } = {};
   private selectors: { [key: string]: ZarrSelectorsProps } = {};
   private isRemoved: boolean = false;
+  private fragmentShaderSource: string = maplibreFragmentShaderSource;
 
   constructor({
     id,
@@ -193,6 +192,7 @@ export class ZarrMaplibreLayer {
     dimensionNames = {},
     noDataMin,
     noDataMax,
+    customFragmentSource,
   }: MaplibreLayerOptions) {
     this.id = id;
     this.url = source;
@@ -205,14 +205,17 @@ export class ZarrMaplibreLayer {
     }
     this.invalidate = () => {};
 
-    const colors = colormapBuilder(colormap);
-    this.cmapColors = colors as number[][];
-    this.cmap = new Float32Array(this.cmapColors.flat().map((v) => v / 255.0));
-    this.cmapLength = this.cmapColors.length;
+    const colors = this.normalizeColormap(colormap);
+    this.cmapColors = colors;
+    this.cmap = new Float32Array(colors.flat().map((v) => v / 255.0));
+    this.cmapLength = colors.length;
     this.vmin = vmin;
     this.vmax = vmax;
     this.opacity = opacity;
     this.minRenderZoom = minRenderZoom;
+    if (customFragmentSource) {
+      this.fragmentShaderSource = customFragmentSource;
+    }
 
     if (noDataMin !== undefined) this.noDataMin = noDataMin;
     if (noDataMax !== undefined) this.noDataMax = noDataMax;
@@ -270,13 +273,42 @@ export class ZarrMaplibreLayer {
     this.invalidate();
   }
 
-  setColormap(colormap: ColorMapName) {
-    const colors = colormapBuilder(colormap) as number[][];
+  setColormap(colormap: ColorMapName | number[][] | string[]) {
+    const colors = this.normalizeColormap(colormap);
     this.cmapColors = colors;
     this.cmap = new Float32Array(colors.flat().map((v) => v / 255.0));
     this.cmapLength = colors.length;
     this.updateColormapTexture();
     this.invalidate();
+  }
+
+  private normalizeColormap(
+    colormap: ColorMapName | number[][] | string[]
+  ): number[][] {
+    const isRgbArray = Array.isArray(colormap) && Array.isArray(colormap[0]);
+    if (isRgbArray) {
+      const first = (colormap as number[][])[0];
+      const isNumberRow = Array.isArray(first) && typeof first[0] === "number";
+      if (isNumberRow) {
+        return colormap as number[][];
+      }
+    }
+    if (Array.isArray(colormap) && typeof colormap[0] === "string") {
+      return (colormap as string[]).map((hex) => this.hexToRgb(hex));
+    }
+    return colormapBuilder(colormap as ColorMapName) as number[][];
+  }
+
+  private hexToRgb(hex: string): number[] {
+    const cleaned = hex.replace("#", "");
+    if (cleaned.length !== 6) {
+      throw new Error(`Invalid hex color: ${hex}`);
+    }
+    const num = parseInt(cleaned, 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    return [r, g, b];
   }
 
   async setVariable(variable: string) {
@@ -306,6 +338,7 @@ export class ZarrMaplibreLayer {
     for (const [dimName, value] of Object.entries(selector)) {
       this.selectors[dimName] = { selected: value, type: "index" };
     }
+    this.tilesManager?.updateSelector(this.selectors);
     if (!this.isMultiscale) {
       this.singleImageData = null;
       await this.prefetchTileData();
@@ -316,41 +349,20 @@ export class ZarrMaplibreLayer {
   }
 
   private async reextractTileSlices() {
-    if (!this.zarrStore) return;
+    if (!this.tilesManager) return;
 
     const currentHash = this.getSelectorHash();
     const visibleTiles = this.getVisibleTiles();
 
+    await this.tilesManager.reextractTileSlices(visibleTiles, currentHash);
+
     for (const tileTuple of visibleTiles) {
       const tileKey = tileToKey(tileTuple);
       const tile = this.tiles.get(tileKey);
-      if (!tile) continue;
-
-      const levelPath = this.levelInfos[tileTuple[0]];
-      if (!levelPath) continue;
-      const levelArray = await this.zarrStore.getLevelArray(levelPath);
-      const desiredChunkIndices = this.computeChunkIndices(levelArray, tileTuple);
-
-      const canReuseChunk =
-        tile.chunkData &&
-        tile.chunkShape &&
-        this.arraysEqual(tile.chunkIndices, desiredChunkIndices);
-
-      if (canReuseChunk) {
-        tile.data = this.extractSliceFromChunk(
-          tile.chunkData!,
-          tile.chunkShape!,
-          levelArray,
-          desiredChunkIndices
-        );
-        tile.selectorHash = currentHash;
-      } else {
-        tile.data = null;
-        tile.selectorHash = null;
-        tile.chunkData = null;
-        tile.chunkShape = null;
-        tile.chunkIndices = undefined;
-      }
+      const cache = this.tilesManager.getTile(tileTuple);
+      if (!tile || !cache) continue;
+      tile.data = cache.data;
+      tile.selectorHash = cache.selectorHash;
     }
 
     await this.prefetchTileData();
@@ -394,7 +406,7 @@ export class ZarrMaplibreLayer {
     const fragmentShader = createShader(
       gl,
       gl.FRAGMENT_SHADER,
-      maplibreFragmentShaderSource
+      this.fragmentShaderSource
     );
     if (!vertexShader || !fragmentShader) {
       throw new Error("Failed to create shaders");
@@ -530,6 +542,14 @@ export class ZarrMaplibreLayer {
       }
 
       await this.loadInitialDimensionValues();
+
+      this.tilesManager = new Tiles({
+        store: this.zarrStore,
+        selectors: this.selectors,
+        fillValue: this.fillValue,
+        dimIndices: this.dimIndices,
+        maxCachedTiles: MAX_CACHED_TILES,
+      });
     } catch (err) {
       console.error("Failed to initialize Zarr layer:", err);
       throw err;
@@ -638,14 +658,11 @@ export class ZarrMaplibreLayer {
 
     if (!tile) {
       tile = {
-        chunkData: null,
-        chunkShape: null,
         data: null,
         selectorHash: null,
         tileTexture: mustCreateTexture(gl),
         vertexBuffer: mustCreateBuffer(gl),
         pixCoordBuffer: mustCreateBuffer(gl),
-        loading: false,
         lastUsed: Date.now(),
       };
       this.tiles.set(tileKey, tile);
@@ -665,105 +682,6 @@ export class ZarrMaplibreLayer {
 
   private getSelectorHash(): string {
     return JSON.stringify(this.selector);
-  }
-
-  private arraysEqual(a: number[] | undefined, b: number[] | undefined): boolean {
-    if (!a || !b) return false;
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) return false;
-    }
-    return true;
-  }
-
-  private extractSliceFromChunk(
-    chunkData: Float32Array,
-    chunkShape: number[],
-    levelArray: zarr.Array<any>,
-    chunkIndices: number[]
-  ): Float32Array {
-    const tileWidth = this.tileSize;
-    const tileHeight = this.tileSize;
-    const paddedData = new Float32Array(tileWidth * tileHeight);
-    paddedData.fill(this.fillValue);
-
-    const dimensions = this.zarrStore?.dimensions || [];
-    const chunkSizes = levelArray.chunks;
-
-    const selectorIndices: number[] = [];
-    let latDimIdx = -1;
-    let lonDimIdx = -1;
-    let latSize = tileHeight;
-    let lonSize = tileWidth;
-
-    for (let i = 0; i < dimensions.length; i++) {
-      const dimName = dimensions[i];
-      const dimKey = this.getDimKeyForName(dimName);
-
-      if (dimKey === "lat") {
-        latDimIdx = i;
-        latSize = Math.min(chunkShape[i], tileHeight);
-        selectorIndices.push(-1);
-      } else if (dimKey === "lon") {
-        lonDimIdx = i;
-        lonSize = Math.min(chunkShape[i], tileWidth);
-        selectorIndices.push(-1);
-      } else {
-        let idx = 0;
-        const dimSelection =
-          this.selectors[dimKey] ??
-          this.selectors[dimName] ??
-          this.selector[dimKey] ??
-          this.selector[dimName];
-        if (dimSelection !== undefined) {
-          idx =
-            typeof dimSelection === "object"
-              ? (dimSelection.selected as number)
-              : dimSelection;
-        }
-        const chunkOffset = chunkIndices[i] * chunkSizes[i];
-        idx = Math.max(0, idx - chunkOffset);
-        idx = Math.max(0, Math.min(idx, chunkShape[i] - 1));
-        selectorIndices.push(idx);
-      }
-    }
-
-    const getChunkIndex = (indices: number[]): number => {
-      let idx = 0;
-      let stride = 1;
-      for (let i = indices.length - 1; i >= 0; i--) {
-        idx += indices[i] * stride;
-        stride *= chunkShape[i];
-      }
-      return idx;
-    };
-
-    for (let latIdx = 0; latIdx < latSize; latIdx++) {
-      for (let lonIdx = 0; lonIdx < lonSize; lonIdx++) {
-        const indices = [...selectorIndices];
-        if (latDimIdx >= 0) indices[latDimIdx] = latIdx;
-        if (lonDimIdx >= 0) indices[lonDimIdx] = lonIdx;
-
-        const srcIdx = getChunkIndex(indices);
-        const dstIdx = latIdx * tileWidth + lonIdx;
-
-        if (srcIdx < chunkData.length) {
-          paddedData[dstIdx] = chunkData[srcIdx];
-        }
-      }
-    }
-
-    return paddedData;
-  }
-
-  private getDimKeyForName(dimName: string): string {
-    const lower = dimName.toLowerCase();
-    if (["lat", "latitude", "y"].includes(lower)) return "lat";
-    if (["lon", "longitude", "x", "lng"].includes(lower)) return "lon";
-    if (["time", "t", "time_counter"].includes(lower)) return "time";
-    if (["depth", "z", "level", "lev", "elevation"].includes(lower))
-      return "elevation";
-    return dimName;
   }
 
   private evictOldTiles() {
@@ -846,53 +764,10 @@ export class ZarrMaplibreLayer {
     }
   }
 
-  private computeChunkIndices(
-    levelArray: zarr.Array<any>,
-    tileTuple: TileTuple
-  ): number[] {
-    const [_, x, y] = tileTuple;
-    const dimensions = this.zarrStore?.dimensions || [];
-    const chunks = levelArray.chunks;
-    const chunkIndices: number[] = new Array(dimensions.length).fill(0);
-
-    for (let i = 0; i < dimensions.length; i++) {
-      const dimName = dimensions[i];
-      const dimKey = this.getDimKeyForName(dimName);
-
-      if (dimKey === "lon") {
-        chunkIndices[i] = x;
-      } else if (dimKey === "lat") {
-        chunkIndices[i] = y;
-      } else {
-        const dimSelection =
-          this.selectors[dimKey] ??
-          this.selectors[dimName] ??
-          this.selector[dimKey] ??
-          this.selector[dimName];
-        let idx = 0;
-        if (dimSelection !== undefined) {
-          idx =
-            typeof dimSelection === "object"
-              ? (dimSelection.selected as number)
-              : dimSelection;
-        }
-        idx = Math.max(0, Math.min(idx, levelArray.shape[i] - 1));
-        const chunkIdx = Math.floor(idx / chunks[i]);
-        const maxChunkIdx = Math.max(
-          0,
-          Math.ceil(levelArray.shape[i] / chunks[i]) - 1
-        );
-        chunkIndices[i] = Math.min(chunkIdx, maxChunkIdx);
-      }
-    }
-
-    return chunkIndices;
-  }
-
   private async fetchTileData(
     tileTuple: TileTuple
   ): Promise<Float32Array | null> {
-    if (this.isRemoved || !this.zarrStore || !this.gl) return null;
+    if (this.isRemoved || !this.tilesManager || !this.gl) return null;
 
     const tileKey = tileToKey(tileTuple);
     const tile = this.getOrCreateTile(tileKey);
@@ -902,67 +777,16 @@ export class ZarrMaplibreLayer {
       return tile.data;
     }
 
-    const [z, x, y] = tileTuple;
-    const levelPath = this.levelInfos[z];
-    if (!levelPath) return null;
-
-    const levelArray = await this.zarrStore.getLevelArray(levelPath);
-
-    if (tile.loading) return null;
-
-    tile.loading = true;
-
-    try {
-      const chunkIndices = this.computeChunkIndices(levelArray, tileTuple);
-
-      const canReuseChunk =
-        tile.chunkData &&
-        tile.chunkShape &&
-        this.arraysEqual(tile.chunkIndices, chunkIndices);
-
-      if (canReuseChunk) {
-        tile.data = this.extractSliceFromChunk(
-          tile.chunkData!,
-          tile.chunkShape!,
-          levelArray,
-          chunkIndices
-        );
-        tile.selectorHash = currentHash;
-        tile.loading = false;
-        return tile.data;
-      }
-
-      const chunk = await this.zarrStore.getChunk(levelPath, chunkIndices);
-      if (this.isRemoved) {
-        tile.loading = false;
-        return null;
-      }
-
-      const chunkShape = (chunk.shape as number[]).map((n) => Number(n));
-      const chunkData =
-        chunk.data instanceof Float32Array
-          ? new Float32Array(chunk.data.buffer)
-          : Float32Array.from(chunk.data as any);
-
-      tile.chunkData = chunkData;
-      tile.chunkShape = chunkShape;
-      tile.chunkIndices = chunkIndices;
-      tile.data = this.extractSliceFromChunk(
-        chunkData,
-        chunkShape,
-        levelArray,
-        chunkIndices
-      );
-      tile.selectorHash = currentHash;
-      tile.loading = false;
-      this.invalidate();
-
-      return tile.data;
-    } catch (err) {
-      console.error("Error fetching tile data:", err);
-      tile.loading = false;
+    const cache = await this.tilesManager.fetchTile(tileTuple, currentHash);
+    if (!cache || this.isRemoved) {
       return null;
     }
+
+    tile.data = cache.data;
+    tile.selectorHash = cache.selectorHash;
+    this.invalidate();
+
+    return tile.data;
   }
 
   prerender(gl: WebGL2RenderingContext, matrix: number[]) {

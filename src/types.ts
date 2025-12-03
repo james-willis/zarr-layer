@@ -46,7 +46,7 @@ export interface MaplibreLayerOptions {
   source: string;
   variable: string;
   selector?: Record<string, number>;
-  colormap?: ColorMapName;
+  colormap?: ColorMapName | number[][] | string[];
   vmin: number;
   vmax: number;
   opacity?: number;
@@ -55,6 +55,7 @@ export interface MaplibreLayerOptions {
   dimensionNames?: DimensionNamesProps;
   noDataMin?: number;
   noDataMax?: number;
+  customFragmentSource?: string;
 }
 
 export type CRS = 'EPSG:4326' | 'EPSG:3857';
