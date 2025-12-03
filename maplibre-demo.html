@@ -536,7 +536,6 @@
                     document.getElementById('colormap').value = 'turbo'
 
                     document.getElementById('loading').style.display = 'none'
-                    console.log('Switched to combined bands mode (tavg + prec/50)')
                 } catch (error) {
                     console.error('Error switching to combined mode:', error)
                     document.getElementById('loading').textContent =
@@ -697,7 +696,6 @@
                     // Hide loading
                     document.getElementById('loading').style.display = 'none'
 
-                    console.log('Switched to dataset:', datasetKey)
                 } catch (error) {
                     console.error('Error switching dataset:', error)
                     document.getElementById('loading').textContent =
