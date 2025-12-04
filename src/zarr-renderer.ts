@@ -54,6 +54,8 @@ interface MapboxGlobeParams {
   transition: number
 }
 
+type ProjectionMode = 'mercator' | 'maplibre-globe' | 'mapbox-globe'
+
 interface RenderParams {
   matrix: number[] | Float32Array | Float64Array
   colormapTexture: WebGLTexture
@@ -98,7 +100,7 @@ interface ShaderProgram {
   texOffsetLoc: WebGLUniformLocation
   vertexLoc: number
   pixCoordLoc: number
-  isGlobe: boolean
+  projectionMode: ProjectionMode
   useCustomShader: boolean
   bandTexLocs: Map<string, WebGLUniformLocation>
   customUniformLocs: Map<string, WebGLUniformLocation>
@@ -160,34 +162,112 @@ export class ZarrRenderer {
     throw new Error('Invalid WebGL2 context: missing required WebGL2 methods')
   }
 
+  private resolveProjectionMode(
+    shaderData?: ShaderData,
+    useMapboxGlobe: boolean = false
+  ): ProjectionMode {
+    if (useMapboxGlobe) return 'mapbox-globe'
+    if (shaderData?.vertexShaderPrelude) return 'maplibre-globe'
+    return 'mercator'
+  }
+
+  private applyProjectionUniforms(
+    shaderProgram: ShaderProgram,
+    matrix: number[] | Float32Array | Float64Array,
+    projectionData?: ProjectionData,
+    mapboxGlobe?: MapboxGlobeParams
+  ) {
+    const gl = this.gl
+    const setMatrix4 = (
+      loc: WebGLUniformLocation | null | undefined,
+      value?: number[] | Float32Array | Float64Array
+    ) => {
+      if (loc && value) {
+        gl.uniformMatrix4fv(loc, false, toFloat32Array(value))
+      }
+    }
+    const setVec4 = (
+      loc: WebGLUniformLocation | null | undefined,
+      value?: [number, number, number, number]
+    ) => {
+      if (loc && value) {
+        gl.uniform4f(loc, ...value)
+      }
+    }
+    const setFloat = (
+      loc: WebGLUniformLocation | null | undefined,
+      value?: number
+    ) => {
+      if (loc && value !== undefined) {
+        gl.uniform1f(loc, value)
+      }
+    }
+
+    switch (shaderProgram.projectionMode) {
+      case 'maplibre-globe': {
+        if (!projectionData) return
+
+        setMatrix4(shaderProgram.projMatrixLoc, projectionData.mainMatrix)
+        setMatrix4(
+          shaderProgram.fallbackMatrixLoc,
+          projectionData.fallbackMatrix
+        )
+        setVec4(
+          shaderProgram.tileMercatorCoordsLoc,
+          projectionData.tileMercatorCoords
+        )
+        setVec4(shaderProgram.clippingPlaneLoc, projectionData.clippingPlane)
+        setFloat(
+          shaderProgram.projectionTransitionLoc,
+          projectionData.projectionTransition
+        )
+        break
+      }
+      case 'mapbox-globe': {
+        setMatrix4(shaderProgram.matrixLoc, matrix)
+        setMatrix4(
+          shaderProgram.globeToMercMatrixLoc,
+          mapboxGlobe?.globeToMercatorMatrix
+        )
+        setFloat(
+          shaderProgram.globeTransitionLoc,
+          mapboxGlobe?.transition ?? 0
+        )
+        break
+      }
+      default: {
+        setMatrix4(shaderProgram.matrixLoc, matrix)
+        break
+      }
+    }
+  }
+
   private getOrCreateProgram(
     shaderData?: ShaderData,
     customShaderConfig?: CustomShaderConfig,
     useMapboxGlobe: boolean = false
   ): ShaderProgram {
+    const projectionMode = this.resolveProjectionMode(
+      shaderData,
+      useMapboxGlobe
+    )
     const config = customShaderConfig || this.customShaderConfig
     const useCustomShader = config && config.bands.length > 0
-    const variantParts = []
-    if (useCustomShader && config) {
-      variantParts.push('custom', config.bands.join('_'))
-    } else {
-      variantParts.push(shaderData?.variantName ?? 'mercator')
-    }
-    if (useMapboxGlobe) variantParts.push('mb_globe')
-    const variantName = variantParts.join('_')
+    const baseVariant =
+      useCustomShader && config
+        ? ['custom', config.bands.join('_')].join('_')
+        : shaderData?.variantName ?? 'base'
+    const variantName = [baseVariant, projectionMode].join('_')
 
     const cached = this.shaderCache.get(variantName)
     if (cached) {
       return cached
     }
 
-    const isGlobe =
-      useMapboxGlobe || (shaderData && shaderData.vertexShaderPrelude)
-        ? true
-        : false
-    const vertexSource = useMapboxGlobe
-      ? createMapboxGlobeVertexShaderSource()
-      : createVertexShaderSource(shaderData)
+    const vertexSource =
+      projectionMode === 'mapbox-globe'
+        ? createMapboxGlobeVertexShaderSource()
+        : createVertexShaderSource(shaderData)
 
     let fragmentSource: string
     if (useCustomShader && config) {
@@ -242,6 +322,10 @@ export class ZarrRenderer {
       }
     }
 
+    const needsGlobeProjection = projectionMode === 'maplibre-globe'
+    const globeUniform = (name: string) =>
+      needsGlobeProjection ? this.gl.getUniformLocation(program, name) : null
+
     const shaderProgram: ShaderProgram = {
       program,
       scaleLoc: mustGetUniformLocation(this.gl, program, 'scale'),
@@ -254,29 +338,15 @@ export class ZarrRenderer {
         program,
         'u_worldXOffset'
       ),
-      matrixLoc: useMapboxGlobe
-        ? mustGetUniformLocation(this.gl, program, 'matrix')
-        : !isGlobe
-        ? mustGetUniformLocation(this.gl, program, 'matrix')
-        : null,
-      projMatrixLoc: isGlobe && !useMapboxGlobe
-        ? this.gl.getUniformLocation(program, 'u_projection_matrix')
-        : null,
-      fallbackMatrixLoc: isGlobe && !useMapboxGlobe
-        ? this.gl.getUniformLocation(program, 'u_projection_fallback_matrix')
-        : null,
-      tileMercatorCoordsLoc: isGlobe && !useMapboxGlobe
-        ? this.gl.getUniformLocation(
-            program,
-            'u_projection_tile_mercator_coords'
-          )
-        : null,
-      clippingPlaneLoc: isGlobe && !useMapboxGlobe
-        ? this.gl.getUniformLocation(program, 'u_projection_clipping_plane')
-        : null,
-      projectionTransitionLoc: isGlobe && !useMapboxGlobe
-        ? this.gl.getUniformLocation(program, 'u_projection_transition')
-        : null,
+      matrixLoc:
+        projectionMode === 'maplibre-globe'
+          ? null
+          : mustGetUniformLocation(this.gl, program, 'matrix'),
+      projMatrixLoc: globeUniform('u_projection_matrix'),
+      fallbackMatrixLoc: globeUniform('u_projection_fallback_matrix'),
+      tileMercatorCoordsLoc: globeUniform('u_projection_tile_mercator_coords'),
+      clippingPlaneLoc: globeUniform('u_projection_clipping_plane'),
+      projectionTransitionLoc: globeUniform('u_projection_transition'),
 
       opacityLoc: mustGetUniformLocation(this.gl, program, 'opacity'),
       texScaleLoc: mustGetUniformLocation(this.gl, program, 'u_texScale'),
@@ -297,14 +367,14 @@ export class ZarrRenderer {
         ? null
         : this.gl.getUniformLocation(program, 'tex'),
 
-      isGlobe,
+      projectionMode,
       useCustomShader: !!useCustomShader,
       bandTexLocs,
       customUniformLocs,
-      globeToMercMatrixLoc: useMapboxGlobe
+      globeToMercMatrixLoc: projectionMode === 'mapbox-globe'
         ? this.gl.getUniformLocation(program, 'u_globe_to_merc')
         : null,
-      globeTransitionLoc: useMapboxGlobe
+      globeTransitionLoc: projectionMode === 'mapbox-globe'
         ? this.gl.getUniformLocation(program, 'u_globe_transition')
         : null,
     }
@@ -388,59 +458,12 @@ export class ZarrRenderer {
       }
     }
 
-    if (shaderProgram.isGlobe && projectionData) {
-      if (shaderProgram.projMatrixLoc) {
-        gl.uniformMatrix4fv(
-          shaderProgram.projMatrixLoc,
-          false,
-          toFloat32Array(projectionData.mainMatrix)
-        )
-      }
-      if (shaderProgram.fallbackMatrixLoc) {
-        gl.uniformMatrix4fv(
-          shaderProgram.fallbackMatrixLoc,
-          false,
-          toFloat32Array(projectionData.fallbackMatrix)
-        )
-      }
-      if (shaderProgram.tileMercatorCoordsLoc) {
-        gl.uniform4f(
-          shaderProgram.tileMercatorCoordsLoc,
-          ...projectionData.tileMercatorCoords
-        )
-      }
-      if (shaderProgram.clippingPlaneLoc) {
-        gl.uniform4f(
-          shaderProgram.clippingPlaneLoc,
-          ...projectionData.clippingPlane
-        )
-      }
-      if (shaderProgram.projectionTransitionLoc) {
-        gl.uniform1f(
-          shaderProgram.projectionTransitionLoc,
-          projectionData.projectionTransition
-        )
-      }
-    } else if (shaderProgram.matrixLoc) {
-      gl.uniformMatrix4fv(
-        shaderProgram.matrixLoc,
-        false,
-        toFloat32Array(matrix)
-      )
-      if (mapboxGlobe && shaderProgram.globeToMercMatrixLoc) {
-        gl.uniformMatrix4fv(
-          shaderProgram.globeToMercMatrixLoc,
-          false,
-          toFloat32Array(mapboxGlobe.globeToMercatorMatrix)
-        )
-      }
-      if (mapboxGlobe && shaderProgram.globeTransitionLoc) {
-        gl.uniform1f(
-          shaderProgram.globeTransitionLoc,
-          mapboxGlobe.transition ?? 0
-        )
-      }
-    }
+    this.applyProjectionUniforms(
+      shaderProgram,
+      matrix,
+      projectionData,
+      mapboxGlobe
+    )
 
     if (isMultiscale) {
       this.renderTiles(
@@ -653,11 +676,7 @@ export class ZarrRenderer {
 
             gl.activeTexture(gl.TEXTURE0 + textureUnit)
             gl.bindTexture(gl.TEXTURE_2D, bandTex)
-            gl.texParameteri(
-              gl.TEXTURE_2D,
-              gl.TEXTURE_MIN_FILTER,
-              gl.NEAREST
-            )
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
@@ -691,11 +710,7 @@ export class ZarrRenderer {
           if (shaderProgram.texLoc) {
             gl.uniform1i(shaderProgram.texLoc, 0)
           }
-          gl.texParameteri(
-            gl.TEXTURE_2D,
-            gl.TEXTURE_MIN_FILTER,
-            gl.NEAREST
-          )
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
