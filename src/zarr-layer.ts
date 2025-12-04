@@ -20,13 +20,10 @@ import { ColormapState } from './zarr-colormap'
 import { ZarrRenderer, type CustomShaderConfig } from './zarr-renderer'
 import type {
   ColormapArray,
-  CRS,
   DimensionNamesProps,
   DimIndicesProps,
   MapLike,
   ZarrLayerOptions,
-  XYLimits,
-  ZarrLevelMetadata,
   ZarrSelectorsProps,
 } from './types'
 import { DataManager } from './data-manager'
@@ -52,7 +49,6 @@ export class ZarrLayer {
   private opacity: number
   private minRenderZoom: number
 
-  private maxZoom: number = 4
   private tileSize: number = DEFAULT_TILE_SIZE
   private isMultiscale: boolean = true
   private fillValue: number | null = null
@@ -118,10 +114,7 @@ export class ZarrLayer {
 
   private zarrStore: ZarrStore | null = null
   private levelInfos: string[] = []
-  private levelMetadata: Map<number, ZarrLevelMetadata> = new Map()
   private dimIndices: DimIndicesProps = {}
-  private xyLimits: XYLimits | null = null
-  private crs: CRS | null = null
   private dimensionValues: { [key: string]: Float64Array | number[] } = {}
   private selectors: { [key: string]: ZarrSelectorsProps } = {}
   private isRemoved: boolean = false
@@ -350,8 +343,6 @@ export class ZarrLayer {
 
       this.levelInfos = desc.levels
       this.dimIndices = desc.dimIndices
-      this.xyLimits = desc.xyLimits
-      this.crs = desc.crs
       this.scaleFactor = desc.scaleFactor
       this.offset = desc.addOffset
       this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE
@@ -439,10 +430,6 @@ export class ZarrLayer {
     return worldOffsets.length > 0 ? worldOffsets : [0]
   }
 
-  private getSelectorHash(): string {
-    return JSON.stringify(this.selector)
-  }
-
   prerender(
     _gl: WebGL2RenderingContext | WebGLRenderingContext,
     _params: unknown
@@ -509,13 +496,13 @@ export class ZarrLayer {
           number,
           number,
           number,
-          number,
+          number
         ],
         clippingPlane: defaultProj.clippingPlane as [
           number,
           number,
           number,
-          number,
+          number
         ],
         projectionTransition: defaultProj.projectionTransition,
       }
@@ -552,13 +539,13 @@ export class ZarrLayer {
 
     const renderData = this.dataManager.getRenderData()
 
-      this.renderer.render({
-        matrix,
-        colormapTexture,
-        uniforms,
-        worldOffsets,
-        isMultiscale: renderData.isMultiscale,
-        visibleTiles: renderData.visibleTiles || [],
+    this.renderer.render({
+      matrix,
+      colormapTexture,
+      uniforms,
+      worldOffsets,
+      isMultiscale: renderData.isMultiscale,
+      visibleTiles: renderData.visibleTiles || [],
       tileCache: renderData.tileCache,
       tileSize: renderData.tileSize || this.tileSize,
       vertexArr: renderData.vertexArr || new Float32Array(),

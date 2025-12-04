@@ -26,25 +26,23 @@ const SidebarComponent = () => {
   }, [setSidebarWidth])
 
   return (
-    <Box sx={{ display: ['none', 'none', 'block'] }}>
-      <Sidebar expanded={true} side='left' width={4}>
-        <div ref={sidebarRef}>
-          <Box
-            as='h1'
-            sx={{
-              fontSize: [4],
-              fontFamily: 'heading',
-              letterSpacing: 'heading',
-              lineHeight: 'heading',
-              mb: 3,
-            }}
-          >
-            @carbonplan/zarr-layer demo
-          </Box>
-          <Controls />
-        </div>
-      </Sidebar>
-    </Box>
+    <Sidebar expanded={true} side='left' width={4}>
+      <div ref={sidebarRef}>
+        <Box
+          as='h1'
+          sx={{
+            fontSize: [4],
+            fontFamily: 'heading',
+            letterSpacing: 'heading',
+            lineHeight: 'heading',
+            mb: 3,
+          }}
+        >
+          @carbonplan/zarr-layer demo
+        </Box>
+        <Controls />
+      </div>
+    </Sidebar>
   )
 }
 

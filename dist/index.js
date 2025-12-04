@@ -4212,6 +4212,11 @@ open.v2 = open_v2;
 open.v3 = open_v3;
 
 // src/zarr-utils.ts
+var resolveOpenFunc = (zarrVersion) => {
+  if (zarrVersion === 2) return open.v2;
+  if (zarrVersion === 3) return open.v3;
+  return open;
+};
 var DIMENSION_ALIASES_DEFAULT = {
   lat: ["lat", "latitude", "y", "Latitude", "Y"],
   lon: ["lon", "longitude", "x", "Longitude", "X", "lng"],
@@ -4248,8 +4253,8 @@ function identifyDimensionIndices(dimNames, dimensionNames, coordinates) {
   if (coordinates) {
     Object.keys(coordinates).forEach((coordName) => {
       const coordArr = coordinates[coordName];
-      const coordAttrs = coordArr.attrs;
-      const standardName = coordAttrs?.standard_name;
+      const coordAttrs = coordArr.attrs ?? {};
+      const standardName = typeof coordAttrs?.standard_name === "string" ? coordAttrs.standard_name : void 0;
       if (standardName) {
         for (const [dimKey, cfNames] of Object.entries(CF_MAPPINGS)) {
           if (cfNames.includes(standardName)) {
@@ -4314,12 +4319,7 @@ async function loadDimensionValues(dimensionValues, levelInfo, dimIndices, root2
     coordArr = dimIndices.array;
   } else {
     const coordVar = await targetRoot.resolve(dimIndices.name);
-    let localFunc = open;
-    if (zarrVersion === 2) {
-      localFunc = open.v2;
-    } else if (zarrVersion === 3) {
-      localFunc = open.v3;
-    }
+    const localFunc = resolveOpenFunc(zarrVersion);
     coordArr = await localFunc(coordVar, { kind: "array" });
   }
   const coordData = await get2(coordArr);
@@ -4337,7 +4337,7 @@ function getBandInformation(selector) {
   for (const [key, value] of Object.entries(selector)) {
     if (Array.isArray(value)) {
       value.forEach((v, idx) => {
-        const bandValue = typeof v === "object" ? v.selected ?? v : v;
+        const bandValue = typeof v === "object" && v !== null && "selected" in v && v.selected !== void 0 ? v.selected : v;
         const bandName = typeof bandValue === "string" ? bandValue : `${key}_${bandValue}`;
         result[bandName] = { band: bandValue, index: idx };
       });
@@ -5401,6 +5401,10 @@ var ZarrRenderer = class _ZarrRenderer {
       mapboxGlobe
     );
     if (isMultiscale) {
+      if (!tileCache) {
+        console.warn("Missing tile cache for multiscale render, skipping frame");
+        return;
+      }
       this.renderTiles(
         shaderProgram,
         visibleTiles,
@@ -5890,7 +5894,7 @@ var Tiles = class {
     const coords = dimName ? this.coordinates[dimName] : void 0;
     return items.map((v) => {
       const val = typeof v === "object" && v !== null && "selected" in v ? v.selected : v;
-      if (coords) {
+      if (coords && (typeof val === "number" || typeof val === "string")) {
         const idx = coords.indexOf(val);
         if (idx >= 0) return idx;
       }
@@ -6242,7 +6246,7 @@ var TiledDataManager = class _TiledDataManager {
   getRenderData() {
     return {
       isMultiscale: true,
-      tileCache: this.tileCache,
+      tileCache: this.tileCache ?? void 0,
       visibleTiles: this.visibleTiles,
       tileSize: this.tileSize,
       vertexArr: this.vertexArr,
@@ -6322,6 +6326,7 @@ var TiledDataManager = class _TiledDataManager {
     };
   }
   getVisibleTiles(map) {
+    if (!map.getZoom || !map.getBounds) return [];
     const mapZoom = map.getZoom();
     if (mapZoom < this.minRenderZoom) {
       return [];
@@ -6404,7 +6409,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
     }
     this.updateGeometryForProjection(false);
   }
-  update(map, gl) {
+  update(_map, gl) {
     if (!this.texture) {
       this.texture = mustCreateTexture(gl);
     }
@@ -6495,7 +6500,9 @@ var SingleImageDataManager = class _SingleImageDataManager {
   async fetchData() {
     if (!this.zarrArray || this.isRemoved) return;
     try {
-      const sliceArgs = new Array(this.zarrArray.shape.length).fill(0);
+      const sliceArgs = new Array(
+        this.zarrArray.shape.length
+      ).fill(0);
       for (const dimName of Object.keys(this.dimIndices)) {
         const dimInfo = this.dimIndices[dimName];
         if (dimName === "lon") {
@@ -6505,13 +6512,18 @@ var SingleImageDataManager = class _SingleImageDataManager {
         } else {
           const dimSelection = this.selector[dimName];
           if (dimSelection !== void 0) {
-            sliceArgs[dimInfo.index] = typeof dimSelection === "object" ? dimSelection.selected : dimSelection;
+            const selectionValue = typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection ? dimSelection.selected : dimSelection;
+            const normalizedValue = Array.isArray(selectionValue) ? selectionValue.find((v) => typeof v === "number") ?? 0 : typeof selectionValue === "number" ? selectionValue : 0;
+            sliceArgs[dimInfo.index] = normalizedValue;
           } else {
             sliceArgs[dimInfo.index] = 0;
           }
         }
       }
-      const data = await get2(this.zarrArray, sliceArgs);
+      const data = await get2(
+        this.zarrArray,
+        sliceArgs
+      );
       if (this.isRemoved) return;
       this.data = new Float32Array(data.data.buffer);
     } catch (err) {
@@ -6542,21 +6554,18 @@ var ZarrLayer = class {
   }) {
     this.type = "custom";
     this.zarrVersion = null;
-    this.maxZoom = 4;
     this.tileSize = DEFAULT_TILE_SIZE2;
     this.isMultiscale = true;
     this.fillValue = null;
     this.scaleFactor = 1;
     this.offset = 0;
+    this.map = null;
     this.renderer = null;
     this.dataManager = null;
     this.projectionChangeHandler = null;
     this.zarrStore = null;
     this.levelInfos = [];
-    this.levelMetadata = /* @__PURE__ */ new Map();
     this.dimIndices = {};
-    this.xyLimits = null;
-    this.crs = null;
     this.dimensionValues = {};
     this.selectors = {};
     this.isRemoved = false;
@@ -6690,7 +6699,7 @@ var ZarrLayer = class {
     this.map = map;
     const resolvedGl = this.resolveGl(map, gl);
     this.gl = resolvedGl;
-    this.invalidate = () => map.triggerRepaint();
+    this.invalidate = () => map.triggerRepaint && map.triggerRepaint();
     this.colormap.upload(resolvedGl);
     this.renderer = new ZarrRenderer(
       resolvedGl,
@@ -6756,8 +6765,6 @@ var ZarrLayer = class {
       const desc = this.zarrStore.describe();
       this.levelInfos = desc.levels;
       this.dimIndices = desc.dimIndices;
-      this.xyLimits = desc.xyLimits;
-      this.crs = desc.crs;
       this.scaleFactor = desc.scaleFactor;
       this.offset = desc.addOffset;
       this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE2;
@@ -6802,10 +6809,12 @@ var ZarrLayer = class {
     }
   }
   getWorldOffsets() {
-    const bounds = this.map.getBounds();
+    const map = this.map;
+    if (!map) return [0];
+    const bounds = map.getBounds ? map.getBounds() : null;
     if (!bounds) return [0];
     const isGlobe = this.isGlobeProjection();
-    const renderWorldCopies = typeof this.map.getRenderWorldCopies === "function" ? this.map.getRenderWorldCopies() : true;
+    const renderWorldCopies = typeof map.getRenderWorldCopies === "function" ? map.getRenderWorldCopies() : true;
     if (isGlobe || !renderWorldCopies) return [0];
     const west = bounds.getWest();
     const east = bounds.getEast();
@@ -6817,26 +6826,24 @@ var ZarrLayer = class {
     }
     return worldOffsets.length > 0 ? worldOffsets : [0];
   }
-  getSelectorHash() {
-    return JSON.stringify(this.selector);
-  }
   prerender(_gl, _params) {
-    if (this.isRemoved || !this.gl || !this.dataManager) return;
+    if (this.isRemoved || !this.gl || !this.dataManager || !this.map) return;
     this.dataManager.update(this.map, this.gl);
   }
   render(_gl, params, projection, globeToMercatorMatrix, transition) {
-    if (this.isRemoved || !this.renderer || !this.gl || !this.dataManager)
+    if (this.isRemoved || !this.renderer || !this.gl || !this.dataManager || !this.map)
       return;
-    const paramsObj = params && typeof params === "object" && !Array.isArray(params) ? params : null;
+    const paramsObj = params && typeof params === "object" && !Array.isArray(params) && !ArrayBuffer.isView(params) ? params : null;
     const shaderData = paramsObj?.shaderData;
     let projectionData;
-    if (paramsObj?.defaultProjectionData) {
+    const defaultProj = paramsObj?.defaultProjectionData;
+    if (defaultProj && defaultProj.mainMatrix && defaultProj.fallbackMatrix && defaultProj.tileMercatorCoords && defaultProj.clippingPlane && typeof defaultProj.projectionTransition === "number") {
       projectionData = {
-        mainMatrix: paramsObj.defaultProjectionData.mainMatrix,
-        fallbackMatrix: paramsObj.defaultProjectionData.fallbackMatrix,
-        tileMercatorCoords: paramsObj.defaultProjectionData.tileMercatorCoords,
-        clippingPlane: paramsObj.defaultProjectionData.clippingPlane,
-        projectionTransition: paramsObj.defaultProjectionData.projectionTransition
+        mainMatrix: defaultProj.mainMatrix,
+        fallbackMatrix: defaultProj.fallbackMatrix,
+        tileMercatorCoords: defaultProj.tileMercatorCoords,
+        clippingPlane: defaultProj.clippingPlane,
+        projectionTransition: defaultProj.projectionTransition
       };
     }
     let matrix = null;

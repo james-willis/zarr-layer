@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Box } from 'theme-ui'
 // @ts-expect-error - carbonplan colormaps types not available
 import { useThemedColormap } from '@carbonplan/colormaps'
@@ -8,11 +8,12 @@ import mapboxgl from 'mapbox-gl'
 import { layers, namedFlavor } from '@protomaps/basemaps'
 import { Protocol } from 'pmtiles'
 import { useAppStore } from '../lib/store'
+import { BuildLayerResult } from '../datasets/types'
+import type { ZarrLayerOptions } from '../../src/types'
 
 export type MapProvider = 'maplibre' | 'mapbox'
 
 const backgroundColor = '#1b1e23'
-const ALL_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 const mapLibreTheme = {
   ...namedFlavor('black'),
   buildings: 'rgba(0, 0, 0, 0)',
@@ -47,42 +48,13 @@ const mapLibreTheme = {
   italic: 'Relative Pro Book',
 }
 
-export const combinedBandsCustomFrag = `
-  uniform float u_precipWeight;
-  float combined = tavg + prec * u_precipWeight;
-  float norm = (combined - clim.x) / (clim.y - clim.x);
-  float cla = clamp(norm, 0.0, 1.0);
-  vec4 c = texture(colormap, vec2(cla, 0.5));
-  fragColor = vec4(c.r, c.g, c.b, opacity);
-`
-
-export const monthRangeAverageFrag = `
-  uniform float u_monthStart;
-  uniform float u_monthEnd;
-  float sum = 0.0;
-  float count = 0.0;
-  ${ALL_MONTHS.map(
-    (month) => `
-  if (u_monthStart <= ${month.toFixed(1)} && ${month.toFixed(
-      1
-    )} <= u_monthEnd) {
-    sum += month_${month};
-    count += 1.0;
-  }`
-  ).join('')}
-  float average = count > 0.0 ? sum / count : 0.0;
-  float rescaled = (average - clim.x) / (clim.y - clim.x);
-  vec4 c = texture(colormap, vec2(clamp(rescaled, 0.0, 1.0), 0.5));
-  fragColor = vec4(c.r, c.g, c.b, opacity);
-`
-
 export interface MapInstance {
   on(event: string, callback: () => void): void
   remove(): void
-  getLayer(id: string): any
+  getLayer(id: string): unknown
   removeLayer(id: string): void
-  addLayer(layer: any, beforeId?: string): void
-  setProjection(projection: any): void
+  addLayer(layer: unknown, beforeId?: string): void
+  setProjection(projection: unknown): void
   resize?(): void
   flyTo(options: { center: [number, number]; zoom: number }): void
 }
@@ -164,44 +136,18 @@ export const getMapConfig = (provider: MapProvider): MapConfig => {
 export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const zarrLayerRef = useRef<InstanceType<typeof ZarrLayer> | null>(null)
   const datasetId = useAppStore((state) => state.datasetId)
-  const dataset = useAppStore((state) => state.getDataset())
+  const datasetModule = useAppStore((state) => state.getDatasetModule())
+  const datasetState = useAppStore((state) => state.getDatasetState())
   const opacity = useAppStore((state) => state.opacity)
   const clim = useAppStore((state) => state.clim)
   const colormap = useAppStore((state) => state.colormap)
-  const time = useAppStore((state) => state.time)
-  const band = useAppStore((state) => state.band)
-  const month = useAppStore((state) => state.month)
-  const monthStart = useAppStore((state) => state.monthStart)
-  const monthEnd = useAppStore((state) => state.monthEnd)
-  const precipWeight = useAppStore((state) => state.precipWeight)
   const mapProvider = useAppStore((state) => state.mapProvider)
   const colormapArray = useThemedColormap(colormap, { format: 'hex' })
 
-  const isCombined = band === 'combined'
-  const isRangeAverage =
-    band === 'tavg_range_avg' || band === 'prec_range_avg'
-  const baseRangeBand = isRangeAverage
-    ? band.startsWith('prec')
-      ? 'prec'
-      : 'tavg'
-    : null
-
-  const buildSelector = (): Record<
-    string,
-    number | number[] | string | string[]
-  > => {
-    if (dataset.has4D) {
-      if (isCombined) {
-        return { band: ['tavg', 'prec'], month: month }
-      } else if (isRangeAverage && baseRangeBand) {
-        return { band: baseRangeBand, month: ALL_MONTHS }
-      } else {
-        return { band: band, month: month }
-      }
-    } else {
-      return { time: time }
-    }
-  }
+  const layerConfig: BuildLayerResult = useMemo(
+    () => datasetModule.buildLayerProps({ state: datasetState as any }),
+    [datasetModule, datasetState],
+  )
 
   useEffect(() => {
     if (!map || !isMapLoaded) return
@@ -217,31 +163,25 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       zarrLayerRef.current = null
     }
 
-    const selector = buildSelector()
-
-    const options: any = {
+    const options: ZarrLayerOptions = {
       id: 'zarr-layer',
-      source: dataset.source,
-      variable: dataset.variable,
+      source: datasetModule.source,
+      variable: datasetModule.variable,
       clim: clim,
       colormap: colormapArray,
       opacity: opacity,
-      selector: selector,
-      zarrVersion: dataset.zarrVersion,
-      minRenderZoom: dataset.minRenderZoom ?? 0,
-      fillValue: dataset.fillValue,
-      dimensionNames: dataset.dimensionNames,
+      selector: layerConfig.selector,
+      zarrVersion: datasetModule.zarrVersion,
+      minRenderZoom: datasetModule.minRenderZoom ?? 0,
+      fillValue: datasetModule.fillValue,
+      dimensionNames: datasetModule.dimensionNames,
     }
 
-    if (isCombined) {
-      options.customFrag = combinedBandsCustomFrag
-      options.uniforms = { u_precipWeight: precipWeight }
-    } else if (isRangeAverage) {
-      options.customFrag = monthRangeAverageFrag
-      options.uniforms = {
-        u_monthStart: monthStart,
-        u_monthEnd: monthEnd,
-      }
+    if (layerConfig.customFrag) {
+      options.customFrag = layerConfig.customFrag
+    }
+    if (layerConfig.uniforms) {
+      options.uniforms = layerConfig.uniforms
     }
 
     try {
@@ -253,10 +193,10 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       map.addLayer(layer, beforeId)
       zarrLayerRef.current = layer
 
-      if (dataset.center) {
+      if (datasetModule.center) {
         map.flyTo({
-          center: dataset.center,
-          zoom: dataset.zoom || 4,
+          center: datasetModule.center,
+          zoom: datasetModule.zoom || 4,
         })
       }
     } catch (error) {
@@ -273,7 +213,9 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
         zarrLayerRef.current = null
       }
     }
-  }, [map, isMapLoaded, datasetId, band, colormapArray])
+    // colormap changes are handled via the update effect to avoid full layer
+    // recreation, so we intentionally omit it from deps here.
+  }, [map, isMapLoaded, datasetId, datasetModule, layerConfig.customFrag, mapProvider])
 
   useEffect(() => {
     const layer = zarrLayerRef.current
@@ -283,34 +225,12 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     layer.setColormap(colormapArray)
     layer.setClim(clim)
 
-    const selector = buildSelector()
-    layer.setSelector(selector)
+    layer.setSelector(layerConfig.selector)
 
-    const uniforms: Record<string, number> = {}
-    if (band === 'combined') {
-      uniforms.u_precipWeight = precipWeight
+    if (layerConfig.uniforms && Object.keys(layerConfig.uniforms).length > 0) {
+      layer.setUniforms(layerConfig.uniforms)
     }
-    if (isRangeAverage) {
-      uniforms.u_monthStart = monthStart
-      uniforms.u_monthEnd = monthEnd
-    }
-    if (Object.keys(uniforms).length > 0) {
-      layer.setUniforms(uniforms)
-    }
-  }, [
-    opacity,
-    clim,
-    colormapArray,
-    time,
-    band,
-    month,
-    monthStart,
-    monthEnd,
-    precipWeight,
-    dataset,
-    map,
-    isMapLoaded,
-  ])
+  }, [opacity, clim, colormapArray, layerConfig, map, isMapLoaded])
 
   return zarrLayerRef
 }
