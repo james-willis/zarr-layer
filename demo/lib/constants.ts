@@ -50,18 +50,6 @@ export const DATASETS: Record<string, DatasetConfig> = {
     info: 'Hurricane Florence Surface Pressure',
     sourceInfo: 'Zarr v3 format (EPSG:4326)',
   },
-  wind_risk: {
-    source:
-      'https://carbonplan-ocr.s3.amazonaws.com/output/fire-risk/pyramid/production/v0.13.2/pyramid.zarr',
-    variable: 'wind_risk_2011',
-    clim: [0, 20],
-    colormap: 'warm',
-    zarrVersion: 2,
-    info: 'Wind Risk (2011)',
-    sourceInfo: 'CarbonPlan Fire Risk Pyramid (Zarr v2)',
-    center: [-98, 39],
-    zoom: 4,
-  },
   carbonplan_4d: {
     source:
       'https://carbonplan-maps.s3.us-west-2.amazonaws.com/v2/demo/4d/tavg-prec-month',

@@ -1,9 +1,10 @@
-import React, { useRef, useEffect } from 'react'
+import { useRef, useEffect } from 'react'
 import { Box } from 'theme-ui'
 // @ts-expect-error - carbonplan layouts types not available
-import { Sidebar, SidebarDivider } from '@carbonplan/layouts'
+import { Sidebar } from '@carbonplan/layouts'
 import Controls from './controls'
 import { DatasetConfig } from '../lib/constants'
+import { MapProvider } from './map-shared'
 
 interface SidebarProps {
   onSidebarWidthChange: (width: number) => void
@@ -25,10 +26,15 @@ interface SidebarProps {
   setPrecipWeight: (weight: number) => void
   globeProjection: boolean
   setGlobeProjection: (globeProjection: boolean) => void
+  mapProvider: MapProvider
+  setMapProvider: (provider: MapProvider) => void
   dataset: DatasetConfig
 }
 
-const SidebarComponent = ({ onSidebarWidthChange, ...controlsProps }: SidebarProps) => {
+const SidebarComponent = ({
+  onSidebarWidthChange,
+  ...controlsProps
+}: SidebarProps) => {
   const sidebarRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -40,9 +46,6 @@ const SidebarComponent = ({ onSidebarWidthChange, ...controlsProps }: SidebarPro
       }
     }
     updateSidebarWidth()
-    // Small timeout to allow layout to settle
-    setTimeout(updateSidebarWidth, 100)
-    
     window.addEventListener('resize', updateSidebarWidth)
     return () => {
       window.removeEventListener('resize', updateSidebarWidth)
@@ -54,14 +57,18 @@ const SidebarComponent = ({ onSidebarWidthChange, ...controlsProps }: SidebarPro
     <Box sx={{ display: ['none', 'none', 'block'] }}>
       <Sidebar expanded={true} side='left' width={4}>
         <div ref={sidebarRef}>
-          <Box sx={{ fontSize: 4, fontFamily: 'heading', mb: 4 }}>
-            Zarr MapLibre
+          <Box
+            as='h1'
+            sx={{
+              fontSize: [4],
+              fontFamily: 'heading',
+              letterSpacing: 'heading',
+              lineHeight: 'heading',
+              mb: 3,
+            }}
+          >
+            @carbonplan/zarr-layer demo
           </Box>
-          <Box sx={{ mb: 4, fontSize: 1 }}>
-            This demonstrates rendering Zarr datasets using MapLibre GL JS and
-            zarr-maplibre.
-          </Box>
-          <SidebarDivider sx={{ my: 4 }} />
           <Controls {...controlsProps} />
         </div>
       </Sidebar>
@@ -70,4 +77,3 @@ const SidebarComponent = ({ onSidebarWidthChange, ...controlsProps }: SidebarPro
 }
 
 export default SidebarComponent
-

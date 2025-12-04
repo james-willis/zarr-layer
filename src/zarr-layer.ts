@@ -71,8 +71,7 @@ export class ZarrLayer {
     ) {
       return
     }
-    const projection = this.map.getProjection()
-    const isGlobe = projection?.type === 'globe' || projection?.name === 'globe'
+    const isGlobe = this.isGlobeProjection()
     const target = isGlobe
       ? false
       : this.initialRenderWorldCopies !== undefined
@@ -404,8 +403,7 @@ export class ZarrLayer {
     const bounds = this.map.getBounds()
     if (!bounds) return [0]
 
-    const projection = this.map.getProjection ? this.map.getProjection() : null
-    const isGlobe = projection?.name === 'globe' || projection?.type === 'globe'
+    const isGlobe = this.isGlobeProjection()
     // Honor MapLibre's world copy setting, but always avoid duplicates on globe
     const renderWorldCopies =
       typeof this.map.getRenderWorldCopies === 'function'
@@ -437,7 +435,13 @@ export class ZarrLayer {
     this.dataManager.update(this.map, this.gl)
   }
 
-  render(_gl: WebGL2RenderingContext | WebGLRenderingContext, params: any) {
+  render(
+    _gl: WebGL2RenderingContext | WebGLRenderingContext,
+    params: any,
+    projection?: { name: string },
+    globeToMercatorMatrix?: number[] | Float32Array | Float64Array,
+    transition?: number
+  ) {
     if (this.isRemoved || !this.renderer || !this.gl || !this.dataManager)
       return
 
@@ -505,6 +509,12 @@ export class ZarrLayer {
       shaderData,
       projectionData,
       customShaderConfig: this.customShaderConfig || undefined,
+      mapboxGlobe:
+        projection &&
+        globeToMercatorMatrix !== undefined &&
+        typeof transition === 'number'
+          ? { projection, globeToMercatorMatrix, transition }
+          : undefined,
     })
   }
 

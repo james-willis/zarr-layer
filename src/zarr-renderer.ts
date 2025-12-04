@@ -48,6 +48,12 @@ interface SingleImageParams {
   pixCoordArr: Float32Array
 }
 
+interface MapboxGlobeParams {
+  projection: { name: string }
+  globeToMercatorMatrix: number[] | Float32Array | Float64Array
+  transition: number
+}
+
 interface RenderParams {
   matrix: number[] | Float32Array | Float64Array
   colormapTexture: WebGLTexture
@@ -63,6 +69,7 @@ interface RenderParams {
   shaderData?: ShaderData
   projectionData?: ProjectionData
   customShaderConfig?: CustomShaderConfig
+  mapboxGlobe?: MapboxGlobeParams
 }
 
 interface ShaderProgram {
@@ -95,6 +102,9 @@ interface ShaderProgram {
   useCustomShader: boolean
   bandTexLocs: Map<string, WebGLUniformLocation>
   customUniformLocs: Map<string, WebGLUniformLocation>
+  // Mapbox globe specific uniforms
+  globeToMercMatrixLoc?: WebGLUniformLocation | null
+  globeTransitionLoc?: WebGLUniformLocation | null
 }
 
 export class ZarrRenderer {
@@ -152,21 +162,32 @@ export class ZarrRenderer {
 
   private getOrCreateProgram(
     shaderData?: ShaderData,
-    customShaderConfig?: CustomShaderConfig
+    customShaderConfig?: CustomShaderConfig,
+    useMapboxGlobe: boolean = false
   ): ShaderProgram {
     const config = customShaderConfig || this.customShaderConfig
     const useCustomShader = config && config.bands.length > 0
-    const variantName = useCustomShader
-      ? `custom_${config.bands.join('_')}${shaderData?.variantName ?? ''}`
-      : shaderData?.variantName ?? 'mercator'
+    const variantParts = []
+    if (useCustomShader && config) {
+      variantParts.push('custom', config.bands.join('_'))
+    } else {
+      variantParts.push(shaderData?.variantName ?? 'mercator')
+    }
+    if (useMapboxGlobe) variantParts.push('mb_globe')
+    const variantName = variantParts.join('_')
 
     const cached = this.shaderCache.get(variantName)
     if (cached) {
       return cached
     }
 
-    const isGlobe = shaderData && shaderData.vertexShaderPrelude ? true : false
-    const vertexSource = createVertexShaderSource(shaderData)
+    const isGlobe =
+      useMapboxGlobe || (shaderData && shaderData.vertexShaderPrelude)
+        ? true
+        : false
+    const vertexSource = useMapboxGlobe
+      ? createMapboxGlobeVertexShaderSource()
+      : createVertexShaderSource(shaderData)
 
     let fragmentSource: string
     if (useCustomShader && config) {
@@ -233,25 +254,27 @@ export class ZarrRenderer {
         program,
         'u_worldXOffset'
       ),
-      matrixLoc: isGlobe
-        ? null
-        : mustGetUniformLocation(this.gl, program, 'matrix'),
-      projMatrixLoc: isGlobe
+      matrixLoc: useMapboxGlobe
+        ? mustGetUniformLocation(this.gl, program, 'matrix')
+        : !isGlobe
+        ? mustGetUniformLocation(this.gl, program, 'matrix')
+        : null,
+      projMatrixLoc: isGlobe && !useMapboxGlobe
         ? this.gl.getUniformLocation(program, 'u_projection_matrix')
         : null,
-      fallbackMatrixLoc: isGlobe
+      fallbackMatrixLoc: isGlobe && !useMapboxGlobe
         ? this.gl.getUniformLocation(program, 'u_projection_fallback_matrix')
         : null,
-      tileMercatorCoordsLoc: isGlobe
+      tileMercatorCoordsLoc: isGlobe && !useMapboxGlobe
         ? this.gl.getUniformLocation(
             program,
             'u_projection_tile_mercator_coords'
           )
         : null,
-      clippingPlaneLoc: isGlobe
+      clippingPlaneLoc: isGlobe && !useMapboxGlobe
         ? this.gl.getUniformLocation(program, 'u_projection_clipping_plane')
         : null,
-      projectionTransitionLoc: isGlobe
+      projectionTransitionLoc: isGlobe && !useMapboxGlobe
         ? this.gl.getUniformLocation(program, 'u_projection_transition')
         : null,
 
@@ -278,6 +301,12 @@ export class ZarrRenderer {
       useCustomShader: !!useCustomShader,
       bandTexLocs,
       customUniformLocs,
+      globeToMercMatrixLoc: useMapboxGlobe
+        ? this.gl.getUniformLocation(program, 'u_globe_to_merc')
+        : null,
+      globeTransitionLoc: useMapboxGlobe
+        ? this.gl.getUniformLocation(program, 'u_globe_transition')
+        : null,
     }
 
     this.gl.deleteShader(vertexShader)
@@ -303,11 +332,13 @@ export class ZarrRenderer {
       shaderData,
       projectionData,
       customShaderConfig,
+      mapboxGlobe,
     } = params
 
     const shaderProgram = this.getOrCreateProgram(
       shaderData,
-      customShaderConfig
+      customShaderConfig,
+      !!mapboxGlobe
     )
 
     const gl = this.gl
@@ -396,6 +427,19 @@ export class ZarrRenderer {
         false,
         toFloat32Array(matrix)
       )
+      if (mapboxGlobe && shaderProgram.globeToMercMatrixLoc) {
+        gl.uniformMatrix4fv(
+          shaderProgram.globeToMercMatrixLoc,
+          false,
+          toFloat32Array(mapboxGlobe.globeToMercatorMatrix)
+        )
+      }
+      if (mapboxGlobe && shaderProgram.globeTransitionLoc) {
+        gl.uniform1f(
+          shaderProgram.globeTransitionLoc,
+          mapboxGlobe.transition ?? 0
+        )
+      }
     }
 
     if (isMultiscale) {
@@ -745,4 +789,65 @@ export class ZarrRenderer {
     }
     return null
   }
+}
+
+/**
+ * Vertex shader used for Mapbox globe custom layers.
+ * Computes mercator position for current tile quad and derives an ECEF position
+ * to blend between globe and mercator using Mapbox-provided matrices.
+ */
+function createMapboxGlobeVertexShaderSource(): string {
+  return `#version 300 es
+uniform float scale;
+uniform float scale_x;
+uniform float scale_y;
+uniform float shift_x;
+uniform float shift_y;
+uniform float u_worldXOffset;
+uniform mat4 matrix;
+uniform mat4 u_globe_to_merc;
+uniform float u_globe_transition;
+
+in vec2 pix_coord_in;
+in vec2 vertex;
+
+out vec2 pix_coord;
+
+const float PI = 3.14159265358979323846;
+const float GLOBE_RADIUS = 1303.7972938088067; // matches mapbox-gl-js globe radius
+
+// Convert mercator y (0..1) to latitude in radians
+float mercatorYToLatRad(float y) {
+  float t = PI * (1.0 - 2.0 * y);
+  return atan(sinh(t));
+}
+
+void main() {
+  float sx = scale_x > 0.0 ? scale_x : scale;
+  float sy = scale_y > 0.0 ? scale_y : scale;
+
+  // Mercator position in [0,1] world space
+  vec2 merc = vec2(vertex.x * sx + shift_x + u_worldXOffset, -vertex.y * sy + shift_y);
+  vec4 mercClip = matrix * vec4(merc, 0.0, 1.0);
+  mercClip /= mercClip.w;
+
+  // Derive lon/lat from mercator coords to build ECEF position on the globe
+  float lon = (merc.x - 0.5) * 2.0 * PI;
+  float lat = mercatorYToLatRad(merc.y);
+  float cosLat = cos(lat);
+  // Match Mapbox GL JS ECEF convention:
+  // x: cosLat * sin(lon), y: -sinLat, z: cosLat * cos(lon)
+  vec3 ecef = vec3(
+    GLOBE_RADIUS * cosLat * sin(lon),
+    -GLOBE_RADIUS * sin(lat),
+    GLOBE_RADIUS * cosLat * cos(lon)
+  );
+
+  vec4 globeClip = matrix * (u_globe_to_merc * vec4(ecef, 1.0));
+  globeClip /= globeClip.w;
+
+  gl_Position = mix(globeClip, mercClip, clamp(u_globe_transition, 0.0, 1.0));
+  pix_coord = pix_coord_in;
+}
+`
 }

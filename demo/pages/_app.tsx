@@ -5,6 +5,7 @@ import theme from '../lib/theme'
 import '@carbonplan/components/fonts.css'
 import '@carbonplan/components/globals.css'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import 'mapbox-gl/dist/mapbox-gl.css'
 
 const App = ({ Component, pageProps }: AppProps) => {
   return (
@@ -15,4 +16,3 @@ const App = ({ Component, pageProps }: AppProps) => {
 }
 
 export default App
-

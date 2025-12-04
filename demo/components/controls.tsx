@@ -1,7 +1,8 @@
 // @ts-expect-error - carbonplan components types not available
-import { Select, Slider } from '@carbonplan/components'
-import { Box, Checkbox, Label } from 'theme-ui'
+import { Filter, Select, Slider } from '@carbonplan/components'
+import { Box } from 'theme-ui'
 import { DATASETS, DatasetConfig } from '../lib/constants'
+import { MapProvider } from './map-shared'
 
 const colormaps = [
   'reds',
@@ -55,6 +56,8 @@ interface ControlsProps {
   setPrecipWeight: (weight: number) => void
   globeProjection: boolean
   setGlobeProjection: (globeProjection: boolean) => void
+  mapProvider: MapProvider
+  setMapProvider: (provider: MapProvider) => void
   dataset: DatasetConfig
 }
 
@@ -77,6 +80,8 @@ const Controls = ({
   setPrecipWeight,
   globeProjection,
   setGlobeProjection,
+  mapProvider,
+  setMapProvider,
   dataset,
 }: ControlsProps) => {
   const handleDatasetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -88,8 +93,8 @@ const Controls = ({
     setColormap(config.colormap)
 
     if (config.has4D) {
-      setBand('0')
-      setMonth(0)
+      setBand('tavg')
+      setMonth(1)
     } else {
       setTime(0)
     }
@@ -98,20 +103,6 @@ const Controls = ({
   const handleBandChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newBand = e.target.value
     setBand(newBand)
-
-    // Update ranges and colormap for specific bands in carbonplan_4d
-    if (datasetId === 'carbonplan_4d') {
-      if (newBand === 'combined') {
-        setClim([-10, 40])
-        setColormap('warm')
-      } else if (newBand === '0') {
-        setClim([-20, 30])
-        setColormap('redteal')
-      } else {
-        setClim([0, 500])
-        setColormap('blues')
-      }
-    }
   }
 
   return (
@@ -129,79 +120,24 @@ const Controls = ({
         </Box>
       </Box>
 
-      <Box>
-        Opacity: {opacity}
-        <Slider
-          min={0}
-          max={1}
-          step={0.1}
-          value={opacity}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setOpacity(parseFloat(e.target.value))
-          }
-        />
-      </Box>
-
-      <Box>
-        Min Value: {clim[0]}
-        <Slider
-          min={dataset.clim[0] - (dataset.clim[1] - dataset.clim[0]) * 0.5}
-          max={dataset.clim[1]}
-          step={(dataset.clim[1] - dataset.clim[0]) / 100}
-          value={clim[0]}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setClim([parseFloat(e.target.value), clim[1]])
-          }
-        />
-      </Box>
-
-      <Box>
-        Max Value: {clim[1]}
-        <Slider
-          min={dataset.clim[0]}
-          max={dataset.clim[1] + (dataset.clim[1] - dataset.clim[0]) * 0.5}
-          step={(dataset.clim[1] - dataset.clim[0]) / 100}
-          value={clim[1]}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setClim([clim[0], parseFloat(e.target.value)])
-          }
-        />
-      </Box>
-
-      <Box>
-        Colormap
-        <Box sx={{ display: 'block', mt: 1, width: '100%' }}>
-          <Select
-            value={colormap}
-            onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-              setColormap(e.target.value)
-            }
-          >
-            {colormaps.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </Select>
-        </Box>
-      </Box>
-
       {dataset.has4D ? (
         <>
           <Box>
-            Band
+            <Box>Band</Box>
             <Select value={band} onChange={handleBandChange}>
-              <option value='0'>tavg (Temperature Avg)</option>
-              <option value='1'>prec (Precipitation)</option>
-              <option value='combined'>Combined (temp + precip)</option>
+              <option value='tavg'>tavg</option>
+              <option value='prec'>prec</option>
+              <option value='combined'>
+                combined (custom frag w/ uniform)
+              </option>
             </Select>
           </Box>
 
           <Box>
             Month: {month}
             <Slider
-              min={0}
-              max={11}
+              min={1}
+              max={12}
               step={1}
               value={month}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -240,15 +176,87 @@ const Controls = ({
         </Box>
       )}
 
-      <Label>
-        <Checkbox
-          checked={globeProjection}
+      <Box>
+        Opacity: {opacity}
+        <Slider
+          min={0}
+          max={1}
+          step={0.01}
+          value={opacity}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setGlobeProjection(e.target.checked)
+            setOpacity(parseFloat(e.target.value))
           }
         />
-        Globe Projection
-      </Label>
+      </Box>
+
+      <Box>
+        Min value: {clim[0]}
+        <Slider
+          min={dataset.clim[0] - (dataset.clim[1] - dataset.clim[0]) * 0.5}
+          max={dataset.clim[1]}
+          step={(dataset.clim[1] - dataset.clim[0]) / 100}
+          value={clim[0]}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setClim([parseFloat(e.target.value), clim[1]])
+          }
+        />
+      </Box>
+
+      <Box>
+        Max value: {clim[1]}
+        <Slider
+          min={dataset.clim[0]}
+          max={dataset.clim[1] + (dataset.clim[1] - dataset.clim[0]) * 0.5}
+          step={(dataset.clim[1] - dataset.clim[0]) / 100}
+          value={clim[1]}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setClim([clim[0], parseFloat(e.target.value)])
+          }
+        />
+      </Box>
+
+      <Box>
+        Projection
+        <Filter
+          values={{ mercator: !globeProjection, globe: globeProjection }}
+          setValues={(obj: Record<string, boolean>) => {
+            if (obj.mercator) setGlobeProjection(false)
+            if (obj.globe) setGlobeProjection(true)
+          }}
+        />
+      </Box>
+
+      <Box>
+        Map provider
+        <Filter
+          values={{
+            maplibre: mapProvider === 'maplibre',
+            mapbox: mapProvider === 'mapbox',
+          }}
+          setValues={(obj: Record<string, boolean>) => {
+            if (obj.maplibre) setMapProvider('maplibre')
+            if (obj.mapbox) setMapProvider('mapbox')
+          }}
+        />
+      </Box>
+
+      <Box>
+        Colormap
+        <Box sx={{ display: 'block', mt: 1, width: '100%' }}>
+          <Select
+            value={colormap}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+              setColormap(e.target.value)
+            }
+          >
+            {colormaps.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </Select>
+        </Box>
+      </Box>
     </Box>
   )
 }

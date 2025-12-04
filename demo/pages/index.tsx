@@ -1,38 +1,48 @@
 import React, { useState } from 'react'
-import { Box, Container, useThemeUI } from 'theme-ui'
+import { Box, Container } from 'theme-ui'
 // @ts-expect-error - carbonplan components types not available
-import { Header, Dimmer } from '@carbonplan/components'
+import { Dimmer, Header } from '@carbonplan/components'
 import Map from '../components/map'
 import Sidebar from '../components/sidebar'
 import { DATASETS } from '../lib/constants'
+import { MapProvider } from '../components/map-shared'
 
 export default function Home() {
-  const { theme } = useThemeUI()
   const [sidebarWidth, setSidebarWidth] = useState(0)
 
   const [datasetId, setDatasetId] = useState('salinity_v2')
-  const [opacity, setOpacity] = useState(0.7)
+  const [opacity, setOpacity] = useState(1)
   const [clim, setClim] = useState<[number, number]>([30, 37])
   const [colormap, setColormap] = useState('warm')
   const [time, setTime] = useState(0)
-  const [band, setBand] = useState('0')
-  const [month, setMonth] = useState(0)
+  const [band, setBand] = useState('tavg')
+  const [month, setMonth] = useState(1)
   const [precipWeight, setPrecipWeight] = useState(1.0)
   const [globeProjection, setGlobeProjection] = useState(true)
+  const [mapProvider, setMapProvider] = useState<MapProvider>('maplibre')
 
   const dataset = DATASETS[datasetId]
 
   return (
     <>
-      <Container>
-        <Box sx={{ position: 'relative', zIndex: 2000 }}>
+      <Box
+        sx={{
+          position: 'sticky',
+          top: 0,
+          height: '56px',
+          zIndex: 5000,
+          pointerEvents: 'none',
+        }}
+      >
+        <Container>
           <Header
             menuItems={[
               <Dimmer key='dimmer' sx={{ mt: '-2px', color: 'primary' }} />,
             ]}
           />
-        </Box>
-      </Container>
+        </Container>
+      </Box>
+
       <Box
         sx={{
           position: 'absolute',
@@ -40,22 +50,8 @@ export default function Home() {
           bottom: 0,
           width: '100%',
           overflowX: 'hidden',
-          scrollbarColor: `${theme?.colors?.hinted} ${theme?.colors?.background}`,
         }}
       >
-        <Map
-          sidebarWidth={sidebarWidth}
-          datasetId={datasetId}
-          dataset={dataset}
-          opacity={opacity}
-          clim={clim}
-          colormap={colormap}
-          time={time}
-          band={band}
-          month={month}
-          precipWeight={precipWeight}
-          globeProjection={globeProjection}
-        />
         <Sidebar
           onSidebarWidthChange={setSidebarWidth}
           datasetId={datasetId}
@@ -76,7 +72,24 @@ export default function Home() {
           setPrecipWeight={setPrecipWeight}
           globeProjection={globeProjection}
           setGlobeProjection={setGlobeProjection}
+          mapProvider={mapProvider}
+          setMapProvider={setMapProvider}
           dataset={dataset}
+        />
+        <Map
+          key={mapProvider}
+          sidebarWidth={sidebarWidth}
+          datasetId={datasetId}
+          dataset={dataset}
+          opacity={opacity}
+          clim={clim}
+          colormap={colormap}
+          time={time}
+          band={band}
+          month={month}
+          precipWeight={precipWeight}
+          globeProjection={globeProjection}
+          mapProvider={mapProvider}
         />
       </Box>
     </>

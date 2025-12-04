@@ -4,3 +4,4 @@ dist/
 .DS_Store
 demo/node_modules/
 demo/.next/
+demo/.env.local
