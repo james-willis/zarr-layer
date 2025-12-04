@@ -12,6 +12,7 @@ import { useAppStore } from '../lib/store'
 export type MapProvider = 'maplibre' | 'mapbox'
 
 const backgroundColor = '#1b1e23'
+const ALL_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 const mapLibreTheme = {
   ...namedFlavor('black'),
   buildings: 'rgba(0, 0, 0, 0)',
@@ -52,6 +53,26 @@ export const combinedBandsCustomFrag = `
   float norm = (combined - clim.x) / (clim.y - clim.x);
   float cla = clamp(norm, 0.0, 1.0);
   vec4 c = texture(colormap, vec2(cla, 0.5));
+  fragColor = vec4(c.r, c.g, c.b, opacity);
+`
+
+export const monthRangeAverageFrag = `
+  uniform float u_monthStart;
+  uniform float u_monthEnd;
+  float sum = 0.0;
+  float count = 0.0;
+  ${ALL_MONTHS.map(
+    (month) => `
+  if (u_monthStart <= ${month.toFixed(1)} && ${month.toFixed(
+      1
+    )} <= u_monthEnd) {
+    sum += month_${month};
+    count += 1.0;
+  }`
+  ).join('')}
+  float average = count > 0.0 ? sum / count : 0.0;
+  float rescaled = (average - clim.x) / (clim.y - clim.x);
+  vec4 c = texture(colormap, vec2(clamp(rescaled, 0.0, 1.0), 0.5));
   fragColor = vec4(c.r, c.g, c.b, opacity);
 `
 
@@ -150,18 +171,30 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const time = useAppStore((state) => state.time)
   const band = useAppStore((state) => state.band)
   const month = useAppStore((state) => state.month)
+  const monthStart = useAppStore((state) => state.monthStart)
+  const monthEnd = useAppStore((state) => state.monthEnd)
   const precipWeight = useAppStore((state) => state.precipWeight)
   const mapProvider = useAppStore((state) => state.mapProvider)
   const colormapArray = useThemedColormap(colormap, { format: 'hex' })
+
+  const isCombined = band === 'combined'
+  const isRangeAverage =
+    band === 'tavg_range_avg' || band === 'prec_range_avg'
+  const baseRangeBand = isRangeAverage
+    ? band.startsWith('prec')
+      ? 'prec'
+      : 'tavg'
+    : null
 
   const buildSelector = (): Record<
     string,
     number | number[] | string | string[]
   > => {
-    const isCombined = band === 'combined'
     if (dataset.has4D) {
       if (isCombined) {
         return { band: ['tavg', 'prec'], month: month }
+      } else if (isRangeAverage && baseRangeBand) {
+        return { band: baseRangeBand, month: ALL_MONTHS }
       } else {
         return { band: band, month: month }
       }
@@ -174,7 +207,6 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     if (!map || !isMapLoaded) return
 
     const mapConfig = getMapConfig(mapProvider)
-    const isCombined = band === 'combined'
 
     if (zarrLayerRef.current) {
       try {
@@ -204,6 +236,12 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     if (isCombined) {
       options.customFrag = combinedBandsCustomFrag
       options.uniforms = { u_precipWeight: precipWeight }
+    } else if (isRangeAverage) {
+      options.customFrag = monthRangeAverageFrag
+      options.uniforms = {
+        u_monthStart: monthStart,
+        u_monthEnd: monthEnd,
+      }
     }
 
     try {
@@ -248,8 +286,16 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     const selector = buildSelector()
     layer.setSelector(selector)
 
+    const uniforms: Record<string, number> = {}
     if (band === 'combined') {
-      layer.setUniforms({ u_precipWeight: precipWeight })
+      uniforms.u_precipWeight = precipWeight
+    }
+    if (isRangeAverage) {
+      uniforms.u_monthStart = monthStart
+      uniforms.u_monthEnd = monthEnd
+    }
+    if (Object.keys(uniforms).length > 0) {
+      layer.setUniforms(uniforms)
     }
   }, [
     opacity,
@@ -258,6 +304,8 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     time,
     band,
     month,
+    monthStart,
+    monthEnd,
     precipWeight,
     dataset,
     map,

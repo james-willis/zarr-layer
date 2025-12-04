@@ -46,6 +46,8 @@ const Controls = () => {
   const time = useAppStore((state) => state.time)
   const band = useAppStore((state) => state.band)
   const month = useAppStore((state) => state.month)
+  const monthStart = useAppStore((state) => state.monthStart)
+  const monthEnd = useAppStore((state) => state.monthEnd)
   const precipWeight = useAppStore((state) => state.precipWeight)
   const globeProjection = useAppStore((state) => state.globeProjection)
   const mapProvider = useAppStore((state) => state.mapProvider)
@@ -58,6 +60,8 @@ const Controls = () => {
   const setTime = useAppStore((state) => state.setTime)
   const setBand = useAppStore((state) => state.setBand)
   const setMonth = useAppStore((state) => state.setMonth)
+  const setMonthStart = useAppStore((state) => state.setMonthStart)
+  const setMonthEnd = useAppStore((state) => state.setMonthEnd)
   const setPrecipWeight = useAppStore((state) => state.setPrecipWeight)
   const setGlobeProjection = useAppStore((state) => state.setGlobeProjection)
   const setMapProvider = useAppStore((state) => state.setMapProvider)
@@ -69,6 +73,9 @@ const Controls = () => {
   const handleBandChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setBand(e.target.value)
   }
+
+  const isRangeAverage =
+    band === 'tavg_range_avg' || band === 'prec_range_avg'
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -92,6 +99,8 @@ const Controls = () => {
             <Select value={band} onChange={handleBandChange}>
               <option value='tavg'>tavg</option>
               <option value='prec'>prec</option>
+              <option value='tavg_range_avg'>tavg (average range)</option>
+              <option value='prec_range_avg'>prec (average range)</option>
               <option value='combined'>
                 combined (custom frag w/ uniform)
               </option>
@@ -106,18 +115,45 @@ const Controls = () => {
             )}
           </Box>
 
-          <Box>
-            Month: {month}
-            <Slider
-              min={1}
-              max={12}
-              step={1}
-              value={month}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setMonth(parseInt(e.target.value))
-              }
-            />
-          </Box>
+          {isRangeAverage ? (
+            <Box>
+              Month range: {monthStart} – {monthEnd}
+              <Box sx={{ position: 'relative', mt: 2 }}>
+                <Slider
+                  min={1}
+                  max={12}
+                  step={1}
+                  value={monthStart}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setMonthStart(parseInt(e.target.value))
+                  }
+                />
+                <Slider
+                  min={1}
+                  max={12}
+                  step={1}
+                  value={monthEnd}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setMonthEnd(parseInt(e.target.value))
+                  }
+                  sx={{ mt: 3 }}
+                />
+              </Box>
+            </Box>
+          ) : (
+            <Box>
+              Month: {month}
+              <Slider
+                min={1}
+                max={12}
+                step={1}
+                value={month}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setMonth(parseInt(e.target.value))
+                }
+              />
+            </Box>
+          )}
 
           {band === 'combined' && (
             <Box>

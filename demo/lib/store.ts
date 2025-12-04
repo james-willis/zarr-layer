@@ -11,6 +11,8 @@ interface AppState {
   time: number
   band: string
   month: number
+  monthStart: number
+  monthEnd: number
   precipWeight: number
   globeProjection: boolean
   mapProvider: MapProvider
@@ -22,6 +24,8 @@ interface AppState {
   setTime: (time: number) => void
   setBand: (band: string) => void
   setMonth: (month: number) => void
+  setMonthStart: (monthStart: number) => void
+  setMonthEnd: (monthEnd: number) => void
   setPrecipWeight: (weight: number) => void
   setGlobeProjection: (globeProjection: boolean) => void
   setMapProvider: (provider: MapProvider) => void
@@ -37,6 +41,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   time: 0,
   band: 'tavg',
   month: 1,
+  monthStart: 1,
+  monthEnd: 6,
   precipWeight: 1.0,
   globeProjection: true,
   mapProvider: 'maplibre',
@@ -51,6 +57,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (config.has4D) {
       updates.band = 'tavg'
       updates.month = 1
+      updates.monthStart = 1
+      updates.monthEnd = 6
     } else {
       updates.time = 0
     }
@@ -62,6 +70,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTime: (time) => set({ time }),
   setBand: (band) => set({ band }),
   setMonth: (month) => set({ month }),
+  setMonthStart: (monthStart) =>
+    set((state) => ({
+      monthStart,
+      monthEnd: Math.max(monthStart, state.monthEnd),
+    })),
+  setMonthEnd: (monthEnd) =>
+    set((state) => ({
+      monthEnd,
+      monthStart: Math.min(state.monthStart, monthEnd),
+    })),
   setPrecipWeight: (precipWeight) => set({ precipWeight }),
   setGlobeProjection: (globeProjection) => set({ globeProjection }),
   setMapProvider: (mapProvider) => set({ mapProvider }),
