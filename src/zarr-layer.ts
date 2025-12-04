@@ -43,7 +43,7 @@ export class ZarrLayer {
   private variable: string
   private zarrVersion: 2 | 3 | null = null
   private dimensionNames: DimensionNamesProps
-  private selector: Record<string, number | number[]>
+  private selector: Record<string, number | number[] | string | string[]>
   private invalidate: () => void
 
   private colormap: ColormapState
@@ -228,7 +228,9 @@ export class ZarrLayer {
     this.invalidate()
   }
 
-  async setSelector(selector: Record<string, number | number[]>) {
+  async setSelector(
+    selector: Record<string, number | number[] | string | string[]>
+  ) {
     this.selector = selector
     for (const [dimName, value] of Object.entries(selector)) {
       this.selectors[dimName] = { selected: value, type: 'index' }

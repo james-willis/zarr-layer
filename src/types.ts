@@ -11,7 +11,7 @@ export interface ColorMapInfo {
 }
 
 export interface ZarrSelectorsProps {
-  selected: number | number[] | string | [number, number]
+  selected: number | number[] | string | string[] | [number, number]
   type?: 'index' | 'value'
 }
 
@@ -45,7 +45,7 @@ export interface MaplibreLayerOptions {
   id: string
   source: string
   variable: string
-  selector?: Record<string, number | number[]>
+  selector?: Record<string, number | number[] | string | string[]>
   colormap?: ColorMapName | number[][] | string[]
   clim: [number, number]
   opacity?: number

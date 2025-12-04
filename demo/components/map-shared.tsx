@@ -141,7 +141,7 @@ export const getMapConfig = (provider: MapProvider): MapConfig => {
 }
 
 export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
-  const zarrLayerRef = useRef<ZarrLayer | null>(null)
+  const zarrLayerRef = useRef<InstanceType<typeof ZarrLayer> | null>(null)
   const datasetId = useAppStore((state) => state.datasetId)
   const dataset = useAppStore((state) => state.getDataset())
   const opacity = useAppStore((state) => state.opacity)
@@ -154,7 +154,10 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const mapProvider = useAppStore((state) => state.mapProvider)
   const colormapArray = useThemedColormap(colormap, { format: 'hex' })
 
-  const buildSelector = () => {
+  const buildSelector = (): Record<
+    string,
+    number | number[] | string | string[]
+  > => {
     const isCombined = band === 'combined'
     if (dataset.has4D) {
       if (isCombined) {

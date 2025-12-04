@@ -25,6 +25,8 @@ export interface DataManager {
   update(map: any, gl: WebGL2RenderingContext): void
   getRenderData(): RenderData
   dispose(gl: WebGL2RenderingContext): void
-  setSelector(selector: Record<string, number | number[]>): Promise<void>
+  setSelector(
+    selector: Record<string, number | number[] | string | string[]>
+  ): Promise<void>
   onProjectionChange(isGlobe: boolean): void
 }

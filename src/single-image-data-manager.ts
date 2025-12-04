@@ -25,7 +25,7 @@ export class SingleImageDataManager implements DataManager {
   private mercatorBounds: MercatorBounds | null = null
   private zarrStore: ZarrStore
   private variable: string
-  private selector: Record<string, number | number[]>
+  private selector: Record<string, number | number[] | string | string[]>
   private invalidate: () => void
   private dimIndices: DimIndicesProps = {}
   private xyLimits: XYLimits | null = null
@@ -36,7 +36,7 @@ export class SingleImageDataManager implements DataManager {
   constructor(
     store: ZarrStore,
     variable: string,
-    selector: Record<string, number | number[]>,
+    selector: Record<string, number | number[] | string | string[]>,
     invalidate: () => void
   ) {
     this.zarrStore = store
@@ -167,7 +167,7 @@ export class SingleImageDataManager implements DataManager {
   }
 
   async setSelector(
-    selector: Record<string, number | number[]>
+    selector: Record<string, number | number[] | string | string[]>
   ): Promise<void> {
     this.selector = selector
     this.data = null // Force refetch

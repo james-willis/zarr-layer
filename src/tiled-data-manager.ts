@@ -25,7 +25,7 @@ export class TiledDataManager implements DataManager {
   private minRenderZoom: number = 3
   private tileSize: number = DEFAULT_TILE_SIZE
   private variable: string
-  private selector: Record<string, number | number[]>
+  private selector: Record<string, number | number[] | string | string[]>
   private invalidate: () => void
   private zarrStore: ZarrStore
   private selectors: Record<string, any> = {}
@@ -34,7 +34,7 @@ export class TiledDataManager implements DataManager {
   constructor(
     store: ZarrStore,
     variable: string,
-    selector: Record<string, number | number[]>,
+    selector: Record<string, number | number[] | string | string[]>,
     minRenderZoom: number,
     invalidate: () => void
   ) {
@@ -106,7 +106,7 @@ export class TiledDataManager implements DataManager {
   }
 
   async setSelector(
-    selector: Record<string, number | number[]>
+    selector: Record<string, number | number[] | string | string[]>
   ): Promise<void> {
     this.selector = selector
     for (const [dimName, value] of Object.entries(selector)) {
