@@ -8,7 +8,7 @@ MapLibre/Mapbox GL custom layer for rendering Zarr datasets, inspired by
 ## Install
 
 ```bash
-npm install zarr-maplibre maplibre-gl
+npm install @carbonplan/zarr-layer maplibre-gl
 ```
 
 ## Build locally
