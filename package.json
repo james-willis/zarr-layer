@@ -1,7 +1,7 @@
 {
-  "name": "zarr-maplibre",
+  "name": "@carbonplan/zarr-layer",
   "version": "0.0.1",
-  "description": "MapLibre GL custom layer for rendering Zarr datasets (extracted from zarr-cesium).",
+  "description": "MapLibre/Mapbox custom layer for rendering Zarr datasets. Inspired by zarr-cesium, zarr-gl, and @carbonplan/maps.",
   "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -19,7 +19,16 @@
     "format:check": "prettier --check ."
   },
   "peerDependencies": {
-    "maplibre-gl": "*"
+    "maplibre-gl": "*",
+    "mapbox-gl": "*"
+  },
+  "peerDependenciesMeta": {
+    "maplibre-gl": {
+      "optional": true
+    },
+    "mapbox-gl": {
+      "optional": true
+    }
   },
   "dependencies": {
     "zarrita": "^0.5.4"
