@@ -37,7 +37,9 @@ map.on('load', () => {
       source: 'https://example.com/my.zarr',
       variable: 'temperature',
       clim: [270, 310],
-      colormap: [...],
+      // Accepts either an array of [r,g,b] numbers (0-255 or 0-1)
+      // or an array of hex strings like ['#000000', '#ffffff']
+      colormap: ['#000000', '#ffffff'],
       selector: { time: 0 },
       zarrVersion: 3,
     })

@@ -19,11 +19,11 @@ import {
 import { ColormapState } from './zarr-colormap'
 import { ZarrRenderer, type CustomShaderConfig } from './zarr-renderer'
 import type {
-  ColorMapName,
+  ColormapArray,
   CRS,
   DimensionNamesProps,
   DimIndicesProps,
-  MaplibreLayerOptions,
+  ZarrLayerOptions,
   XYLimits,
   ZarrLevelMetadata,
   ZarrSelectorsProps,
@@ -138,7 +138,7 @@ export class ZarrLayer {
     source,
     variable,
     selector = {},
-    colormap = 'viridis',
+    colormap,
     clim,
     opacity = 1,
     minRenderZoom = 0,
@@ -149,7 +149,7 @@ export class ZarrLayer {
     customFrag,
     uniforms,
     renderingMode = '2d',
-  }: MaplibreLayerOptions) {
+  }: ZarrLayerOptions) {
     this.id = id
     this.url = source
     this.variable = variable
@@ -162,6 +162,11 @@ export class ZarrLayer {
     }
     this.invalidate = () => {}
 
+    if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
+      throw new Error(
+        '[ZarrLayer] colormap is required and must be an array of [r, g, b] values'
+      )
+    }
     this.colormap = new ColormapState(colormap)
     this.clim = clim
     this.opacity = opacity
@@ -195,7 +200,7 @@ export class ZarrLayer {
     this.invalidate()
   }
 
-  setColormap(colormap: ColorMapName | number[][] | string[]) {
+  setColormap(colormap: ColormapArray) {
     this.colormap.apply(colormap)
     if (this.gl) {
       this.colormap.upload(this.gl)

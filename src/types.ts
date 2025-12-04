@@ -1,7 +1,6 @@
-import { allColorScales } from './jsColormaps'
 import * as zarr from 'zarrita'
 
-export type ColorMapName = (typeof allColorScales)[number]
+export type ColormapArray = number[][] | string[]
 
 export interface ColorMapInfo {
   [key: string]: {
@@ -41,12 +40,12 @@ export interface DimIndicesProps {
   [key: string]: { name: string; index: number; array: zarr.Array<any> | null }
 }
 
-export interface MaplibreLayerOptions {
+export interface ZarrLayerOptions {
   id: string
   source: string
   variable: string
   selector?: Record<string, number | number[] | string | string[]>
-  colormap?: ColorMapName | number[][] | string[]
+  colormap: ColormapArray
   clim: [number, number]
   opacity?: number
   minRenderZoom?: number

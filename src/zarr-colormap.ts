@@ -1,34 +1,13 @@
-import { colormapBuilder } from './jsColormaps'
 import { mustCreateTexture } from './webgl-utils'
-import type { ColorMapName } from './types'
+import type { ColormapArray } from './types'
 
-function hexToRgb(hex: string): number[] {
+function hexToRgb(hex: string): [number, number, number] {
   const cleaned = hex.replace('#', '')
   if (cleaned.length !== 6) {
     throw new Error(`Invalid hex color: ${hex}`)
   }
   const num = parseInt(cleaned, 16)
-  const r = (num >> 16) & 255
-  const g = (num >> 8) & 255
-  const b = num & 255
-  return [r, g, b]
-}
-
-export function normalizeColormap(
-  colormap: ColorMapName | number[][] | string[]
-): number[][] {
-  const isRgbArray = Array.isArray(colormap) && Array.isArray(colormap[0])
-  if (isRgbArray) {
-    const first = (colormap as number[][])[0]
-    const isNumberRow = Array.isArray(first) && typeof first[0] === 'number'
-    if (isNumberRow) {
-      return colormap as number[][]
-    }
-  }
-  if (Array.isArray(colormap) && typeof colormap[0] === 'string') {
-    return (colormap as string[]).map((hex) => hexToRgb(hex))
-  }
-  return colormapBuilder(colormap as ColorMapName) as number[][]
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255]
 }
 
 export class ColormapState {
@@ -38,7 +17,7 @@ export class ColormapState {
   texture: WebGLTexture | null = null
   private dirty: boolean = true
 
-  constructor(colormap: ColorMapName | number[][] | string[]) {
+  constructor(colormap: ColormapArray) {
     const { colors, floatData, length } = this.build(colormap)
     this.colors = colors
     this.floatData = floatData
@@ -46,7 +25,7 @@ export class ColormapState {
     this.dirty = true
   }
 
-  apply(colormap: ColorMapName | number[][] | string[]) {
+  apply(colormap: ColormapArray) {
     const { colors, floatData, length } = this.build(colormap)
     this.colors = colors
     this.floatData = floatData
@@ -92,9 +71,33 @@ export class ColormapState {
     }
   }
 
-  private build(colormap: ColorMapName | number[][] | string[]) {
-    const colors = normalizeColormap(colormap)
-    const floatData = new Float32Array(colors.flat().map((v) => v / 255.0))
-    return { colors, floatData, length: colors.length }
+  private build(colormap: ColormapArray) {
+    if (!Array.isArray(colormap) || colormap.length === 0) {
+      throw new Error(
+        'colormap must be a non-empty array of [r, g, b] values or hex strings'
+      )
+    }
+
+    const normalized: number[][] = []
+
+    for (const entry of colormap) {
+      if (typeof entry === 'string') {
+        normalized.push(hexToRgb(entry))
+      } else if (Array.isArray(entry) && entry.length >= 3) {
+        normalized.push([entry[0], entry[1], entry[2]])
+      } else {
+        throw new Error(
+          'colormap entries must be arrays shaped like [r, g, b] or hex strings'
+        )
+      }
+    }
+
+    const flattened = normalized.flat()
+    const needsScaling = flattened.some((value) => value > 1)
+    const floatData = new Float32Array(
+      flattened.map((value) => (needsScaling ? value / 255.0 : value))
+    )
+
+    return { colors: normalized, floatData, length: normalized.length }
   }
 }
