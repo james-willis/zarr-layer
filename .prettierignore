@@ -3,4 +3,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 package-lock.json
-
+demo/node_modules/
+demo/.next/

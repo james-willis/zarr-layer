@@ -284,7 +284,7 @@ export const MapComponentBase = ({
 
   const mapConfig = getMapConfig(mapProvider)
 
-  useMapLayer(map, isMapLoaded, { ...props, mapProvider })
+  useMapLayer(map, isMapLoaded, { ...props, mapProvider, sidebarWidth })
 
   useEffect(() => {
     if (!mapContainer.current) return

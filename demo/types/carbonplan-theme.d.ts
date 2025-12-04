@@ -3,4 +3,3 @@ declare module '@carbonplan/theme' {
   const theme: Theme
   export default theme
 }
-

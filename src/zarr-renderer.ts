@@ -1,7 +1,6 @@
 import {
   createProgram,
   createShader,
-  mustCreateBuffer,
   mustGetUniformLocation,
 } from './webgl-utils'
 import {
