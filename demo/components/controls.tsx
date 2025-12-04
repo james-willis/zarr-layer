@@ -1,8 +1,9 @@
 // @ts-expect-error - carbonplan components types not available
 import { Filter, Select, Slider } from '@carbonplan/components'
 import { Box } from 'theme-ui'
-import { DATASETS, DatasetConfig } from '../lib/constants'
-import { combinedBandsCustomFrag, MapProvider } from './map-shared'
+import { DATASETS } from '../lib/constants'
+import { combinedBandsCustomFrag } from './map-shared'
+import { useAppStore } from '../lib/store'
 
 const colormaps = [
   'reds',
@@ -37,72 +38,36 @@ const colormaps = [
   'sinebow',
 ]
 
-interface ControlsProps {
-  datasetId: string
-  setDatasetId: (id: string) => void
-  opacity: number
-  setOpacity: (opacity: number) => void
-  clim: [number, number]
-  setClim: (clim: [number, number]) => void
-  colormap: string
-  setColormap: (colormap: string) => void
-  time: number
-  setTime: (time: number) => void
-  band: string
-  setBand: (band: string) => void
-  month: number
-  setMonth: (month: number) => void
-  precipWeight: number
-  setPrecipWeight: (weight: number) => void
-  globeProjection: boolean
-  setGlobeProjection: (globeProjection: boolean) => void
-  mapProvider: MapProvider
-  setMapProvider: (provider: MapProvider) => void
-  dataset: DatasetConfig
-}
+const Controls = () => {
+  const datasetId = useAppStore((state) => state.datasetId)
+  const opacity = useAppStore((state) => state.opacity)
+  const clim = useAppStore((state) => state.clim)
+  const colormap = useAppStore((state) => state.colormap)
+  const time = useAppStore((state) => state.time)
+  const band = useAppStore((state) => state.band)
+  const month = useAppStore((state) => state.month)
+  const precipWeight = useAppStore((state) => state.precipWeight)
+  const globeProjection = useAppStore((state) => state.globeProjection)
+  const mapProvider = useAppStore((state) => state.mapProvider)
+  const dataset = useAppStore((state) => state.getDataset())
 
-const Controls = ({
-  datasetId,
-  setDatasetId,
-  opacity,
-  setOpacity,
-  clim,
-  setClim,
-  colormap,
-  setColormap,
-  time,
-  setTime,
-  band,
-  setBand,
-  month,
-  setMonth,
-  precipWeight,
-  setPrecipWeight,
-  globeProjection,
-  setGlobeProjection,
-  mapProvider,
-  setMapProvider,
-  dataset,
-}: ControlsProps) => {
+  const setDatasetId = useAppStore((state) => state.setDatasetId)
+  const setOpacity = useAppStore((state) => state.setOpacity)
+  const setClim = useAppStore((state) => state.setClim)
+  const setColormap = useAppStore((state) => state.setColormap)
+  const setTime = useAppStore((state) => state.setTime)
+  const setBand = useAppStore((state) => state.setBand)
+  const setMonth = useAppStore((state) => state.setMonth)
+  const setPrecipWeight = useAppStore((state) => state.setPrecipWeight)
+  const setGlobeProjection = useAppStore((state) => state.setGlobeProjection)
+  const setMapProvider = useAppStore((state) => state.setMapProvider)
+
   const handleDatasetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newId = e.target.value
-    setDatasetId(newId)
-    const config = DATASETS[newId]
-
-    setClim(config.clim)
-    setColormap(config.colormap)
-
-    if (config.has4D) {
-      setBand('tavg')
-      setMonth(1)
-    } else {
-      setTime(0)
-    }
+    setDatasetId(e.target.value)
   }
 
   const handleBandChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newBand = e.target.value
-    setBand(newBand)
+    setBand(e.target.value)
   }
 
   return (

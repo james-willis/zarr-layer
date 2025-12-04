@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Box } from 'theme-ui'
+// @ts-expect-error - carbonplan colormaps types not available
 import { useThemedColormap } from '@carbonplan/colormaps'
-import { ZarrLayer } from 'zarr-maplibre'
+import { ZarrLayer } from '@carbonplan/zarr-layer'
 import maplibregl from 'maplibre-gl'
 import mapboxgl from 'mapbox-gl'
 import { layers, namedFlavor } from '@protomaps/basemaps'
 import { Protocol } from 'pmtiles'
-import { DatasetConfig } from '../lib/constants'
+import { useAppStore } from '../lib/store'
 
 export type MapProvider = 'maplibre' | 'mapbox'
 
@@ -53,21 +54,6 @@ export const combinedBandsCustomFrag = `
   vec4 c = texture(colormap, vec2(cla, 0.5));
   fragColor = vec4(c.r, c.g, c.b, opacity);
 `
-
-export interface MapProps {
-  sidebarWidth: number
-  datasetId: string
-  dataset: DatasetConfig
-  opacity: number
-  clim: [number, number]
-  colormap: string
-  time: number
-  band: string
-  month: number
-  precipWeight: number
-  globeProjection: boolean
-  mapProvider: MapProvider
-}
 
 export interface MapInstance {
   on(event: string, callback: () => void): void
@@ -154,32 +140,38 @@ export const getMapConfig = (provider: MapProvider): MapConfig => {
   return provider === 'mapbox' ? mapboxConfig : mapLibreConfig
 }
 
-export const useMapLayer = (
-  map: MapInstance | null,
-  isMapLoaded: boolean,
-  props: MapProps,
-) => {
+export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const zarrLayerRef = useRef<ZarrLayer | null>(null)
-  const colormapArray = useThemedColormap(props.colormap, { format: 'hex' })
+  const datasetId = useAppStore((state) => state.datasetId)
+  const dataset = useAppStore((state) => state.getDataset())
+  const opacity = useAppStore((state) => state.opacity)
+  const clim = useAppStore((state) => state.clim)
+  const colormap = useAppStore((state) => state.colormap)
+  const time = useAppStore((state) => state.time)
+  const band = useAppStore((state) => state.band)
+  const month = useAppStore((state) => state.month)
+  const precipWeight = useAppStore((state) => state.precipWeight)
+  const mapProvider = useAppStore((state) => state.mapProvider)
+  const colormapArray = useThemedColormap(colormap, { format: 'hex' })
 
   const buildSelector = () => {
-    const isCombined = props.band === 'combined'
-    if (props.dataset.has4D) {
+    const isCombined = band === 'combined'
+    if (dataset.has4D) {
       if (isCombined) {
-        return { band: ['tavg', 'prec'], month: props.month }
+        return { band: ['tavg', 'prec'], month: month }
       } else {
-        return { band: props.band, month: props.month }
+        return { band: band, month: month }
       }
     } else {
-      return { time: props.time }
+      return { time: time }
     }
   }
 
   useEffect(() => {
     if (!map || !isMapLoaded) return
 
-    const mapConfig = getMapConfig(props.mapProvider)
-    const isCombined = props.band === 'combined'
+    const mapConfig = getMapConfig(mapProvider)
+    const isCombined = band === 'combined'
 
     if (zarrLayerRef.current) {
       try {
@@ -194,21 +186,21 @@ export const useMapLayer = (
 
     const options: any = {
       id: 'zarr-layer',
-      source: props.dataset.source,
-      variable: props.dataset.variable,
-      clim: props.clim,
+      source: dataset.source,
+      variable: dataset.variable,
+      clim: clim,
       colormap: colormapArray,
-      opacity: props.opacity,
+      opacity: opacity,
       selector: selector,
-      zarrVersion: props.dataset.zarrVersion,
-      minRenderZoom: props.dataset.minRenderZoom ?? 0,
-      fillValue: props.dataset.fillValue,
-      dimensionNames: props.dataset.dimensionNames,
+      zarrVersion: dataset.zarrVersion,
+      minRenderZoom: dataset.minRenderZoom ?? 0,
+      fillValue: dataset.fillValue,
+      dimensionNames: dataset.dimensionNames,
     }
 
     if (isCombined) {
       options.customFrag = combinedBandsCustomFrag
-      options.uniforms = { u_precipWeight: props.precipWeight }
+      options.uniforms = { u_precipWeight: precipWeight }
     }
 
     try {
@@ -220,10 +212,10 @@ export const useMapLayer = (
       map.addLayer(layer, beforeId)
       zarrLayerRef.current = layer
 
-      if (props.dataset.center) {
+      if (dataset.center) {
         map.flyTo({
-          center: props.dataset.center,
-          zoom: props.dataset.zoom || 4,
+          center: dataset.center,
+          zoom: dataset.zoom || 4,
         })
       }
     } catch (error) {
@@ -240,31 +232,31 @@ export const useMapLayer = (
         zarrLayerRef.current = null
       }
     }
-  }, [map, isMapLoaded, props.datasetId, props.band, colormapArray])
+  }, [map, isMapLoaded, datasetId, band, colormapArray])
 
   useEffect(() => {
     const layer = zarrLayerRef.current
     if (!layer || !map || !isMapLoaded) return
 
-    layer.setOpacity(props.opacity)
+    layer.setOpacity(opacity)
     layer.setColormap(colormapArray)
-    layer.setClim(props.clim)
+    layer.setClim(clim)
 
     const selector = buildSelector()
     layer.setSelector(selector)
 
-    if (props.band === 'combined') {
-      layer.setUniforms({ u_precipWeight: props.precipWeight })
+    if (band === 'combined') {
+      layer.setUniforms({ u_precipWeight: precipWeight })
     }
   }, [
-    props.opacity,
-    props.clim,
+    opacity,
+    clim,
     colormapArray,
-    props.time,
-    props.band,
-    props.month,
-    props.precipWeight,
-    props.dataset,
+    time,
+    band,
+    month,
+    precipWeight,
+    dataset,
     map,
     isMapLoaded,
   ])
@@ -272,27 +264,24 @@ export const useMapLayer = (
   return zarrLayerRef
 }
 
-export const MapComponentBase = ({
-  sidebarWidth,
-  mapProvider,
-  ...props
-}: MapProps) => {
+export const Map = () => {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<MapInstance | null>(null)
   const [map, setMap] = useState<MapInstance | null>(null)
   const [isMapLoaded, setIsMapLoaded] = useState(false)
 
+  const sidebarWidth = useAppStore((state) => state.sidebarWidth)
+  const mapProvider = useAppStore((state) => state.mapProvider)
+  const globeProjection = useAppStore((state) => state.globeProjection)
+
   const mapConfig = getMapConfig(mapProvider)
 
-  useMapLayer(map, isMapLoaded, { ...props, mapProvider, sidebarWidth })
+  useMapLayer(map, isMapLoaded)
 
   useEffect(() => {
     if (!mapContainer.current) return
 
-    const newMap = mapConfig.createMap(
-      mapContainer.current,
-      props.globeProjection,
-    )
+    const newMap = mapConfig.createMap(mapContainer.current, globeProjection)
     mapInstanceRef.current = newMap
 
     newMap.on('load', () => {
@@ -314,8 +303,8 @@ export const MapComponentBase = ({
 
   useEffect(() => {
     if (!map || !isMapLoaded) return
-    mapConfig.setProjection(map, props.globeProjection)
-  }, [map, isMapLoaded, props.globeProjection])
+    mapConfig.setProjection(map, globeProjection)
+  }, [map, isMapLoaded, globeProjection])
 
   useEffect(() => {
     if (!map || !isMapLoaded || !mapConfig.needsResize) return
