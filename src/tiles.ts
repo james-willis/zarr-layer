@@ -1,6 +1,6 @@
 import * as zarr from 'zarrita'
 import { tileToKey, type TileTuple } from './maplibre-utils'
-import type { DimIndicesProps } from './types'
+import type { DimIndicesProps, SelectorMap, ZarrSelectorsProps } from './types'
 import { ZarrStore } from './zarr-store'
 
 export interface TileDataCache {
@@ -17,7 +17,7 @@ export interface TileDataCache {
 
 interface TilesOptions {
   store: ZarrStore
-  selectors: Record<string, any>
+  selectors: SelectorMap
   fillValue: number
   dimIndices: DimIndicesProps
   coordinates: Record<string, (string | number)[]>
@@ -27,7 +27,7 @@ interface TilesOptions {
 
 export class Tiles {
   private store: ZarrStore
-  private selectors: Record<string, any>
+  private selectors: SelectorMap
   private fillValue: number
   private dimIndices: DimIndicesProps
   private coordinates: Record<string, (string | number)[]>
@@ -58,7 +58,7 @@ export class Tiles {
     this.bandNames = bandNames
   }
 
-  updateSelector(selectors: Record<string, any>) {
+  updateSelector(selectors: SelectorMap) {
     this.selectors = selectors
   }
 
@@ -81,10 +81,19 @@ export class Tiles {
     return true
   }
 
-  private normalizeSelection(dimSelection: any, dimName?: string): number[] {
+  private normalizeSelection(
+    dimSelection:
+      | number
+      | string
+      | number[]
+      | string[]
+      | ZarrSelectorsProps
+      | undefined,
+    dimName?: string
+  ): number[] {
     if (dimSelection === undefined) return [0]
 
-    let items: any[]
+    let items: (number | string | ZarrSelectorsProps)[]
     if (Array.isArray(dimSelection)) {
       items = dimSelection
     } else if (
@@ -92,7 +101,7 @@ export class Tiles {
       dimSelection !== null &&
       'selected' in dimSelection
     ) {
-      const s = (dimSelection as any).selected
+      const s = dimSelection.selected
       items = Array.isArray(s) ? s : [s]
     } else {
       items = [dimSelection]
@@ -104,7 +113,7 @@ export class Tiles {
       const val =
         typeof v === 'object' && v !== null && 'selected' in v ? v.selected : v
 
-      if (coords) {
+      if (coords && (typeof val === 'number' || typeof val === 'string')) {
         const idx = coords.indexOf(val)
         if (idx >= 0) return idx
       }
@@ -125,7 +134,7 @@ export class Tiles {
    * If bands span multiple chunks, a warning is logged and only one chunk is fetched.
    */
   private computeChunkIndices(
-    levelArray: zarr.Array<any>,
+    levelArray: zarr.Array<zarr.DataType>,
     tileTuple: TileTuple
   ): number[] {
     const [_, x, y] = tileTuple
@@ -191,7 +200,7 @@ export class Tiles {
   private extractSliceFromChunk(
     chunkData: Float32Array,
     chunkShape: number[],
-    levelArray: zarr.Array<any>,
+    levelArray: zarr.Array<zarr.DataType>,
     chunkIndices: number[]
   ): {
     data: Float32Array
@@ -446,7 +455,7 @@ export class Tiles {
       const chunkData =
         chunk.data instanceof Float32Array
           ? new Float32Array(chunk.data.buffer)
-          : Float32Array.from(chunk.data as any)
+          : Float32Array.from(chunk.data as ArrayLike<number>)
 
       tile.chunkData = chunkData
       tile.chunkShape = chunkShape

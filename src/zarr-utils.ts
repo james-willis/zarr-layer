@@ -23,6 +23,18 @@ import {
   type DimIndicesProps,
 } from './types'
 
+type CoordinateArray = zarr.Array<zarr.DataType> & {
+  attrs?: Record<string, unknown>
+}
+type CoordinatesMap = Record<string, CoordinateArray>
+type Multiscale = { datasets?: Array<{ path: string; crs?: CRS }> }
+
+const resolveOpenFunc = (zarrVersion: 2 | 3 | null): typeof zarr.open => {
+  if (zarrVersion === 2) return zarr.open.v2 as typeof zarr.open
+  if (zarrVersion === 3) return zarr.open.v3 as typeof zarr.open
+  return zarr.open
+}
+
 const DIMENSION_ALIASES_DEFAULT: {
   [key in keyof DimensionNamesProps]: string[]
 } = {
@@ -69,7 +81,7 @@ const CF_MAPPINGS: { [key in keyof DimensionNamesProps]: string[] } = {
 export function identifyDimensionIndices(
   dimNames: string[],
   dimensionNames?: DimensionNamesProps,
-  coordinates?: Record<string, any>
+  coordinates?: CoordinatesMap
 ): DimIndicesProps {
   let DIMENSION_ALIASES = { ...DIMENSION_ALIASES_DEFAULT }
   const names = ['lat', 'lon', 'time', 'elevation']
@@ -77,8 +89,11 @@ export function identifyDimensionIndices(
   if (coordinates) {
     Object.keys(coordinates).forEach((coordName) => {
       const coordArr = coordinates[coordName]
-      const coordAttrs = coordArr.attrs as Record<string, any>
-      const standardName = coordAttrs?.standard_name
+      const coordAttrs = (coordArr.attrs ?? {}) as Record<string, unknown>
+      const standardName =
+        typeof coordAttrs?.standard_name === 'string'
+          ? coordAttrs.standard_name
+          : undefined
       if (standardName) {
         for (const [dimKey, cfNames] of Object.entries(CF_MAPPINGS)) {
           if (cfNames.includes(standardName)) {
@@ -182,17 +197,12 @@ export async function loadDimensionValues(
     coordArr = dimIndices.array
   } else {
     const coordVar = await targetRoot.resolve(dimIndices.name)
-    let localFunc = zarr.open as any
-    if (zarrVersion === 2) {
-      localFunc = zarr.open.v2
-    } else if (zarrVersion === 3) {
-      localFunc = zarr.open.v3
-    }
+    const localFunc = resolveOpenFunc(zarrVersion)
     coordArr = await localFunc(coordVar, { kind: 'array' })
   }
   const coordData = await zarr.get(coordArr)
   const coordArray = Array.from(
-    coordData.data as number[],
+    coordData.data as ArrayLike<number | bigint>,
     (v: number | bigint) => (typeof v === 'bigint' ? Number(v) : v)
   )
   if (slice) {
@@ -231,32 +241,38 @@ export async function initZarrDataset(
   variable: string,
   dimensions: DimensionNamesProps,
   levelMetadata: Map<number, ZarrLevelMetadata>,
-  levelCache: Map<number, any>,
+  levelCache: Map<number, zarr.Array<zarr.DataType>>,
   zarrVersion: 2 | 3 | null,
   multiscaleLevel?: number
 ): Promise<{
-  zarrArray: zarr.Array<any>
+  zarrArray: zarr.Array<zarr.DataType>
   levelInfos: string[]
   dimIndices: DimIndicesProps
-  attrs: Record<string, any>
+  attrs: Record<string, unknown>
   multiscaleLevel?: number
 }> {
-  let localFunc = zarr.open as any
-  if (zarrVersion === 2) {
-    localFunc = zarr.open.v2
-  } else if (zarrVersion === 3) {
-    localFunc = zarr.open.v3
-  }
+  const localFunc = resolveOpenFunc(zarrVersion)
   const zarrGroup = await localFunc(root, { kind: 'group' })
-  const attrs = (zarrGroup.attrs ?? {}) as Record<string, any>
-  let zarrArray: zarr.Array<any> | null = null
+  const attrs = (zarrGroup.attrs ?? {}) as Record<string, unknown>
+  let zarrArray: zarr.Array<zarr.DataType> | null = null
   let levelInfos: string[] = []
-  let coordinates: Record<string, any> = {}
-  let datasets
+  let coordinates: CoordinatesMap = {}
+  let datasets: Array<{ path: string; crs?: CRS }> = []
   let pyramidMode = false
-  if (attrs.multiscales && attrs.multiscales[0]?.datasets?.length) {
+  const multiscales = Array.isArray(
+    (attrs as { multiscales?: unknown }).multiscales
+  )
+    ? ((attrs as { multiscales?: unknown }).multiscales as Multiscale[])
+    : undefined
+
+  if (
+    multiscales &&
+    multiscales[0] &&
+    Array.isArray(multiscales[0].datasets) &&
+    multiscales[0].datasets.length
+  ) {
     pyramidMode = true
-    datasets = attrs.multiscales[0].datasets
+    datasets = multiscales[0].datasets || []
     if (multiscaleLevel) datasets = [datasets[multiscaleLevel]]
 
     for (let i = 0; i < datasets.length; i++) {
@@ -293,7 +309,7 @@ export async function initZarrDataset(
       levelMetadata.set(i, { width, height })
     }
     if (multiscaleLevel) {
-      datasets = attrs.multiscales[0].datasets
+      datasets = multiscales[0].datasets || []
       levelInfos = []
       for (let i = 0; i < datasets.length; i++) {
         levelInfos.push(datasets[i].path)
@@ -312,13 +328,8 @@ export async function initZarrDataset(
     zarrArray = await openLevelArray(root, levelInfo, variable, levelCache)
   } else {
     const arrayLocation = await root.resolve(variable)
-    let localFunc = zarr.open as any
-    if (zarrVersion === 2) {
-      localFunc = zarr.open.v2
-    } else if (zarrVersion === 3) {
-      localFunc = zarr.open.v3
-    }
-    zarrArray = await localFunc(arrayLocation, { kind: 'array' })
+    const openFunc = resolveOpenFunc(zarrVersion)
+    zarrArray = await openFunc(arrayLocation, { kind: 'array' })
   }
   if (!zarrArray) {
     throw new Error('Failed to initialize Zarr array')
@@ -364,15 +375,15 @@ export async function initZarrDataset(
  * - `array_dimensions`: Names of the array dimensions.
  */
 async function calculateCoordinatesFromAttrs(
-  arr: zarr.Array<any>,
+  arr: zarr.Array<zarr.DataType>,
   root: zarr.Location<zarr.FetchStore>,
-  existingCoordinates: Record<string, any>,
+  existingCoordinates: CoordinatesMap,
   store: zarr.FetchStore,
   variable: string,
   zarrVersion: 2 | 3 | null,
   isPyramid: boolean = false
 ): Promise<{
-  existingCoordinates: Record<string, any>
+  existingCoordinates: CoordinatesMap
   array_dimensions: string[]
 }> {
   let array_dimensions: string[] =
@@ -400,12 +411,7 @@ async function calculateCoordinatesFromAttrs(
   for (let i = 0; i < array_dimensions.length; i++) {
     const dimName = array_dimensions[i]
     const coordVar = await root.resolve(dimName)
-    let localFunc = zarr.open as any
-    if (zarrVersion === 2) {
-      localFunc = zarr.open.v2
-    } else if (zarrVersion === 3) {
-      localFunc = zarr.open.v3
-    }
+    const localFunc = resolveOpenFunc(zarrVersion)
     existingCoordinates[dimName] = await localFunc(coordVar, { kind: 'array' })
   }
   return { existingCoordinates, array_dimensions }
@@ -430,12 +436,7 @@ export async function getXYLimits(
   zarrVersion: 2 | 3 | null
 ): Promise<XYLimitsProps> {
   const levelRoot = multiscale ? await root.resolve(levelInfos[0]) : root
-  let localFunc = zarr.open as any
-  if (zarrVersion === 2) {
-    localFunc = zarr.open.v2
-  } else if (zarrVersion === 3) {
-    localFunc = zarr.open.v3
-  }
+  const localFunc = resolveOpenFunc(zarrVersion)
   const xarr =
     dimIndices.lon.array ||
     (await localFunc(await levelRoot.resolve(dimIndices.lon.name), {
@@ -447,14 +448,17 @@ export async function getXYLimits(
       kind: 'array',
     }))
 
-  const xdata = (await zarr.get(xarr)) as any
-  const ydata = (await zarr.get(yarr)) as any
+  const xdata = await zarr.get(xarr)
+  const ydata = await zarr.get(yarr)
+
+  const xValues = Array.from(xdata.data as ArrayLike<number>)
+  const yValues = Array.from(ydata.data as ArrayLike<number>)
 
   const xyLimits = {
-    xMin: Math.min(...xdata.data),
-    xMax: Math.max(...xdata.data),
-    yMin: Math.min(...ydata.data),
-    yMax: Math.max(...ydata.data),
+    xMin: Math.min(...xValues),
+    xMax: Math.max(...xValues),
+    yMin: Math.min(...yValues),
+    yMax: Math.max(...yValues),
   }
   return xyLimits
 }
@@ -475,9 +479,9 @@ export async function openLevelArray(
   root: zarr.Location<zarr.FetchStore>,
   levelPath: string,
   variable: string,
-  levelCache: Map<number, any>,
+  levelCache: Map<number, zarr.Array<zarr.DataType>>,
   zarrVersion: 2 | 3 | null = null
-): Promise<zarr.Array<any>> {
+): Promise<zarr.Array<zarr.DataType>> {
   const existing = Array.from(levelCache.entries()).find(
     ([_, val]) => val.path === levelPath
   )
@@ -485,12 +489,7 @@ export async function openLevelArray(
 
   const levelRoot = await root.resolve(levelPath)
   const arrayLoc = variable ? await levelRoot.resolve(variable) : levelRoot
-  let localFunc = zarr.open as any
-  if (zarrVersion === 2) {
-    localFunc = zarr.open.v2
-  } else if (zarrVersion === 3) {
-    localFunc = zarr.open.v3
-  }
+  const localFunc = resolveOpenFunc(zarrVersion)
   const arr = await localFunc(arrayLoc, { kind: 'array' })
 
   const levelIndex = levelCache.size
@@ -516,13 +515,15 @@ export async function openLevelArray(
  *   - `fillValue`: Exact fill/missing value (if any).
  *   - `useFillValue`: Whether to apply exact masking based on fill value.
  */
-export function extractNoDataMetadata(zarrArray: zarr.Array<any>): {
+export function extractNoDataMetadata(
+  zarrArray: zarr.Array<zarr.DataType>
+): {
   metadataMin: number | undefined
   metadataMax: number | undefined
   fillValue: number | undefined
   useFillValue: boolean
 } {
-  const attrs = zarrArray.attrs || {}
+  const attrs = (zarrArray.attrs ?? {}) as Record<string, unknown>
 
   let metadataMin: number | undefined = undefined
   let metadataMax: number | undefined = undefined
@@ -553,12 +554,16 @@ export function extractNoDataMetadata(zarrArray: zarr.Array<any>): {
  * @returns Detected  CRS as a string (e.g., 'EPSG:4326' or 'EPSG:3857'. See {@link CRS}).
  */
 export async function detectCRS(
-  attrs: Record<string, any>,
-  arr: zarr.Array<any> | null,
+  attrs: Record<string, unknown>,
+  arr: zarr.Array<zarr.DataType> | null,
   xyLimits?: XYLimitsProps
 ): Promise<CRS> {
-  const attrCRS = attrs?.multiscales?.[0]?.datasets?.[0]?.crs ?? arr?.attrs?.crs
-  if (attrCRS) {
+  const attrCRS =
+    (Array.isArray((attrs as { multiscales?: unknown }).multiscales) &&
+      (attrs as { multiscales: Multiscale[] }).multiscales[0]?.datasets?.[0]
+        ?.crs) ??
+    (arr?.attrs as Record<string, unknown> | undefined)?.crs
+  if (attrCRS === 'EPSG:4326' || attrCRS === 'EPSG:3857') {
     return attrCRS
   }
   if (!xyLimits) {
@@ -574,14 +579,23 @@ export interface BandInfo {
 }
 
 export function getBandInformation(
-  selector: Record<string, any>
+  selector: Record<
+    string,
+    number | number[] | string | string[] | ZarrSelectorsProps
+  >
 ): Record<string, BandInfo> {
   const result: Record<string, BandInfo> = {}
 
   for (const [key, value] of Object.entries(selector)) {
     if (Array.isArray(value)) {
       value.forEach((v, idx) => {
-        const bandValue = typeof v === 'object' ? v.selected ?? v : v
+        const bandValue =
+          typeof v === 'object' &&
+          v !== null &&
+          'selected' in v &&
+          (v as { selected?: string | number }).selected !== undefined
+            ? (v as { selected?: string | number }).selected!
+            : v
         const bandName =
           typeof bandValue === 'string' ? bandValue : `${key}_${bandValue}`
         result[bandName] = { band: bandValue, index: idx }
@@ -594,7 +608,10 @@ export function getBandInformation(
 
 export function getBands(
   variable: string,
-  selector: Record<string, any>
+  selector: Record<
+    string,
+    number | number[] | string | string[] | ZarrSelectorsProps
+  >
 ): string[] {
   const bandInfo = getBandInformation(selector)
   const bandNames = Object.keys(bandInfo)

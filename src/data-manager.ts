@@ -1,17 +1,21 @@
+import type { MercatorBounds, TileTuple } from './maplibre-utils'
+import type { TileRenderCache } from './zarr-tile-cache'
+import type { MapLike } from './types'
+
 export interface RenderData {
   isMultiscale: boolean
   vertexArr?: Float32Array
   pixCoordArr?: Float32Array
   // Tiled specific
-  visibleTiles?: any[]
-  tileCache?: any
+  visibleTiles?: TileTuple[]
+  tileCache?: TileRenderCache
   tileSize?: number
   // Single image specific
   singleImage?: {
     data: Float32Array | null
     width: number
     height: number
-    bounds: any
+    bounds: MercatorBounds | null
     texture: WebGLTexture | null
     vertexBuffer: WebGLBuffer | null
     pixCoordBuffer: WebGLBuffer | null
@@ -22,7 +26,7 @@ export interface RenderData {
 export interface DataManager {
   isMultiscale: boolean
   initialize(): Promise<void>
-  update(map: any, gl: WebGL2RenderingContext): void
+  update(map: MapLike, gl: WebGL2RenderingContext): void
   getRenderData(): RenderData
   dispose(gl: WebGL2RenderingContext): void
   setSelector(

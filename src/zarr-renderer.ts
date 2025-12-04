@@ -62,10 +62,10 @@ interface RenderParams {
   worldOffsets: number[]
   isMultiscale: boolean
   visibleTiles: TileTuple[]
-  tileCache: TileRenderCache
   tileSize: number
   vertexArr: Float32Array
   pixCoordArr: Float32Array
+  tileCache?: TileRenderCache
   singleImage?: SingleImageParams
   shaderData?: ShaderData
   projectionData?: ProjectionData
@@ -460,6 +460,10 @@ export class ZarrRenderer {
     )
 
     if (isMultiscale) {
+      if (!tileCache) {
+        console.warn('Missing tile cache for multiscale render, skipping frame')
+        return
+      }
       this.renderTiles(
         shaderProgram,
         visibleTiles,

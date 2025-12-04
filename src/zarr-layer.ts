@@ -23,6 +23,7 @@ import type {
   CRS,
   DimensionNamesProps,
   DimIndicesProps,
+  MapLike,
   ZarrLayerOptions,
   XYLimits,
   ZarrLevelMetadata,
@@ -59,7 +60,7 @@ export class ZarrLayer {
   private offset: number = 0
 
   private gl: WebGL2RenderingContext | undefined
-  private map: any
+  private map: MapLike | null = null
   private renderer: ZarrRenderer | null = null
   private dataManager: DataManager | null = null
 
@@ -88,16 +89,19 @@ export class ZarrLayer {
   }
   private initialRenderWorldCopies: boolean | undefined
   private projectionChangeHandler: (() => void) | null = null
-  private resolveGl(map: any, gl: any): WebGL2RenderingContext {
+  private resolveGl(
+    map: MapLike,
+    gl: WebGLRenderingContext | WebGL2RenderingContext | null
+  ): WebGL2RenderingContext {
     const isWebGL2 =
       gl &&
-      typeof (gl as any).getUniformLocation === 'function' &&
-      typeof (gl as any).drawBuffers === 'function'
+      typeof gl.getUniformLocation === 'function' &&
+      typeof (gl as WebGL2RenderingContext).drawBuffers === 'function'
     if (isWebGL2) {
       return gl as WebGL2RenderingContext
     }
 
-    const describe = (obj: any) =>
+    const describe = (obj: unknown) =>
       obj
         ? {
             type: obj.constructor?.name,
@@ -106,8 +110,8 @@ export class ZarrLayer {
         : null
     console.error('Invalid WebGL2 context passed to onAdd', {
       providedGl: describe(gl),
-      painterGl: describe((map as any)?.painter?.context?.gl),
-      rendererGl: describe((map as any)?.renderer?.getContext?.()),
+      painterGl: describe(map?.painter?.context?.gl),
+      rendererGl: describe(map?.renderer?.getContext?.()),
     })
     throw new Error('MapLibre did not provide a valid WebGL2 context')
   }
@@ -258,11 +262,11 @@ export class ZarrLayer {
     this.invalidate()
   }
 
-  async onAdd(map: any, gl: WebGL2RenderingContext) {
+  async onAdd(map: MapLike, gl: WebGL2RenderingContext | null) {
     this.map = map
     const resolvedGl = this.resolveGl(map, gl)
     this.gl = resolvedGl
-    this.invalidate = () => map.triggerRepaint()
+    this.invalidate = () => map.triggerRepaint && map.triggerRepaint()
 
     this.colormap.upload(resolvedGl as WebGL2RenderingContext)
     this.renderer = new ZarrRenderer(
@@ -408,14 +412,17 @@ export class ZarrLayer {
   }
 
   private getWorldOffsets(): number[] {
-    const bounds = this.map.getBounds()
+    const map = this.map
+    if (!map) return [0]
+
+    const bounds = map.getBounds ? map.getBounds() : null
     if (!bounds) return [0]
 
     const isGlobe = this.isGlobeProjection()
     // Honor MapLibre's world copy setting, but always avoid duplicates on globe
     const renderWorldCopies =
-      typeof this.map.getRenderWorldCopies === 'function'
-        ? this.map.getRenderWorldCopies()
+      typeof map.getRenderWorldCopies === 'function'
+        ? map.getRenderWorldCopies()
         : true
     if (isGlobe || !renderWorldCopies) return [0]
 
@@ -436,8 +443,11 @@ export class ZarrLayer {
     return JSON.stringify(this.selector)
   }
 
-  prerender(_gl: WebGL2RenderingContext | WebGLRenderingContext, _params: any) {
-    if (this.isRemoved || !this.gl || !this.dataManager) return
+  prerender(
+    _gl: WebGL2RenderingContext | WebGLRenderingContext,
+    _params: unknown
+  ) {
+    if (this.isRemoved || !this.gl || !this.dataManager || !this.map) return
 
     // Update data manager (prefetch tiles etc)
     this.dataManager.update(this.map, this.gl)
@@ -445,29 +455,69 @@ export class ZarrLayer {
 
   render(
     _gl: WebGL2RenderingContext | WebGLRenderingContext,
-    params: any,
+    params: unknown,
     projection?: { name: string },
     globeToMercatorMatrix?: number[] | Float32Array | Float64Array,
     transition?: number
   ) {
-    if (this.isRemoved || !this.renderer || !this.gl || !this.dataManager)
+    if (
+      this.isRemoved ||
+      !this.renderer ||
+      !this.gl ||
+      !this.dataManager ||
+      !this.map
+    )
       return
 
+    type MatrixLike = number[] | Float32Array | Float64Array
+    type ProjectionParams = {
+      shaderData?: ShaderData
+      defaultProjectionData?: {
+        mainMatrix?: MatrixLike
+        fallbackMatrix?: MatrixLike
+        tileMercatorCoords?: number[]
+        clippingPlane?: number[]
+        projectionTransition?: number
+      }
+      modelViewProjectionMatrix?: MatrixLike
+      projectionMatrix?: MatrixLike
+    }
+
     const paramsObj =
-      params && typeof params === 'object' && !Array.isArray(params)
-        ? (params as any)
+      params &&
+      typeof params === 'object' &&
+      !Array.isArray(params) &&
+      !ArrayBuffer.isView(params)
+        ? (params as ProjectionParams)
         : null
 
     const shaderData = paramsObj?.shaderData
     let projectionData: ProjectionData | undefined
-    if (paramsObj?.defaultProjectionData) {
+    const defaultProj = paramsObj?.defaultProjectionData
+    if (
+      defaultProj &&
+      defaultProj.mainMatrix &&
+      defaultProj.fallbackMatrix &&
+      defaultProj.tileMercatorCoords &&
+      defaultProj.clippingPlane &&
+      typeof defaultProj.projectionTransition === 'number'
+    ) {
       projectionData = {
-        mainMatrix: paramsObj.defaultProjectionData.mainMatrix,
-        fallbackMatrix: paramsObj.defaultProjectionData.fallbackMatrix,
-        tileMercatorCoords: paramsObj.defaultProjectionData.tileMercatorCoords,
-        clippingPlane: paramsObj.defaultProjectionData.clippingPlane,
-        projectionTransition:
-          paramsObj.defaultProjectionData.projectionTransition,
+        mainMatrix: defaultProj.mainMatrix,
+        fallbackMatrix: defaultProj.fallbackMatrix,
+        tileMercatorCoords: defaultProj.tileMercatorCoords as [
+          number,
+          number,
+          number,
+          number,
+        ],
+        clippingPlane: defaultProj.clippingPlane as [
+          number,
+          number,
+          number,
+          number,
+        ],
+        projectionTransition: defaultProj.projectionTransition,
       }
     }
     let matrix: number[] | Float32Array | Float64Array | null = null
@@ -502,13 +552,13 @@ export class ZarrLayer {
 
     const renderData = this.dataManager.getRenderData()
 
-    this.renderer.render({
-      matrix,
-      colormapTexture,
-      uniforms,
-      worldOffsets,
-      isMultiscale: renderData.isMultiscale,
-      visibleTiles: renderData.visibleTiles || [],
+      this.renderer.render({
+        matrix,
+        colormapTexture,
+        uniforms,
+        worldOffsets,
+        isMultiscale: renderData.isMultiscale,
+        visibleTiles: renderData.visibleTiles || [],
       tileCache: renderData.tileCache,
       tileSize: renderData.tileSize || this.tileSize,
       vertexArr: renderData.vertexArr || new Float32Array(),
@@ -526,7 +576,7 @@ export class ZarrLayer {
     })
   }
 
-  onRemove(_map: any, gl: WebGL2RenderingContext) {
+  onRemove(_map: MapLike, gl: WebGL2RenderingContext) {
     this.isRemoved = true
 
     this.renderer?.dispose()

@@ -2,6 +2,13 @@ import * as zarr from 'zarrita'
 
 export type ColormapArray = number[][] | string[]
 
+export type SelectorValue =
+  | number
+  | number[]
+  | string
+  | string[]
+  | [number, number]
+
 export interface ColorMapInfo {
   [key: string]: {
     interpolate: boolean
@@ -10,9 +17,11 @@ export interface ColorMapInfo {
 }
 
 export interface ZarrSelectorsProps {
-  selected: number | number[] | string | string[] | [number, number]
+  selected: SelectorValue
   type?: 'index' | 'value'
 }
+
+export type SelectorMap = Record<string, ZarrSelectorsProps>
 
 export interface XYLimits {
   xMin: number
@@ -37,7 +46,11 @@ export interface DimensionNamesProps {
 }
 
 export interface DimIndicesProps {
-  [key: string]: { name: string; index: number; array: zarr.Array<any> | null }
+  [key: string]: {
+    name: string
+    index: number
+    array: zarr.Array<zarr.DataType> | null
+  }
 }
 
 export interface ZarrLayerOptions {
@@ -77,4 +90,23 @@ export interface ColorScaleProps {
   min: number
   max: number
   colors: number[][]
+}
+
+export interface BoundsLike {
+  getWest(): number
+  getEast(): number
+  toArray(): [[number, number], [number, number]]
+}
+
+export interface MapLike {
+  getProjection?(): { type?: string; name?: string } | null
+  setRenderWorldCopies?(value: boolean): void
+  getRenderWorldCopies?(): boolean
+  on?(event: string, handler: (...args: unknown[]) => void): void
+  off?(event: string, handler: (...args: unknown[]) => void): void
+  triggerRepaint?(): void
+  getBounds?(): BoundsLike | null
+  getZoom?(): number
+  painter?: { context?: { gl?: unknown } }
+  renderer?: { getContext?: () => unknown }
 }

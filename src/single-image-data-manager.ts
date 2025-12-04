@@ -3,7 +3,13 @@ import { DataManager, RenderData } from './data-manager'
 import { ZarrStore } from './zarr-store'
 import { boundsToMercatorNorm, MercatorBounds } from './maplibre-utils'
 import { mustCreateBuffer, mustCreateTexture } from './webgl-utils'
-import { DimIndicesProps, XYLimits } from './types'
+import type {
+  CRS,
+  DimIndicesProps,
+  MapLike,
+  XYLimits,
+  ZarrSelectorsProps,
+} from './types'
 
 const TILE_SUBDIVISIONS = 16
 
@@ -25,18 +31,24 @@ export class SingleImageDataManager implements DataManager {
   private mercatorBounds: MercatorBounds | null = null
   private zarrStore: ZarrStore
   private variable: string
-  private selector: Record<string, number | number[] | string | string[]>
+  private selector: Record<
+    string,
+    number | number[] | string | string[] | ZarrSelectorsProps
+  >
   private invalidate: () => void
   private dimIndices: DimIndicesProps = {}
   private xyLimits: XYLimits | null = null
-  private crs: any = null
-  private zarrArray: zarr.Array<any> | null = null
+  private crs: CRS | null = null
+  private zarrArray: zarr.Array<zarr.DataType> | null = null
   private isRemoved: boolean = false
 
   constructor(
     store: ZarrStore,
     variable: string,
-    selector: Record<string, number | number[] | string | string[]>,
+    selector: Record<
+      string,
+      number | number[] | string | string[] | ZarrSelectorsProps
+    >,
     invalidate: () => void
   ) {
     this.zarrStore = store
@@ -65,7 +77,7 @@ export class SingleImageDataManager implements DataManager {
     this.updateGeometryForProjection(false)
   }
 
-  update(map: any, gl: WebGL2RenderingContext): void {
+  update(_map: MapLike, gl: WebGL2RenderingContext): void {
     if (!this.texture) {
       this.texture = mustCreateTexture(gl)
     }
@@ -167,7 +179,10 @@ export class SingleImageDataManager implements DataManager {
   }
 
   async setSelector(
-    selector: Record<string, number | number[] | string | string[]>
+    selector: Record<
+      string,
+      number | number[] | string | string[] | ZarrSelectorsProps
+    >
   ): Promise<void> {
     this.selector = selector
     this.data = null // Force refetch
@@ -179,7 +194,9 @@ export class SingleImageDataManager implements DataManager {
     if (!this.zarrArray || this.isRemoved) return
 
     try {
-      const sliceArgs: any[] = new Array(this.zarrArray.shape.length).fill(0)
+      const sliceArgs: (number | zarr.Slice)[] = new Array(
+        this.zarrArray.shape.length
+      ).fill(0)
 
       for (const dimName of Object.keys(this.dimIndices)) {
         const dimInfo = this.dimIndices[dimName]
@@ -188,19 +205,37 @@ export class SingleImageDataManager implements DataManager {
         } else if (dimName === 'lat') {
           sliceArgs[dimInfo.index] = zarr.slice(0, this.height)
         } else {
-          const dimSelection = this.selector[dimName]
+          const dimSelection = this.selector[dimName] as
+            | number
+            | number[]
+            | string
+            | string[]
+            | ZarrSelectorsProps
+            | undefined
           if (dimSelection !== undefined) {
-            sliceArgs[dimInfo.index] =
-              typeof dimSelection === 'object'
-                ? (dimSelection as any).selected
+            const selectionValue =
+              typeof dimSelection === 'object' &&
+              dimSelection !== null &&
+              !Array.isArray(dimSelection) &&
+              'selected' in dimSelection
+                ? dimSelection.selected
                 : dimSelection
+            const normalizedValue = Array.isArray(selectionValue)
+              ? selectionValue.find((v) => typeof v === 'number') ?? 0
+              : typeof selectionValue === 'number'
+              ? selectionValue
+              : 0
+            sliceArgs[dimInfo.index] = normalizedValue
           } else {
             sliceArgs[dimInfo.index] = 0
           }
         }
       }
 
-      const data = await zarr.get(this.zarrArray, sliceArgs)
+      const data = (await zarr.get(
+        this.zarrArray,
+        sliceArgs
+      )) as { data: ArrayLike<number> }
       if (this.isRemoved) return
 
       this.data = new Float32Array((data.data as Float32Array).buffer)

@@ -1,4 +1,5 @@
 import { DataManager, RenderData } from './data-manager'
+import type { MapLike, SelectorMap } from './types'
 import { ZarrStore } from './zarr-store'
 import { TileRenderCache } from './zarr-tile-cache'
 import { Tiles } from './tiles'
@@ -28,7 +29,7 @@ export class TiledDataManager implements DataManager {
   private selector: Record<string, number | number[] | string | string[]>
   private invalidate: () => void
   private zarrStore: ZarrStore
-  private selectors: Record<string, any> = {}
+  private selectors: SelectorMap = {}
   private visibleTiles: TileTuple[] = []
 
   constructor(
@@ -71,7 +72,7 @@ export class TiledDataManager implements DataManager {
     this.updateGeometryForProjection(false)
   }
 
-  update(map: any, gl: WebGL2RenderingContext): void {
+  update(map: MapLike, gl: WebGL2RenderingContext): void {
     if (!this.tileCache) {
       this.tileCache = new TileRenderCache(gl, MAX_CACHED_TILES)
     }
@@ -91,7 +92,7 @@ export class TiledDataManager implements DataManager {
   getRenderData(): RenderData {
     return {
       isMultiscale: true,
-      tileCache: this.tileCache,
+      tileCache: this.tileCache ?? undefined,
       visibleTiles: this.visibleTiles,
       tileSize: this.tileSize,
       vertexArr: this.vertexArr,
@@ -190,7 +191,9 @@ export class TiledDataManager implements DataManager {
     }
   }
 
-  private getVisibleTiles(map: any): TileTuple[] {
+  private getVisibleTiles(map: MapLike): TileTuple[] {
+    if (!map.getZoom || !map.getBounds) return []
+
     const mapZoom = map.getZoom()
     if (mapZoom < this.minRenderZoom) {
       return []
