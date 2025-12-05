@@ -6,6 +6,7 @@ import { mustCreateBuffer, mustCreateTexture } from './webgl-utils'
 import type {
   CRS,
   DimIndicesProps,
+  LoadingStateCallback,
   MapLike,
   XYLimits,
   ZarrSelectorsProps,
@@ -22,7 +23,6 @@ export class SingleImageDataManager implements DataManager {
   private vertexBuffer: WebGLBuffer | null = null
   private pixCoordBuffer: WebGLBuffer | null = null
 
-  // Geometry state
   private vertexArr: Float32Array = new Float32Array()
   private pixCoordArr: Float32Array = new Float32Array()
   private currentSubdivisions: number = 0
@@ -41,6 +41,8 @@ export class SingleImageDataManager implements DataManager {
   private crs: CRS | null = null
   private zarrArray: zarr.Array<zarr.DataType> | null = null
   private isRemoved: boolean = false
+  private loadingCallback: LoadingStateCallback | undefined
+  private isLoadingData: boolean = false
 
   constructor(
     store: ZarrStore,
@@ -88,7 +90,7 @@ export class SingleImageDataManager implements DataManager {
       this.pixCoordBuffer = mustCreateBuffer(gl)
     }
 
-    if (!this.data) {
+    if (!this.data && !this.isLoadingData) {
       this.fetchData().then(() => {
         this.invalidate()
       })
@@ -176,6 +178,21 @@ export class SingleImageDataManager implements DataManager {
     this.vertexBuffer = null
     this.pixCoordBuffer = null
     this.data = null
+    this.isLoadingData = false
+    this.emitLoadingState()
+  }
+
+  setLoadingCallback(callback: LoadingStateCallback | undefined): void {
+    this.loadingCallback = callback
+  }
+
+  private emitLoadingState(): void {
+    if (!this.loadingCallback) return
+    this.loadingCallback({
+      loading: this.isLoadingData,
+      metadata: false,
+      chunks: this.isLoadingData,
+    })
   }
 
   async setSelector(
@@ -192,6 +209,9 @@ export class SingleImageDataManager implements DataManager {
 
   private async fetchData(): Promise<void> {
     if (!this.zarrArray || this.isRemoved) return
+
+    this.isLoadingData = true
+    this.emitLoadingState()
 
     try {
       const sliceArgs: (number | zarr.Slice)[] = new Array(
@@ -240,6 +260,9 @@ export class SingleImageDataManager implements DataManager {
       this.data = new Float32Array((data.data as Float32Array).buffer)
     } catch (err) {
       console.error('Error fetching single image data:', err)
+    } finally {
+      this.isLoadingData = false
+      this.emitLoadingState()
     }
   }
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Box } from 'theme-ui'
+import { Box, Spinner } from 'theme-ui'
 // @ts-expect-error - carbonplan colormaps types not available
 import { useThemedColormap } from '@carbonplan/colormaps'
 import { ZarrLayer } from '@carbonplan/zarr-layer'
@@ -142,6 +142,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const clim = useAppStore((state) => state.clim)
   const colormap = useAppStore((state) => state.colormap)
   const mapProvider = useAppStore((state) => state.mapProvider)
+  const setLoadingState = useAppStore((state) => state.setLoadingState)
   const colormapArray = useThemedColormap(colormap, { format: 'hex' })
 
   const layerConfig: BuildLayerResult = useMemo(
@@ -175,6 +176,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       minRenderZoom: datasetModule.minRenderZoom ?? 0,
       fillValue: datasetModule.fillValue,
       dimensionNames: datasetModule.dimensionNames,
+      onLoadingStateChange: setLoadingState,
     }
 
     if (layerConfig.customFrag) {
@@ -215,7 +217,15 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     }
     // colormap changes are handled via the update effect to avoid full layer
     // recreation, so we intentionally omit it from deps here.
-  }, [map, isMapLoaded, datasetId, datasetModule, layerConfig.customFrag, mapProvider])
+  }, [
+    map,
+    isMapLoaded,
+    datasetId,
+    datasetModule,
+    layerConfig.customFrag,
+    mapProvider,
+    setLoadingState,
+  ])
 
   useEffect(() => {
     const layer = zarrLayerRef.current
@@ -244,6 +254,7 @@ export const Map = () => {
   const sidebarWidth = useAppStore((state) => state.sidebarWidth)
   const mapProvider = useAppStore((state) => state.mapProvider)
   const globeProjection = useAppStore((state) => state.globeProjection)
+  const loadingState = useAppStore((state) => state.loadingState)
 
   const mapConfig = getMapConfig(mapProvider)
 
@@ -285,16 +296,21 @@ export const Map = () => {
   }, [map, isMapLoaded, sidebarWidth])
 
   return (
-    <Box
-      ref={mapContainer}
-      sx={{
-        position: 'absolute',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        left: sidebarWidth,
-        transition: 'left 0.2s',
-      }}
-    />
+    <>
+      <Box
+        ref={mapContainer}
+        sx={{
+          position: 'absolute',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          left: sidebarWidth,
+          transition: 'left 0.2s',
+        }}
+      />
+      <Box sx={{ position: 'absolute', top: '8px', left: sidebarWidth + 10 }}>
+        {loadingState.loading && <Spinner size={40} />}
+      </Box>
+    </>
   )
 }

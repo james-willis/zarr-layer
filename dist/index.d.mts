@@ -6,6 +6,12 @@ interface DimensionNamesProps {
     lon?: string;
     others?: string[];
 }
+interface LoadingState {
+    loading: boolean;
+    metadata: boolean;
+    chunks: boolean;
+}
+type LoadingStateCallback = (state: LoadingState) => void;
 interface ZarrLayerOptions {
     id: string;
     source: string;
@@ -22,6 +28,7 @@ interface ZarrLayerOptions {
     customFrag?: string;
     uniforms?: Record<string, number>;
     renderingMode?: '2d' | '3d';
+    onLoadingStateChange?: LoadingStateCallback;
 }
 interface BoundsLike {
     getWest(): number;
@@ -95,8 +102,13 @@ declare class ZarrLayer {
     private customUniforms;
     private bandNames;
     private customShaderConfig;
+    private onLoadingStateChange;
+    private metadataLoading;
+    private chunksLoading;
     private isGlobeProjection;
-    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, fillValue, customFragmentSource, customFrag, uniforms, renderingMode, }: ZarrLayerOptions);
+    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, fillValue, customFragmentSource, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
+    private emitLoadingState;
+    private handleChunkLoadingChange;
     setOpacity(opacity: number): void;
     setClim(clim: [number, number]): void;
     setColormap(colormap: ColormapArray): void;
@@ -115,4 +127,4 @@ declare class ZarrLayer {
     onRemove(_map: MapLike, gl: WebGL2RenderingContext): void;
 }
 
-export { type ColormapArray, type DimensionNamesProps, ZarrLayer, type ZarrLayerOptions };
+export { type ColormapArray, type DimensionNamesProps, type LoadingState, type LoadingStateCallback, ZarrLayer, type ZarrLayerOptions };

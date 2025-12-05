@@ -53,6 +53,14 @@ export interface DimIndicesProps {
   }
 }
 
+export interface LoadingState {
+  loading: boolean
+  metadata: boolean
+  chunks: boolean
+}
+
+export type LoadingStateCallback = (state: LoadingState) => void
+
 export interface ZarrLayerOptions {
   id: string
   source: string
@@ -69,6 +77,7 @@ export interface ZarrLayerOptions {
   customFrag?: string
   uniforms?: Record<string, number>
   renderingMode?: '2d' | '3d'
+  onLoadingStateChange?: LoadingStateCallback
 }
 
 export type CRS = 'EPSG:4326' | 'EPSG:3857'

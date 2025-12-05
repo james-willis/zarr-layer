@@ -5,9 +5,9 @@ import {
   DatasetId,
   DatasetModuleMap,
   DatasetStateMap,
-  AnyDatasetModule,
 } from './constants'
 import { MapProvider } from '../components/map-shared'
+import type { LoadingState } from '@carbonplan/zarr-layer'
 
 type DatasetStateStore = {
   [K in DatasetId]?: Partial<DatasetStateMap[K]>
@@ -22,6 +22,7 @@ interface AppState {
   globeProjection: boolean
   mapProvider: MapProvider
   datasetState: DatasetStateStore
+  loadingState: LoadingState
   setSidebarWidth: (width: number) => void
   setDatasetId: (id: DatasetId) => void
   setOpacity: (opacity: number) => void
@@ -31,9 +32,10 @@ interface AppState {
   setMapProvider: (provider: MapProvider) => void
   setDatasetState: <K extends DatasetId>(
     id: K,
-    updates: Partial<DatasetStateMap[K]>
+    updates: Partial<DatasetStateMap[K]>,
   ) => void
   setActiveDatasetState: (updates: Partial<DatasetStateMap[DatasetId]>) => void
+  setLoadingState: (state: LoadingState) => void
   getDatasetModule: () => DatasetModuleMap[DatasetId]
   getDatasetState: () => DatasetStateMap[DatasetId]
 }
@@ -51,7 +53,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...DATASET_MODULES[DEFAULT_DATASET_ID].defaultState,
     },
   },
+  loadingState: { loading: false, metadata: false, chunks: false },
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
+  setLoadingState: (loadingState) => set({ loadingState }),
   setDatasetId: (id) => {
     const module = DATASET_MODULES[id]
     if (!module) return
@@ -77,7 +81,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = state.datasetState[id] ?? module?.defaultState
       const nextDatasetState: DatasetStateStore = {
         ...state.datasetState,
-        [id]: { ...(current ?? {}), ...updates } as DatasetStateStore[typeof id],
+        [id]: {
+          ...(current ?? {}),
+          ...updates,
+        } as DatasetStateStore[typeof id],
       }
       return { datasetState: nextDatasetState }
     }),

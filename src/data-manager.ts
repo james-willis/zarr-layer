@@ -1,17 +1,15 @@
 import type { MercatorBounds, TileTuple } from './map-utils'
 import type { TileRenderCache } from './zarr-tile-cache'
-import type { MapLike } from './types'
+import type { LoadingStateCallback, MapLike } from './types'
 
 export interface RenderData {
   isMultiscale: boolean
   vertexArr?: Float32Array
   pixCoordArr?: Float32Array
   tileBounds?: Record<string, MercatorBounds>
-  // Tiled specific
   visibleTiles?: TileTuple[]
   tileCache?: TileRenderCache
   tileSize?: number
-  // Single image specific
   singleImage?: {
     data: Float32Array | null
     width: number
@@ -34,4 +32,5 @@ export interface DataManager {
     selector: Record<string, number | number[] | string | string[]>
   ): Promise<void>
   onProjectionChange(isGlobe: boolean): void
+  setLoadingCallback(callback: LoadingStateCallback | undefined): void
 }

@@ -22,6 +22,7 @@ import type {
   ColormapArray,
   DimensionNamesProps,
   DimIndicesProps,
+  LoadingStateCallback,
   MapLike,
   ZarrLayerOptions,
   ZarrSelectorsProps,
@@ -123,6 +124,9 @@ export class ZarrLayer {
   private customUniforms: Record<string, number> = {}
   private bandNames: string[] = []
   private customShaderConfig: CustomShaderConfig | null = null
+  private onLoadingStateChange: LoadingStateCallback | undefined
+  private metadataLoading: boolean = false
+  private chunksLoading: boolean = false
 
   private isGlobeProjection(shaderData?: ShaderData): boolean {
     if (shaderData?.vertexShaderPrelude) return true
@@ -146,6 +150,7 @@ export class ZarrLayer {
     customFrag,
     uniforms,
     renderingMode = '2d',
+    onLoadingStateChange,
   }: ZarrLayerOptions) {
     this.id = id
     this.url = source
@@ -185,6 +190,24 @@ export class ZarrLayer {
     }
 
     if (fillValue !== undefined) this.fillValue = fillValue
+    this.onLoadingStateChange = onLoadingStateChange
+  }
+
+  private emitLoadingState(): void {
+    if (!this.onLoadingStateChange) return
+    this.onLoadingStateChange({
+      loading: this.metadataLoading || this.chunksLoading,
+      metadata: this.metadataLoading,
+      chunks: this.chunksLoading,
+    })
+  }
+
+  private handleChunkLoadingChange = (state: {
+    loading: boolean
+    chunks: boolean
+  }): void => {
+    this.chunksLoading = state.chunks
+    this.emitLoadingState()
   }
 
   setOpacity(opacity: number) {
@@ -261,43 +284,49 @@ export class ZarrLayer {
     this.gl = resolvedGl
     this.invalidate = () => map.triggerRepaint && map.triggerRepaint()
 
-    this.colormap.upload(resolvedGl as WebGL2RenderingContext)
-    this.renderer = new ZarrRenderer(
-      resolvedGl as WebGL2RenderingContext,
-      this.fragmentShaderSource
-    )
+    this.metadataLoading = true
+    this.emitLoadingState()
 
-    if (typeof map.getRenderWorldCopies === 'function') {
-      this.initialRenderWorldCopies = map.getRenderWorldCopies()
-    }
-    this.projectionChangeHandler = () => {
-      const isGlobe = this.isGlobeProjection()
+    try {
+      this.colormap.upload(resolvedGl as WebGL2RenderingContext)
+      this.renderer = new ZarrRenderer(
+        resolvedGl as WebGL2RenderingContext,
+        this.fragmentShaderSource
+      )
+
+      if (typeof map.getRenderWorldCopies === 'function') {
+        this.initialRenderWorldCopies = map.getRenderWorldCopies()
+      }
+      this.projectionChangeHandler = () => {
+        const isGlobe = this.isGlobeProjection()
+        this.applyWorldCopiesSetting()
+        this.dataManager?.onProjectionChange(isGlobe)
+        this.renderer?.resetSingleImageGeometry()
+      }
+      if (typeof map.on === 'function' && this.projectionChangeHandler) {
+        map.on('projectionchange', this.projectionChangeHandler)
+        map.on('style.load', this.projectionChangeHandler)
+      }
       this.applyWorldCopiesSetting()
+
+      await this.initialize()
+      await this.initializeManager()
+
+      const isGlobe = this.isGlobeProjection()
       this.dataManager?.onProjectionChange(isGlobe)
-      this.renderer?.resetSingleImageGeometry()
+
+      this.dataManager?.update(this.map, this.gl!)
+    } finally {
+      this.metadataLoading = false
+      this.emitLoadingState()
     }
-    if (typeof map.on === 'function' && this.projectionChangeHandler) {
-      map.on('projectionchange', this.projectionChangeHandler)
-      map.on('style.load', this.projectionChangeHandler)
-    }
-    this.applyWorldCopiesSetting()
 
-    await this.initialize()
-    await this.initializeManager()
-
-    // Ensure correct initial projection state
-    const isGlobe = this.isGlobeProjection()
-    this.dataManager?.onProjectionChange(isGlobe)
-
-    // Trigger initial update
-    this.dataManager?.update(this.map, this.gl!)
     this.invalidate()
   }
 
   private async initializeManager() {
     if (!this.zarrStore || !this.gl) return
 
-    // Dispose old manager if exists
     if (this.dataManager) {
       this.dataManager.dispose(this.gl)
     }
@@ -319,9 +348,9 @@ export class ZarrLayer {
       )
     }
 
+    this.dataManager.setLoadingCallback(this.handleChunkLoadingChange)
     await this.dataManager.initialize()
 
-    // Initial update if map is ready
     if (this.map && this.gl) {
       this.dataManager.update(this.map, this.gl)
     }

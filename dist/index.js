@@ -6314,6 +6314,8 @@ var TiledDataManager = class _TiledDataManager {
     this.crs = "EPSG:4326";
     this.xyLimits = null;
     this.tileBounds = {};
+    this.pendingChunks = /* @__PURE__ */ new Set();
+    this.metadataLoading = false;
     this.zarrStore = store;
     this.variable = variable;
     this.selector = selector;
@@ -6350,7 +6352,28 @@ var TiledDataManager = class _TiledDataManager {
     this.updateGeometryForProjection(isGlobe);
     this.visibleTiles = this.getVisibleTiles(map);
     this.tileBounds = this.computeTileBounds(this.visibleTiles);
-    this.prefetchTileData(this.visibleTiles);
+    const currentHash = JSON.stringify(this.selector);
+    const tilesToFetch = [];
+    for (const tileTuple of this.visibleTiles) {
+      const tileKey = tileToKey(tileTuple);
+      if (this.pendingChunks.has(tileKey)) {
+        continue;
+      }
+      const tile = this.tileCache.upsert(tileKey);
+      if (!tile.data || tile.selectorHash !== currentHash) {
+        tilesToFetch.push(tileTuple);
+      }
+    }
+    if (tilesToFetch.length > 0) {
+      const wasEmpty = this.pendingChunks.size === 0;
+      for (const tileTuple of tilesToFetch) {
+        this.pendingChunks.add(tileToKey(tileTuple));
+      }
+      if (wasEmpty) {
+        this.emitLoadingState();
+      }
+      this.prefetchTileData(tilesToFetch, currentHash);
+    }
   }
   onProjectionChange(isGlobe) {
     this.updateGeometryForProjection(isGlobe);
@@ -6370,6 +6393,20 @@ var TiledDataManager = class _TiledDataManager {
   dispose(gl) {
     this.tileCache?.clear();
     this.tileCache = null;
+    this.pendingChunks.clear();
+    this.emitLoadingState();
+  }
+  setLoadingCallback(callback) {
+    this.loadingCallback = callback;
+  }
+  emitLoadingState() {
+    if (!this.loadingCallback) return;
+    const chunksLoading = this.pendingChunks.size > 0;
+    this.loadingCallback({
+      loading: this.metadataLoading || chunksLoading,
+      metadata: this.metadataLoading,
+      chunks: chunksLoading
+    });
   }
   async setSelector(selector) {
     this.selector = selector;
@@ -6481,32 +6518,42 @@ var TiledDataManager = class _TiledDataManager {
     }
     return bounds;
   }
-  async prefetchTileData(tiles) {
+  async prefetchTileData(tiles, selectorHash) {
     const fetchPromises = tiles.map(
-      (tiletuple) => this.fetchTileData(tiletuple)
+      (tiletuple) => this.fetchTileData(tiletuple, selectorHash)
     );
     await Promise.all(fetchPromises);
   }
-  async fetchTileData(tileTuple) {
-    if (!this.tilesManager || !this.tileCache) return null;
-    const tileKey = tileToKey(tileTuple);
-    const tile = this.tileCache.upsert(tileKey);
-    const currentHash = JSON.stringify(this.selector);
-    if (tile.data && tile.selectorHash === currentHash) {
-      return tile.data;
-    }
-    const cache = await this.tilesManager.fetchTile(tileTuple, currentHash);
-    if (!cache) {
+  async fetchTileData(tileTuple, selectorHash) {
+    if (!this.tilesManager || !this.tileCache) {
+      const tileKey2 = tileToKey(tileTuple);
+      this.pendingChunks.delete(tileKey2);
+      this.emitLoadingState();
       return null;
     }
-    tile.data = cache.data;
-    tile.textureUploaded = false;
-    tile.bandTexturesUploaded.clear();
-    tile.selectorHash = cache.selectorHash;
-    tile.channels = cache.channels;
-    tile.bandData = cache.bandData;
-    this.invalidate();
-    return tile.data;
+    const tileKey = tileToKey(tileTuple);
+    const tile = this.tileCache.upsert(tileKey);
+    try {
+      const cache = await this.tilesManager.fetchTile(tileTuple, selectorHash);
+      this.pendingChunks.delete(tileKey);
+      if (!cache) {
+        this.emitLoadingState();
+        return null;
+      }
+      tile.data = cache.data;
+      tile.textureUploaded = false;
+      tile.bandTexturesUploaded.clear();
+      tile.selectorHash = cache.selectorHash;
+      tile.channels = cache.channels;
+      tile.bandData = cache.bandData;
+      this.emitLoadingState();
+      this.invalidate();
+      return tile.data;
+    } catch (err) {
+      this.pendingChunks.delete(tileKey);
+      this.emitLoadingState();
+      throw err;
+    }
   }
 };
 
@@ -6521,7 +6568,6 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.texture = null;
     this.vertexBuffer = null;
     this.pixCoordBuffer = null;
-    // Geometry state
     this.vertexArr = new Float32Array();
     this.pixCoordArr = new Float32Array();
     this.currentSubdivisions = 0;
@@ -6532,6 +6578,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.crs = null;
     this.zarrArray = null;
     this.isRemoved = false;
+    this.isLoadingData = false;
     this.zarrStore = store;
     this.variable = variable;
     this.selector = selector;
@@ -6562,7 +6609,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
     if (!this.pixCoordBuffer) {
       this.pixCoordBuffer = mustCreateBuffer(gl);
     }
-    if (!this.data) {
+    if (!this.data && !this.isLoadingData) {
       this.fetchData().then(() => {
         this.invalidate();
       });
@@ -6633,6 +6680,19 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.vertexBuffer = null;
     this.pixCoordBuffer = null;
     this.data = null;
+    this.isLoadingData = false;
+    this.emitLoadingState();
+  }
+  setLoadingCallback(callback) {
+    this.loadingCallback = callback;
+  }
+  emitLoadingState() {
+    if (!this.loadingCallback) return;
+    this.loadingCallback({
+      loading: this.isLoadingData,
+      metadata: false,
+      chunks: this.isLoadingData
+    });
   }
   async setSelector(selector) {
     this.selector = selector;
@@ -6642,6 +6702,8 @@ var SingleImageDataManager = class _SingleImageDataManager {
   }
   async fetchData() {
     if (!this.zarrArray || this.isRemoved) return;
+    this.isLoadingData = true;
+    this.emitLoadingState();
     try {
       const sliceArgs = new Array(
         this.zarrArray.shape.length
@@ -6668,6 +6730,9 @@ var SingleImageDataManager = class _SingleImageDataManager {
       this.data = new Float32Array(data.data.buffer);
     } catch (err) {
       console.error("Error fetching single image data:", err);
+    } finally {
+      this.isLoadingData = false;
+      this.emitLoadingState();
     }
   }
 };
@@ -6690,7 +6755,8 @@ var ZarrLayer = class {
     customFragmentSource,
     customFrag,
     uniforms,
-    renderingMode = "2d"
+    renderingMode = "2d",
+    onLoadingStateChange
   }) {
     this.type = "custom";
     this.zarrVersion = null;
@@ -6713,6 +6779,12 @@ var ZarrLayer = class {
     this.customUniforms = {};
     this.bandNames = [];
     this.customShaderConfig = null;
+    this.metadataLoading = false;
+    this.chunksLoading = false;
+    this.handleChunkLoadingChange = (state) => {
+      this.chunksLoading = state.chunks;
+      this.emitLoadingState();
+    };
     this.id = id;
     this.url = source;
     this.variable = variable;
@@ -6748,6 +6820,7 @@ var ZarrLayer = class {
       };
     }
     if (fillValue !== void 0) this.fillValue = fillValue;
+    this.onLoadingStateChange = onLoadingStateChange;
   }
   applyWorldCopiesSetting() {
     if (!this.map || typeof this.map.getProjection !== "function" || typeof this.map.setRenderWorldCopies !== "function") {
@@ -6780,6 +6853,14 @@ var ZarrLayer = class {
     if (shaderData?.vertexShaderPrelude) return true;
     const projection = this.map?.getProjection ? this.map.getProjection() : null;
     return projection?.type === "globe" || projection?.name === "globe";
+  }
+  emitLoadingState() {
+    if (!this.onLoadingStateChange) return;
+    this.onLoadingStateChange({
+      loading: this.metadataLoading || this.chunksLoading,
+      metadata: this.metadataLoading,
+      chunks: this.chunksLoading
+    });
   }
   setOpacity(opacity) {
     this.opacity = opacity;
@@ -6840,30 +6921,37 @@ var ZarrLayer = class {
     const resolvedGl = this.resolveGl(map, gl);
     this.gl = resolvedGl;
     this.invalidate = () => map.triggerRepaint && map.triggerRepaint();
-    this.colormap.upload(resolvedGl);
-    this.renderer = new ZarrRenderer(
-      resolvedGl,
-      this.fragmentShaderSource
-    );
-    if (typeof map.getRenderWorldCopies === "function") {
-      this.initialRenderWorldCopies = map.getRenderWorldCopies();
-    }
-    this.projectionChangeHandler = () => {
-      const isGlobe2 = this.isGlobeProjection();
+    this.metadataLoading = true;
+    this.emitLoadingState();
+    try {
+      this.colormap.upload(resolvedGl);
+      this.renderer = new ZarrRenderer(
+        resolvedGl,
+        this.fragmentShaderSource
+      );
+      if (typeof map.getRenderWorldCopies === "function") {
+        this.initialRenderWorldCopies = map.getRenderWorldCopies();
+      }
+      this.projectionChangeHandler = () => {
+        const isGlobe2 = this.isGlobeProjection();
+        this.applyWorldCopiesSetting();
+        this.dataManager?.onProjectionChange(isGlobe2);
+        this.renderer?.resetSingleImageGeometry();
+      };
+      if (typeof map.on === "function" && this.projectionChangeHandler) {
+        map.on("projectionchange", this.projectionChangeHandler);
+        map.on("style.load", this.projectionChangeHandler);
+      }
       this.applyWorldCopiesSetting();
-      this.dataManager?.onProjectionChange(isGlobe2);
-      this.renderer?.resetSingleImageGeometry();
-    };
-    if (typeof map.on === "function" && this.projectionChangeHandler) {
-      map.on("projectionchange", this.projectionChangeHandler);
-      map.on("style.load", this.projectionChangeHandler);
+      await this.initialize();
+      await this.initializeManager();
+      const isGlobe = this.isGlobeProjection();
+      this.dataManager?.onProjectionChange(isGlobe);
+      this.dataManager?.update(this.map, this.gl);
+    } finally {
+      this.metadataLoading = false;
+      this.emitLoadingState();
     }
-    this.applyWorldCopiesSetting();
-    await this.initialize();
-    await this.initializeManager();
-    const isGlobe = this.isGlobeProjection();
-    this.dataManager?.onProjectionChange(isGlobe);
-    this.dataManager?.update(this.map, this.gl);
     this.invalidate();
   }
   async initializeManager() {
@@ -6887,6 +6975,7 @@ var ZarrLayer = class {
         this.invalidate
       );
     }
+    this.dataManager.setLoadingCallback(this.handleChunkLoadingChange);
     await this.dataManager.initialize();
     if (this.map && this.gl) {
       this.dataManager.update(this.map, this.gl);

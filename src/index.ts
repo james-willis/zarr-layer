@@ -3,4 +3,6 @@ export type {
   ZarrLayerOptions,
   ColormapArray,
   DimensionNamesProps,
+  LoadingState,
+  LoadingStateCallback,
 } from './types'

@@ -1,5 +1,11 @@
 import { DataManager, RenderData } from './data-manager'
-import type { MapLike, SelectorMap, XYLimitsProps, CRS } from './types'
+import type {
+  LoadingStateCallback,
+  MapLike,
+  SelectorMap,
+  XYLimitsProps,
+  CRS,
+} from './types'
 import { ZarrStore } from './zarr-store'
 import { TileRenderCache } from './zarr-tile-cache'
 import { Tiles } from './tiles'
@@ -38,6 +44,9 @@ export class TiledDataManager implements DataManager {
   private crs: CRS = 'EPSG:4326'
   private xyLimits: XYLimitsProps | null = null
   private tileBounds: Record<string, MercatorBounds> = {}
+  private loadingCallback: LoadingStateCallback | undefined
+  private pendingChunks: Set<string> = new Set()
+  private metadataLoading: boolean = false
 
   constructor(
     store: ZarrStore,
@@ -92,7 +101,31 @@ export class TiledDataManager implements DataManager {
 
     this.visibleTiles = this.getVisibleTiles(map)
     this.tileBounds = this.computeTileBounds(this.visibleTiles)
-    this.prefetchTileData(this.visibleTiles)
+
+    const currentHash = JSON.stringify(this.selector)
+    const tilesToFetch: TileTuple[] = []
+
+    for (const tileTuple of this.visibleTiles) {
+      const tileKey = tileToKey(tileTuple)
+      if (this.pendingChunks.has(tileKey)) {
+        continue
+      }
+      const tile = this.tileCache.upsert(tileKey)
+      if (!tile.data || tile.selectorHash !== currentHash) {
+        tilesToFetch.push(tileTuple)
+      }
+    }
+
+    if (tilesToFetch.length > 0) {
+      const wasEmpty = this.pendingChunks.size === 0
+      for (const tileTuple of tilesToFetch) {
+        this.pendingChunks.add(tileToKey(tileTuple))
+      }
+      if (wasEmpty) {
+        this.emitLoadingState()
+      }
+      this.prefetchTileData(tilesToFetch, currentHash)
+    }
   }
 
   onProjectionChange(isGlobe: boolean) {
@@ -116,6 +149,22 @@ export class TiledDataManager implements DataManager {
   dispose(gl: WebGL2RenderingContext): void {
     this.tileCache?.clear()
     this.tileCache = null
+    this.pendingChunks.clear()
+    this.emitLoadingState()
+  }
+
+  setLoadingCallback(callback: LoadingStateCallback | undefined): void {
+    this.loadingCallback = callback
+  }
+
+  private emitLoadingState(): void {
+    if (!this.loadingCallback) return
+    const chunksLoading = this.pendingChunks.size > 0
+    this.loadingCallback({
+      loading: this.metadataLoading || chunksLoading,
+      metadata: this.metadataLoading,
+      chunks: chunksLoading,
+    })
   }
 
   async setSelector(
@@ -256,39 +305,52 @@ export class TiledDataManager implements DataManager {
     return bounds
   }
 
-  private async prefetchTileData(tiles: TileTuple[]) {
+  private async prefetchTileData(tiles: TileTuple[], selectorHash: string) {
     const fetchPromises = tiles.map((tiletuple) =>
-      this.fetchTileData(tiletuple)
+      this.fetchTileData(tiletuple, selectorHash)
     )
     await Promise.all(fetchPromises)
   }
 
   private async fetchTileData(
-    tileTuple: TileTuple
+    tileTuple: TileTuple,
+    selectorHash: string
   ): Promise<Float32Array | null> {
-    if (!this.tilesManager || !this.tileCache) return null
-
-    const tileKey = tileToKey(tileTuple)
-    const tile = this.tileCache.upsert(tileKey)
-    const currentHash = JSON.stringify(this.selector)
-
-    if (tile.data && tile.selectorHash === currentHash) {
-      return tile.data
-    }
-
-    const cache = await this.tilesManager.fetchTile(tileTuple, currentHash)
-    if (!cache) {
+    if (!this.tilesManager || !this.tileCache) {
+      const tileKey = tileToKey(tileTuple)
+      this.pendingChunks.delete(tileKey)
+      this.emitLoadingState()
       return null
     }
 
-    tile.data = cache.data
-    tile.textureUploaded = false
-    tile.bandTexturesUploaded.clear()
-    tile.selectorHash = cache.selectorHash
-    tile.channels = cache.channels
-    tile.bandData = cache.bandData
-    this.invalidate()
+    const tileKey = tileToKey(tileTuple)
+    const tile = this.tileCache.upsert(tileKey)
 
-    return tile.data
+    try {
+      const cache = await this.tilesManager.fetchTile(tileTuple, selectorHash)
+
+      this.pendingChunks.delete(tileKey)
+
+      if (!cache) {
+        this.emitLoadingState()
+        return null
+      }
+
+      tile.data = cache.data
+      tile.textureUploaded = false
+      tile.bandTexturesUploaded.clear()
+      tile.selectorHash = cache.selectorHash
+      tile.channels = cache.channels
+      tile.bandData = cache.bandData
+
+      this.emitLoadingState()
+      this.invalidate()
+
+      return tile.data
+    } catch (err) {
+      this.pendingChunks.delete(tileKey)
+      this.emitLoadingState()
+      throw err
+    }
   }
 }
