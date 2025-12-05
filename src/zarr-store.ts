@@ -370,7 +370,7 @@ export class ZarrStore {
       this.levels = pyramid.levels
       this.maxZoom = pyramid.maxZoom
       this.tileSize = pyramid.tileSize
-    this.crs = pyramid.crs
+      this.crs = pyramid.crs
     }
 
     const basePath =
@@ -446,7 +446,7 @@ export class ZarrStore {
       this.levels = pyramid.levels
       this.maxZoom = pyramid.maxZoom
       this.tileSize = pyramid.tileSize
-    this.crs = pyramid.crs
+      this.crs = pyramid.crs
     }
 
     const arrayKey =
@@ -596,9 +596,7 @@ export class ZarrStore {
     // If CRS is absent, default to EPSG:3857 to match pyramid (mercator) tiling.
     // Explicitly handle EPSG:4326 pyramids so we can reproject to mercator on the fly.
     const crs: CRS =
-      (datasets[0].crs as CRS) === 'EPSG:4326'
-        ? 'EPSG:4326'
-        : 'EPSG:3857'
+      (datasets[0].crs as CRS) === 'EPSG:4326' ? 'EPSG:4326' : 'EPSG:3857'
 
     return { levels, maxZoom, tileSize, crs }
   }

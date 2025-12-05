@@ -232,10 +232,9 @@ export class SingleImageDataManager implements DataManager {
         }
       }
 
-      const data = (await zarr.get(
-        this.zarrArray,
-        sliceArgs
-      )) as { data: ArrayLike<number> }
+      const data = (await zarr.get(this.zarrArray, sliceArgs)) as {
+        data: ArrayLike<number>
+      }
       if (this.isRemoved) return
 
       this.data = new Float32Array((data.data as Float32Array).buffer)
