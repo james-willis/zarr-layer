@@ -1,5 +1,5 @@
 import * as zarr from 'zarrita'
-import { tileToKey, type TileTuple } from './maplibre-utils'
+import { tileToKey, type TileTuple } from './map-utils'
 import type { DimIndicesProps, SelectorMap, ZarrSelectorsProps } from './types'
 import { ZarrStore } from './zarr-store'
 

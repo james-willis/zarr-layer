@@ -8,9 +8,9 @@ import {
   createFragmentShaderSource,
   type ProjectionData,
   type ShaderData,
-} from './maplibre-shaders'
-import { tileToKey, tileToScale, type TileTuple } from './maplibre-utils'
-import type { MercatorBounds } from './maplibre-utils'
+} from './shaders'
+import { tileToKey, tileToScale, type TileTuple } from './map-utils'
+import type { MercatorBounds } from './map-utils'
 import type { TileRenderCache, TileRenderData } from './zarr-tile-cache'
 
 interface RendererUniforms {

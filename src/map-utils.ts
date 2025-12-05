@@ -1,8 +1,10 @@
 /**
- * @module maplibre-utils
+ * @module map-utils
  *
- * Utility functions for MapLibre custom layer integration.
- * Provides tile management, zoom level conversion, and coordinate transformations.
+ * Utility functions for custom layer integration.
+ * Provides tile management, zoom level conversion,
+ * and coordinate transformations.
+ * adapted from zarr-cesium/src/map-utils.ts
  */
 
 export type TileTuple = [number, number, number]

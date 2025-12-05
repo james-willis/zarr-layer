@@ -1,12 +1,4 @@
-/**
- * @module gl-utils
- *
- * Low-level WebGL2 utility functions for shader creation, program linking,
- * and generation of color ramp textures used in Cesium and Zarr visualization.
- *
- * These helpers are used internally by rendering providers (e.g., {@link ZarrCubeProvider})
- * to generate color-mapped textures and dynamic shader programs.
- */
+// utils borrowed from zarr-cesium/src/webgl-utils.ts
 
 /**
  * Creates and compiles a WebGL shader from source code.

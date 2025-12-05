@@ -15,7 +15,7 @@ import {
   maplibreFragmentShaderSource,
   type ProjectionData,
   type ShaderData,
-} from './maplibre-shaders'
+} from './shaders'
 import { ColormapState } from './zarr-colormap'
 import { ZarrRenderer, type CustomShaderConfig } from './zarr-renderer'
 import type {

@@ -12,7 +12,7 @@ import {
   tileToKey,
   TileTuple,
   zoomToLevel,
-} from './maplibre-utils'
+} from './map-utils'
 import { getBands } from './zarr-utils'
 
 const DEFAULT_TILE_SIZE = 128

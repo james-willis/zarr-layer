@@ -4711,7 +4711,7 @@ _ZarrStore._cache = /* @__PURE__ */ new Map();
 _ZarrStore._storeCache = /* @__PURE__ */ new Map();
 var ZarrStore = _ZarrStore;
 
-// src/maplibre-shaders.ts
+// src/shaders.ts
 function createVertexShaderSource(shaderData) {
   if (shaderData && shaderData.vertexShaderPrelude) {
     return `#version 300 es
@@ -5050,7 +5050,7 @@ var ColormapState = class {
   }
 };
 
-// src/maplibre-utils.ts
+// src/map-utils.ts
 var MERCATOR_LAT_LIMIT = 85.05112878;
 function lon2tile(lon, zoom) {
   return Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
@@ -6644,10 +6644,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
           }
         }
       }
-      const data = await get2(
-        this.zarrArray,
-        sliceArgs
-      );
+      const data = await get2(this.zarrArray, sliceArgs);
       if (this.isRemoved) return;
       this.data = new Float32Array(data.data.buffer);
     } catch (err) {

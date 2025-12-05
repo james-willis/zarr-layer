@@ -1,4 +1,4 @@
-import type { MercatorBounds, TileTuple } from './maplibre-utils'
+import type { MercatorBounds, TileTuple } from './map-utils'
 import type { TileRenderCache } from './zarr-tile-cache'
 import type { MapLike } from './types'
 

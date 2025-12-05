@@ -2,7 +2,7 @@
  * @module maplibre-shaders
  *
  * WebGL shaders for MapLibre/MapBox custom layer rendering.
- * Adapted from zarr-gl to work with zarr-cesium's colormap and nodata handling.
+ * Adapted from zarr-gl and zarr-cesium.
  */
 
 export interface ShaderData {
@@ -153,31 +153,6 @@ void main() {
   vec4 c = texture(cmap, vec2(rescaled, 0.5));
   color = vec4(c.rgb, opacity);
   color.rgb *= color.a;
-}
-`
-
-/**
- * Simple vertex shader for rendering framebuffer to screen.
- */
-export const renderVertexShaderSource = `#version 300 es
-in vec2 vertex;
-out vec2 texCoord;
-void main() {
-  gl_Position = vec4(vertex, 0.0, 1.0);
-  texCoord = vertex * 0.5 + 0.5;
-}
-`
-
-/**
- * Simple fragment shader for rendering framebuffer texture to screen.
- */
-export const renderFragmentShaderSource = `#version 300 es
-precision highp float;
-uniform sampler2D tex;
-in vec2 texCoord;
-out vec4 fragColor;
-void main() {
-  fragColor = texture(tex, texCoord);
 }
 `
 

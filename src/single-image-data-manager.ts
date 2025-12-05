@@ -1,7 +1,7 @@
 import * as zarr from 'zarrita'
 import { DataManager, RenderData } from './data-manager'
 import { ZarrStore } from './zarr-store'
-import { boundsToMercatorNorm, MercatorBounds } from './maplibre-utils'
+import { boundsToMercatorNorm, MercatorBounds } from './map-utils'
 import { mustCreateBuffer, mustCreateTexture } from './webgl-utils'
 import type {
   CRS,
