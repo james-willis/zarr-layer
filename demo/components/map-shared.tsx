@@ -92,7 +92,7 @@ const mapLibreConfig: MapConfig = {
         layers: layers('protomaps', mapLibreTheme, { lang: 'en' }),
       },
       center: [0, 20],
-      zoom: 2,
+      zoom: 2.4,
     }) as MapInstance
   },
   setProjection: (map: MapInstance, globeProjection: boolean) => {
