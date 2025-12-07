@@ -1,4 +1,9 @@
 type ColormapArray = number[][] | string[];
+type SelectorValue = number | number[] | string | string[] | [number, number];
+interface ZarrSelectorsProps {
+    selected: SelectorValue;
+    type?: 'index' | 'value';
+}
 interface DimensionNamesProps {
     time?: string;
     elevation?: string;
@@ -16,7 +21,7 @@ interface ZarrLayerOptions {
     id: string;
     source: string;
     variable: string;
-    selector?: Record<string, number | number[] | string | string[]>;
+    selector?: Record<string, number | number[] | string | string[] | ZarrSelectorsProps>;
     colormap: ColormapArray;
     clim: [number, number];
     opacity?: number;
@@ -24,7 +29,6 @@ interface ZarrLayerOptions {
     zarrVersion?: 2 | 3;
     dimensionNames?: DimensionNamesProps;
     fillValue?: number;
-    customFragmentSource?: string;
     customFrag?: string;
     uniforms?: Record<string, number>;
     renderingMode?: '2d' | '3d';
@@ -40,7 +44,6 @@ interface MapLike {
         type?: string;
         name?: string;
     } | null;
-    setRenderWorldCopies?(value: boolean): void;
     getRenderWorldCopies?(): boolean;
     on?(event: string, handler: (...args: unknown[]) => void): void;
     off?(event: string, handler: (...args: unknown[]) => void): void;
@@ -89,8 +92,6 @@ declare class ZarrLayer {
     private renderer;
     private dataManager;
     private tileNeedsRender;
-    private applyWorldCopiesSetting;
-    private initialRenderWorldCopies;
     private projectionChangeHandler;
     private resolveGl;
     private zarrStore;
@@ -108,7 +109,7 @@ declare class ZarrLayer {
     private metadataLoading;
     private chunksLoading;
     private isGlobeProjection;
-    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, fillValue, customFragmentSource, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
+    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, fillValue, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
     private emitLoadingState;
     private handleChunkLoadingChange;
     setOpacity(opacity: number): void;
@@ -116,7 +117,7 @@ declare class ZarrLayer {
     setColormap(colormap: ColormapArray): void;
     setUniforms(uniforms: Record<string, number>): void;
     setVariable(variable: string): Promise<void>;
-    setSelector(selector: Record<string, number | number[] | string | string[]>): Promise<void>;
+    setSelector(selector: Record<string, number | number[] | string | string[] | ZarrSelectorsProps>): Promise<void>;
     onAdd(map: MapLike, gl: WebGL2RenderingContext | null): Promise<void>;
     private computeSelectorHash;
     private initializeManager;

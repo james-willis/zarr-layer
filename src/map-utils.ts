@@ -10,6 +10,35 @@
 export type TileTuple = [number, number, number]
 const MERCATOR_LAT_LIMIT = 85.05112878
 
+export interface NormalizedExtent {
+  xMin: number
+  xMax: number
+  yMin: number
+  yMax: number
+}
+
+export function normalizeGlobalExtent(
+  xyLimits: {
+    xMin: number
+    xMax: number
+    yMin: number
+    yMax: number
+  } | null
+): NormalizedExtent {
+  if (!xyLimits) {
+    return { xMin: -180, xMax: 180, yMin: -90, yMax: 90 }
+  }
+  const extentX = xyLimits.xMax - xyLimits.xMin
+  const extentY = xyLimits.yMax - xyLimits.yMin
+  const isGlobal = extentX >= 350 && extentY >= 170
+  return {
+    xMin: isGlobal ? -180 : xyLimits.xMin,
+    xMax: isGlobal ? 180 : xyLimits.xMax,
+    yMin: isGlobal ? -90 : xyLimits.yMin,
+    yMax: isGlobal ? 90 : xyLimits.yMax,
+  }
+}
+
 export interface MercatorBounds {
   x0: number
   y0: number
@@ -96,15 +125,16 @@ export function getTilesAtZoomEquirect(
   xyLimits: { xMin: number; xMax: number; yMin: number; yMax: number }
 ): TileTuple[] {
   const [[west, south], [east, north]] = bounds
-  const xSpan = xyLimits.xMax - xyLimits.xMin || 360
-  const ySpan = xyLimits.yMax - xyLimits.yMin || 180
+  const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(xyLimits)
+  const xSpan = xMax - xMin
+  const ySpan = yMax - yMin
   const maxTiles = Math.pow(2, zoom)
 
   const lonToTile = (lon: number) =>
-    Math.floor(((lon - xyLimits.xMin) / xSpan) * maxTiles)
+    Math.floor(((lon - xMin) / xSpan) * maxTiles)
   const latToTile = (lat: number) => {
-    const clamped = Math.max(Math.min(lat, xyLimits.yMax), xyLimits.yMin)
-    const norm = (xyLimits.yMax - clamped) / ySpan
+    const clamped = Math.max(Math.min(lat, yMax), yMin)
+    const norm = (yMax - clamped) / ySpan
     return Math.floor(norm * maxTiles)
   }
 
@@ -265,14 +295,14 @@ export function getOverlapping4326Tiles(
   pyramidLevel: number
 ): TileTuple[] {
   const tilesPerSide = Math.pow(2, pyramidLevel)
-  const xSpan = xyLimits.xMax - xyLimits.xMin || 360
-  const ySpan = xyLimits.yMax - xyLimits.yMin || 180
+  const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(xyLimits)
+  const xSpan = xMax - xMin
+  const ySpan = yMax - yMin
 
-  const lonToTileFloat = (lon: number) =>
-    ((lon - xyLimits.xMin) / xSpan) * tilesPerSide
+  const lonToTileFloat = (lon: number) => ((lon - xMin) / xSpan) * tilesPerSide
   const latToTileFloat = (lat: number) => {
-    const clamped = Math.max(Math.min(lat, xyLimits.yMax), xyLimits.yMin)
-    return ((xyLimits.yMax - clamped) / ySpan) * tilesPerSide
+    const clamped = Math.max(Math.min(lat, yMax), yMin)
+    return ((yMax - clamped) / ySpan) * tilesPerSide
   }
 
   const xTileMin = Math.floor(lonToTileFloat(geoBounds.west))
@@ -298,13 +328,14 @@ export function get4326TileGeoBounds(
   xyLimits: XYLimits
 ): GeoBounds {
   const tilesPerSide = Math.pow(2, z)
-  const xSpan = xyLimits.xMax - xyLimits.xMin || 360
-  const ySpan = xyLimits.yMax - xyLimits.yMin || 180
+  const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(xyLimits)
+  const xSpan = xMax - xMin
+  const ySpan = yMax - yMin
 
-  const west = xyLimits.xMin + (x / tilesPerSide) * xSpan
-  const east = xyLimits.xMin + ((x + 1) / tilesPerSide) * xSpan
-  const north = xyLimits.yMax - (y / tilesPerSide) * ySpan
-  const south = xyLimits.yMax - ((y + 1) / tilesPerSide) * ySpan
+  const west = xMin + (x / tilesPerSide) * xSpan
+  const east = xMin + ((x + 1) / tilesPerSide) * xSpan
+  const north = yMax - (y / tilesPerSide) * ySpan
+  const south = yMax - ((y + 1) / tilesPerSide) * ySpan
 
   return { west, east, south, north }
 }

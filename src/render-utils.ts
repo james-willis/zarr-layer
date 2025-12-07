@@ -110,7 +110,6 @@ export function computeWorldOffsets(
   const bounds = map.getBounds ? map.getBounds() : null
   if (!bounds) return [0]
 
-  // Honor MapLibre's world copy setting, but always avoid duplicates on globe
   const renderWorldCopies =
     typeof map.getRenderWorldCopies === 'function'
       ? map.getRenderWorldCopies()
@@ -120,8 +119,13 @@ export function computeWorldOffsets(
   const west = bounds.getWest()
   const east = bounds.getEast()
 
+  let effectiveEast = east
+  if (west > east) {
+    effectiveEast = east + 360
+  }
+
   const minWorld = Math.floor((west + 180) / 360)
-  const maxWorld = Math.floor((east + 180) / 360)
+  const maxWorld = Math.floor((effectiveEast + 180) / 360)
 
   const worldOffsets: number[] = []
   for (let i = minWorld; i <= maxWorld; i++) {

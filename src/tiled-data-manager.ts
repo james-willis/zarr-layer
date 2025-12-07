@@ -15,6 +15,7 @@ import {
   getTilesAtZoomEquirect,
   latToMercatorNorm,
   lonToMercatorNorm,
+  normalizeGlobalExtent,
   type MercatorBounds,
   tileToKey,
   TileTuple,
@@ -314,18 +315,22 @@ export class TiledDataManager implements DataManager {
   private computeTileBounds(
     tiles: TileTuple[]
   ): Record<string, MercatorBounds> {
-    if (this.crs !== 'EPSG:4326' || !this.xyLimits) return {}
+    if (this.crs !== 'EPSG:4326') return {}
+
+    const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(this.xyLimits)
+    const lonExtent = xMax - xMin
+    const latExtent = yMax - yMin
 
     const bounds: Record<string, MercatorBounds> = {}
     for (const tile of tiles) {
       const [z, x, y] = tile
       const tilesPerSide = Math.pow(2, z)
-      const lonSpan = (this.xyLimits.xMax - this.xyLimits.xMin) / tilesPerSide
-      const latSpan = (this.xyLimits.yMax - this.xyLimits.yMin) / tilesPerSide
+      const lonSpan = lonExtent / tilesPerSide
+      const latSpan = latExtent / tilesPerSide
 
-      const lonMin = this.xyLimits.xMin + x * lonSpan
+      const lonMin = xMin + x * lonSpan
       const lonMax = lonMin + lonSpan
-      const latNorth = this.xyLimits.yMax - y * latSpan
+      const latNorth = yMax - y * latSpan
       const latSouth = latNorth - latSpan
 
       const x0 = lonToMercatorNorm(lonMin)

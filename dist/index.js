@@ -4353,6 +4353,12 @@ function getBands(variable, selector) {
   }
   return bandNames;
 }
+function toSelectorProps(value) {
+  if (value && typeof value === "object" && !Array.isArray(value) && "selected" in value) {
+    return value;
+  }
+  return { selected: value };
+}
 
 // src/zarr-store.ts
 var textDecoder = new TextDecoder();
@@ -5359,6 +5365,20 @@ function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, s
 
 // src/map-utils.ts
 var MERCATOR_LAT_LIMIT = 85.05112878;
+function normalizeGlobalExtent(xyLimits) {
+  if (!xyLimits) {
+    return { xMin: -180, xMax: 180, yMin: -90, yMax: 90 };
+  }
+  const extentX = xyLimits.xMax - xyLimits.xMin;
+  const extentY = xyLimits.yMax - xyLimits.yMin;
+  const isGlobal = extentX >= 350 && extentY >= 170;
+  return {
+    xMin: isGlobal ? -180 : xyLimits.xMin,
+    xMax: isGlobal ? 180 : xyLimits.xMax,
+    yMin: isGlobal ? -90 : xyLimits.yMin,
+    yMax: isGlobal ? 90 : xyLimits.yMax
+  };
+}
 function lon2tile(lon, zoom) {
   return Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
 }
@@ -5402,13 +5422,14 @@ function getTilesAtZoom(zoom, bounds) {
 }
 function getTilesAtZoomEquirect(zoom, bounds, xyLimits) {
   const [[west, south], [east, north]] = bounds;
-  const xSpan = xyLimits.xMax - xyLimits.xMin || 360;
-  const ySpan = xyLimits.yMax - xyLimits.yMin || 180;
+  const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(xyLimits);
+  const xSpan = xMax - xMin;
+  const ySpan = yMax - yMin;
   const maxTiles = Math.pow(2, zoom);
-  const lonToTile = (lon) => Math.floor((lon - xyLimits.xMin) / xSpan * maxTiles);
+  const lonToTile = (lon) => Math.floor((lon - xMin) / xSpan * maxTiles);
   const latToTile = (lat) => {
-    const clamped = Math.max(Math.min(lat, xyLimits.yMax), xyLimits.yMin);
-    const norm = (xyLimits.yMax - clamped) / ySpan;
+    const clamped = Math.max(Math.min(lat, yMax), yMin);
+    const norm = (yMax - clamped) / ySpan;
     return Math.floor(norm * maxTiles);
   };
   let nwX = lonToTile(west);
@@ -5487,12 +5508,13 @@ function mercatorTileToGeoBounds(z, x, y) {
 }
 function getOverlapping4326Tiles(geoBounds, xyLimits, pyramidLevel) {
   const tilesPerSide = Math.pow(2, pyramidLevel);
-  const xSpan = xyLimits.xMax - xyLimits.xMin || 360;
-  const ySpan = xyLimits.yMax - xyLimits.yMin || 180;
-  const lonToTileFloat = (lon) => (lon - xyLimits.xMin) / xSpan * tilesPerSide;
+  const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(xyLimits);
+  const xSpan = xMax - xMin;
+  const ySpan = yMax - yMin;
+  const lonToTileFloat = (lon) => (lon - xMin) / xSpan * tilesPerSide;
   const latToTileFloat = (lat) => {
-    const clamped = Math.max(Math.min(lat, xyLimits.yMax), xyLimits.yMin);
-    return (xyLimits.yMax - clamped) / ySpan * tilesPerSide;
+    const clamped = Math.max(Math.min(lat, yMax), yMin);
+    return (yMax - clamped) / ySpan * tilesPerSide;
   };
   const xTileMin = Math.floor(lonToTileFloat(geoBounds.west));
   const xTileMax = Math.floor(lonToTileFloat(geoBounds.east));
@@ -5510,12 +5532,13 @@ function getOverlapping4326Tiles(geoBounds, xyLimits, pyramidLevel) {
 }
 function get4326TileGeoBounds(z, x, y, xyLimits) {
   const tilesPerSide = Math.pow(2, z);
-  const xSpan = xyLimits.xMax - xyLimits.xMin || 360;
-  const ySpan = xyLimits.yMax - xyLimits.yMin || 180;
-  const west = xyLimits.xMin + x / tilesPerSide * xSpan;
-  const east = xyLimits.xMin + (x + 1) / tilesPerSide * xSpan;
-  const north = xyLimits.yMax - y / tilesPerSide * ySpan;
-  const south = xyLimits.yMax - (y + 1) / tilesPerSide * ySpan;
+  const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(xyLimits);
+  const xSpan = xMax - xMin;
+  const ySpan = yMax - yMin;
+  const west = xMin + x / tilesPerSide * xSpan;
+  const east = xMin + (x + 1) / tilesPerSide * xSpan;
+  const north = yMax - y / tilesPerSide * ySpan;
+  const south = yMax - (y + 1) / tilesPerSide * ySpan;
   return { west, east, south, north };
 }
 function findBestParentTile(tileCache, z, x, y) {
@@ -6063,24 +6086,22 @@ var Tiles = class {
   }
   normalizeSelection(dimSelection, dimName) {
     if (dimSelection === void 0) return [0];
-    let items;
-    if (Array.isArray(dimSelection)) {
-      items = dimSelection;
-    } else if (typeof dimSelection === "object" && dimSelection !== null && "selected" in dimSelection) {
-      const s = dimSelection.selected;
-      items = Array.isArray(s) ? s : [s];
-    } else {
-      items = [dimSelection];
-    }
     const coords = dimName ? this.coordinates[dimName] : void 0;
-    return items.map((v) => {
-      const val = typeof v === "object" && v !== null && "selected" in v ? v.selected : v;
-      if (coords && (typeof val === "number" || typeof val === "string")) {
-        const idx = coords.indexOf(val);
+    const toIndices = (value, type) => {
+      if (type !== "index" && coords && (typeof value === "number" || typeof value === "string")) {
+        const idx = coords.indexOf(value);
         if (idx >= 0) return idx;
       }
-      return typeof val === "number" ? val : 0;
-    });
+      return typeof value === "number" ? value : 0;
+    };
+    if (typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection) {
+      const values = Array.isArray(dimSelection.selected) ? dimSelection.selected : [dimSelection.selected];
+      return values.map((v) => toIndices(v, dimSelection.type));
+    }
+    if (Array.isArray(dimSelection)) {
+      return dimSelection.map((v) => toIndices(v, void 0));
+    }
+    return [toIndices(dimSelection, void 0)];
   }
   /**
    * Compute which chunk indices to fetch for a given tile.
@@ -6397,7 +6418,7 @@ var TiledDataManager = class _TiledDataManager {
     this.minRenderZoom = minRenderZoom;
     this.invalidate = invalidate;
     for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = { selected: value, type: "index" };
+      this.selectors[dimName] = toSelectorProps(value);
     }
   }
   async initialize() {
@@ -6496,7 +6517,7 @@ var TiledDataManager = class _TiledDataManager {
   async setSelector(selector) {
     this.selector = selector;
     for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = { selected: value, type: "index" };
+      this.selectors[dimName] = toSelectorProps(value);
     }
     const bandNames = getBands(this.variable, selector);
     this.tilesManager?.updateSelector(this.selectors);
@@ -6589,16 +6610,19 @@ var TiledDataManager = class _TiledDataManager {
     };
   }
   computeTileBounds(tiles) {
-    if (this.crs !== "EPSG:4326" || !this.xyLimits) return {};
+    if (this.crs !== "EPSG:4326") return {};
+    const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(this.xyLimits);
+    const lonExtent = xMax - xMin;
+    const latExtent = yMax - yMin;
     const bounds = {};
     for (const tile of tiles) {
       const [z, x, y] = tile;
       const tilesPerSide = Math.pow(2, z);
-      const lonSpan = (this.xyLimits.xMax - this.xyLimits.xMin) / tilesPerSide;
-      const latSpan = (this.xyLimits.yMax - this.xyLimits.yMin) / tilesPerSide;
-      const lonMin = this.xyLimits.xMin + x * lonSpan;
+      const lonSpan = lonExtent / tilesPerSide;
+      const latSpan = latExtent / tilesPerSide;
+      const lonMin = xMin + x * lonSpan;
       const lonMax = lonMin + lonSpan;
-      const latNorth = this.xyLimits.yMax - y * latSpan;
+      const latNorth = yMax - y * latSpan;
       const latSouth = latNorth - latSpan;
       const x0 = lonToMercatorNorm(lonMin);
       const x1 = lonToMercatorNorm(lonMax);
@@ -6677,6 +6701,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.isRemoved = false;
     this.isLoadingData = false;
     this.fetchRequestId = 0;
+    this.dimensionValues = {};
     this.zarrStore = store;
     this.variable = variable;
     this.selector = selector;
@@ -6831,9 +6856,18 @@ var SingleImageDataManager = class _SingleImageDataManager {
         } else {
           const dimSelection = selectorSnapshot[dimName];
           if (dimSelection !== void 0) {
-            const selectionValue = typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection ? dimSelection.selected : dimSelection;
-            const normalizedValue = Array.isArray(selectionValue) ? selectionValue.find((v) => typeof v === "number") ?? 0 : typeof selectionValue === "number" ? selectionValue : 0;
-            sliceArgs[dimInfo.index] = normalizedValue;
+            const isObj = typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection;
+            const selectionValue = isObj ? dimSelection.selected : dimSelection;
+            const selectionType = isObj ? dimSelection.type : void 0;
+            const primaryValue = Array.isArray(selectionValue) ? selectionValue.find(
+              (v) => typeof v === "number" || typeof v === "string"
+            ) : selectionValue;
+            sliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
+              dimName,
+              dimInfo,
+              primaryValue,
+              selectionType
+            );
           } else {
             sliceArgs[dimInfo.index] = 0;
           }
@@ -6851,6 +6885,33 @@ var SingleImageDataManager = class _SingleImageDataManager {
         this.emitLoadingState();
       }
     }
+  }
+  async resolveSelectionIndex(dimName, dimInfo, value, type) {
+    if (type === "index") {
+      return typeof value === "number" ? value : 0;
+    }
+    if (!this.zarrStore.root) {
+      return typeof value === "number" ? value : 0;
+    }
+    try {
+      const coords = await loadDimensionValues(
+        this.dimensionValues,
+        null,
+        dimInfo,
+        this.zarrStore.root,
+        this.zarrStore.version
+      );
+      this.dimensionValues[dimName] = coords;
+      if (typeof value === "number" || typeof value === "string") {
+        const coordIdx = coords.indexOf(value);
+        if (coordIdx >= 0) return coordIdx;
+        if (typeof value === "number") {
+          return calculateNearestIndex(coords, value);
+        }
+      }
+    } catch {
+    }
+    return typeof value === "number" ? value : 0;
   }
 };
 
@@ -7157,8 +7218,12 @@ function computeWorldOffsets(map, isGlobe) {
   if (isGlobe || !renderWorldCopies) return [0];
   const west = bounds.getWest();
   const east = bounds.getEast();
+  let effectiveEast = east;
+  if (west > east) {
+    effectiveEast = east + 360;
+  }
   const minWorld = Math.floor((west + 180) / 360);
-  const maxWorld = Math.floor((east + 180) / 360);
+  const maxWorld = Math.floor((effectiveEast + 180) / 360);
   const worldOffsets = [];
   for (let i = minWorld; i <= maxWorld; i++) {
     worldOffsets.push(i);
@@ -7181,7 +7246,6 @@ var ZarrLayer = class {
     zarrVersion,
     dimensionNames = {},
     fillValue,
-    customFragmentSource,
     customFrag,
     uniforms,
     renderingMode = "2d",
@@ -7225,22 +7289,19 @@ var ZarrLayer = class {
     this.selectorHash = this.computeSelectorHash(selector);
     this.renderingMode = renderingMode;
     for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = { selected: value, type: "index" };
+      this.selectors[dimName] = toSelectorProps(value);
     }
     this.invalidate = () => {
     };
     if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
       throw new Error(
-        "[ZarrLayer] colormap is required and must be an array of [r, g, b] values"
+        "[ZarrLayer] colormap is required and must be an array of [r, g, b] or hex string values"
       );
     }
     this.colormap = new ColormapState(colormap);
     this.clim = clim;
     this.opacity = opacity;
     this.minRenderZoom = minRenderZoom;
-    if (customFragmentSource) {
-      this.fragmentShaderSource = customFragmentSource;
-    }
     this.customFrag = customFrag;
     this.customUniforms = uniforms || {};
     this.bandNames = getBands(variable, selector);
@@ -7253,17 +7314,6 @@ var ZarrLayer = class {
     }
     if (fillValue !== void 0) this.fillValue = fillValue;
     this.onLoadingStateChange = onLoadingStateChange;
-  }
-  applyWorldCopiesSetting() {
-    if (!this.map || typeof this.map.getProjection !== "function" || typeof this.map.setRenderWorldCopies !== "function") {
-      return;
-    }
-    const isGlobe = this.isGlobeProjection();
-    const target = isGlobe ? false : this.initialRenderWorldCopies !== void 0 ? this.initialRenderWorldCopies : true;
-    const current = typeof this.map.getRenderWorldCopies === "function" ? this.map.getRenderWorldCopies() : void 0;
-    if (current !== target) {
-      this.map.setRenderWorldCopies(target);
-    }
   }
   resolveGl(map, gl) {
     const isWebGL2 = gl && typeof gl.getUniformLocation === "function" && typeof gl.drawBuffers === "function";
@@ -7336,7 +7386,7 @@ var ZarrLayer = class {
     this.selectorHash = nextHash;
     this.selector = selector;
     for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = { selected: value, type: "index" };
+      this.selectors[dimName] = toSelectorProps(value);
     }
     this.bandNames = getBands(this.variable, selector);
     if (this.bandNames.length > 1 || this.customFrag) {
@@ -7369,12 +7419,8 @@ var ZarrLayer = class {
         resolvedGl,
         this.fragmentShaderSource
       );
-      if (typeof map.getRenderWorldCopies === "function") {
-        this.initialRenderWorldCopies = map.getRenderWorldCopies();
-      }
       this.projectionChangeHandler = () => {
         const isGlobe2 = this.isGlobeProjection();
-        this.applyWorldCopiesSetting();
         this.dataManager?.onProjectionChange(isGlobe2);
         this.renderer?.resetSingleImageGeometry();
       };
@@ -7382,7 +7428,6 @@ var ZarrLayer = class {
         map.on("projectionchange", this.projectionChangeHandler);
         map.on("style.load", this.projectionChangeHandler);
       }
-      this.applyWorldCopiesSetting();
       await this.initialize();
       await this.initializeManager();
       const isGlobe = this.isGlobeProjection();
@@ -7454,7 +7499,7 @@ var ZarrLayer = class {
     if (!this.zarrStore?.root) return;
     const multiscaleLevel = this.levelInfos.length > 0 ? this.levelInfos[0] : null;
     for (const [dimName, value] of Object.entries(this.selector)) {
-      this.selectors[dimName] = { selected: value, type: "index" };
+      this.selectors[dimName] = toSelectorProps(value);
     }
     for (const dimName of Object.keys(this.dimIndices)) {
       if (dimName !== "lon" && dimName !== "lat") {
@@ -7467,12 +7512,7 @@ var ZarrLayer = class {
             this.zarrStore.version
           );
           if (!this.selectors[dimName]) {
-            this.selectors[dimName] = { selected: 0, type: "index" };
-          } else if (this.selectors[dimName].type === "value") {
-            this.selectors[dimName].selected = calculateNearestIndex(
-              this.dimensionValues[dimName],
-              this.selectors[dimName].selected
-            );
+            this.selectors[dimName] = { selected: 0 };
           }
         } catch (err) {
           console.warn(`Failed to load dimension values for ${dimName}:`, err);
@@ -7571,9 +7611,6 @@ var ZarrLayer = class {
     if (this.map && this.projectionChangeHandler && typeof this.map.off === "function") {
       this.map.off("projectionchange", this.projectionChangeHandler);
       this.map.off("style.load", this.projectionChangeHandler);
-    }
-    if (this.map && typeof this.map.setRenderWorldCopies === "function" && this.initialRenderWorldCopies !== void 0) {
-      this.map.setRenderWorldCopies(this.initialRenderWorldCopies);
     }
   }
 };
