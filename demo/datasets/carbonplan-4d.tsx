@@ -18,8 +18,9 @@ const subheadingSx = {
 }
 
 export const combinedBandsCustomFrag = `
+  // custom fragment shader w/ uniform example
   uniform float u_precipWeight;
-  float combined = tavg + prec * u_precipWeight;
+  float combined = prec * u_precipWeight;
   float norm = (combined - clim.x) / (clim.y - clim.x);
   float cla = clamp(norm, 0.0, 1.0);
   vec4 c = texture(colormap, vec2(cla, 0.5));
@@ -44,7 +45,7 @@ export const monthRangeAverageFrag = `
 `
 
 export type Carbonplan4dState = {
-  band: 'tavg' | 'prec' | 'tavg_range' | 'prec_range' | 'combined'
+  band: 'tavg' | 'prec' | 'tavg_range' | 'prec_range' | 'weighted'
   month: number
   monthStart: number
   monthEnd: number
@@ -52,7 +53,7 @@ export type Carbonplan4dState = {
 }
 
 const buildLayerProps = ({ state }: { state: Carbonplan4dState }) => {
-  const isCombined = state.band === 'combined'
+  const isCombined = state.band === 'weighted'
   const isRangeAverage =
     state.band === 'tavg_range' || state.band === 'prec_range'
   let baseRangeBand: 'prec' | 'tavg' | null = null
@@ -114,7 +115,7 @@ const Carbonplan4dControls = ({
     <>
       <Row columns={[4, 4, 4, 4]} sx={{ mb: 3, alignItems: 'baseline' }}>
         <Column start={1} width={1}>
-          <Box sx={subheadingSx}>Band</Box>
+          <Box sx={subheadingSx}>Selector</Box>
         </Column>
         <Column start={2} width={3}>
           <Filter
@@ -123,19 +124,19 @@ const Carbonplan4dControls = ({
               prec: state.band === 'prec',
               tavg_range: state.band === 'tavg_range',
               prec_range: state.band === 'prec_range',
-              combined: state.band === 'combined',
+              weighted: state.band === 'weighted',
             }}
             setValues={(obj: Record<string, boolean>) => {
               if (obj.tavg) handleBandChange('tavg')
               if (obj.prec) handleBandChange('prec')
               if (obj.tavg_range) handleBandChange('tavg_range')
               if (obj.prec_range) handleBandChange('prec_range')
-              if (obj.combined) handleBandChange('combined')
+              if (obj.weighted) handleBandChange('weighted')
             }}
           />
         </Column>
       </Row>
-      {state.band === 'combined' && (
+      {state.band === 'weighted' && (
         <Box
           as='code'
           sx={{
@@ -269,6 +270,11 @@ const Carbonplan4dControls = ({
               }
             />
           </Column>
+          <Column start={2} width={3}>
+            <Box sx={{ width: '100%', textAlign: 'center' }}>
+              {state.monthStart} - {state.monthEnd}
+            </Box>
+          </Column>
         </Row>
       ) : (
         <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mb: 3 }}>
@@ -292,7 +298,7 @@ const Carbonplan4dControls = ({
         </Row>
       )}
 
-      {state.band === 'combined' && (
+      {state.band === 'weighted' && (
         <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mt: 2 }}>
           <Column start={1} width={1}>
             <Box sx={subheadingSx}>Precip weight</Box>
