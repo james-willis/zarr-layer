@@ -2,3 +2,4 @@
   "installCommand": "cd .. && npm install && cd demo && npm install",
   "buildCommand": "npm run build"
 }
+

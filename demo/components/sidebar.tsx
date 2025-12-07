@@ -1,7 +1,9 @@
 import { useRef, useEffect } from 'react'
-import { Box } from 'theme-ui'
+import { Box, Divider } from 'theme-ui'
 // @ts-expect-error - carbonplan layouts types not available
 import { Sidebar } from '@carbonplan/layouts'
+// @ts-expect-error - carbonplan components types not available
+import { Link } from '@carbonplan/components'
 import Controls from './controls'
 import { useAppStore } from '../lib/store'
 
@@ -35,11 +37,21 @@ const SidebarComponent = () => {
             fontFamily: 'heading',
             letterSpacing: 'heading',
             lineHeight: 'heading',
-            mb: 3,
           }}
         >
-          @carbonplan/zarr-layer demo
+          @carbonplan/zarr-layer
         </Box>
+        <Box sx={{ color: 'secondary', my: 1 }}>
+          Flexible zarr rendering for MapLibre/Mapbox.{' '}
+          <Link
+            href='https://github.com/carbonplan/zarr-layer'
+            target='_blank'
+            sx={{ color: 'secondary' }}
+          >
+            GitHub
+          </Link>
+        </Box>
+        <Divider sx={{ my: 3 }} />
         <Controls />
       </div>
     </Sidebar>

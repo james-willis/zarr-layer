@@ -1,7 +1,7 @@
 import React from 'react'
 // @ts-expect-error - carbonplan components types not available
-import { Slider } from '@carbonplan/components'
-import { Box } from 'theme-ui'
+import { Slider, Row, Column } from '@carbonplan/components'
+import { Box, Flex } from 'theme-ui'
 import {
   DatasetModule,
   DatasetCommonConfig,
@@ -10,6 +10,16 @@ import {
   defineDatasetModule,
 } from './types'
 
+const subheadingSx = {
+  mt: 3,
+  mb: 1,
+  fontFamily: 'mono',
+  letterSpacing: 'smallcaps',
+  textTransform: 'uppercase' as const,
+  fontSize: [1, 1, 1, 2],
+  color: 'secondary',
+}
+
 type TimeDatasetConfig = DatasetCommonConfig & { maxTime?: number }
 
 const TimeControls = ({
@@ -17,19 +27,50 @@ const TimeControls = ({
   setState,
   max,
 }: DatasetControlsProps<TimeDatasetState> & { max: number }) => {
+  const labelSx = {
+    fontFamily: 'mono',
+    letterSpacing: 'smallcaps',
+    textTransform: 'uppercase' as const,
+    fontSize: [1, 1, 1, 2],
+    color: 'secondary',
+    mb: 2,
+  }
+
   return (
-    <Box>
-      Time Index: {state.time}
-      <Slider
-        min={0}
-        max={max}
-        step={1}
-        value={state.time}
-        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-          setState({ time: parseInt(e.target.value) })
-        }
-      />
-    </Box>
+    <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mt: 2 }}>
+      <Column start={1} width={1}>
+        <Box sx={subheadingSx}>Time</Box>
+      </Column>
+      <Column start={2} width={3}>
+        <Flex sx={{ flexDirection: 'column' }}>
+          <Slider
+            min={0}
+            max={max}
+            step={1}
+            value={state.time}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setState({ time: parseInt(e.target.value) })
+            }
+          />
+          <Box sx={{ textAlign: 'center' }}>{state.time}</Box>
+        </Flex>
+      </Column>
+    </Row>
+
+    // <Box>
+    //   <Box sx={labelSx}>Time index</Box>
+    //   <Flex>
+    //     <Slider
+    //       min={0}
+    //       max={max}
+    //       step={1}
+    //       value={state.time}
+    //       onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+    //         setState({ time: parseInt(e.target.value) })
+    //       }
+    //     />
+    //   </Flex>
+    // </Box>
   )
 }
 

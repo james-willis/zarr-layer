@@ -1,11 +1,21 @@
 import React from 'react'
 // @ts-expect-error - carbonplan components types not available
-import { Select, Slider } from '@carbonplan/components'
-import { Box } from 'theme-ui'
+import { Filter, Slider, Row, Column } from '@carbonplan/components'
+import { Box, Flex } from 'theme-ui'
 import { BuildLayerResult, DatasetControlsProps, DatasetModule } from './types'
 import { useAppStore } from '../lib/store'
 
 const ALL_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+const subheadingSx = {
+  mt: 3,
+  mb: 1,
+  fontFamily: 'mono',
+  letterSpacing: 'smallcaps',
+  textTransform: 'uppercase' as const,
+  fontSize: [1, 1, 1, 2],
+  color: 'secondary',
+}
 
 export const combinedBandsCustomFrag = `
   uniform float u_precipWeight;
@@ -34,7 +44,7 @@ export const monthRangeAverageFrag = `
 `
 
 export type Carbonplan4dState = {
-  band: 'tavg' | 'prec' | 'tavg_range_avg' | 'prec_range_avg' | 'combined'
+  band: 'tavg' | 'prec' | 'tavg_range' | 'prec_range' | 'combined'
   month: number
   monthStart: number
   monthEnd: number
@@ -44,7 +54,7 @@ export type Carbonplan4dState = {
 const buildLayerProps = ({ state }: { state: Carbonplan4dState }) => {
   const isCombined = state.band === 'combined'
   const isRangeAverage =
-    state.band === 'tavg_range_avg' || state.band === 'prec_range_avg'
+    state.band === 'tavg_range' || state.band === 'prec_range'
   let baseRangeBand: 'prec' | 'tavg' | null = null
   if (isRangeAverage) {
     baseRangeBand = state.band.startsWith('prec') ? 'prec' : 'tavg'
@@ -86,10 +96,9 @@ const Carbonplan4dControls = ({
   const setColormap = useAppStore((state) => state.setColormap)
   const setClim = useAppStore((state) => state.setClim)
 
-  const handleBandChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const band = e.target.value as Carbonplan4dState['band']
+  const handleBandChange = (band: Carbonplan4dState['band']) => {
     setState({ band })
-    if (band === 'prec' || band === 'prec_range_avg') {
+    if (band === 'prec' || band === 'prec_range') {
       setColormap('cool')
       setClim([0, 300])
     } else {
@@ -99,86 +108,210 @@ const Carbonplan4dControls = ({
   }
 
   const isRangeAverage =
-    state.band === 'tavg_range_avg' || state.band === 'prec_range_avg'
+    state.band === 'tavg_range' || state.band === 'prec_range'
 
   return (
     <>
-      <Box>
-        <Box>Band</Box>
-        <Select value={state.band} onChange={handleBandChange}>
-          <option value='tavg'>tavg</option>
-          <option value='prec'>prec</option>
-          <option value='tavg_range_avg'>
-            tavg (custom frag average range)
-          </option>
-          <option value='prec_range_avg'>
-            prec (custom frag average range)
-          </option>
-          <option value='combined'>combined (custom frag w/ uniform)</option>
-        </Select>
-        {state.band === 'combined' && (
-          <Box
-            as='code'
-            sx={{ fontSize: 0, color: 'secondary', whiteSpace: 'pre-wrap' }}
-          >
-            {combinedBandsCustomFrag}
-          </Box>
-        )}
-      </Box>
+      <Row columns={[4, 4, 4, 4]} sx={{ mb: 3, alignItems: 'baseline' }}>
+        <Column start={1} width={1}>
+          <Box sx={subheadingSx}>Band</Box>
+        </Column>
+        <Column start={2} width={3}>
+          <Filter
+            values={{
+              tavg: state.band === 'tavg',
+              prec: state.band === 'prec',
+              tavg_range: state.band === 'tavg_range',
+              prec_range: state.band === 'prec_range',
+              combined: state.band === 'combined',
+            }}
+            setValues={(obj: Record<string, boolean>) => {
+              if (obj.tavg) handleBandChange('tavg')
+              if (obj.prec) handleBandChange('prec')
+              if (obj.tavg_range) handleBandChange('tavg_range')
+              if (obj.prec_range) handleBandChange('prec_range')
+              if (obj.combined) handleBandChange('combined')
+            }}
+          />
+        </Column>
+      </Row>
+      {state.band === 'combined' && (
+        <Box
+          as='code'
+          sx={{
+            fontSize: 0,
+            color: 'secondary',
+            whiteSpace: 'pre-wrap',
+            display: 'block',
+            mb: 3,
+          }}
+        >
+          {combinedBandsCustomFrag}
+        </Box>
+      )}
 
       {isRangeAverage ? (
-        <Box>
-          Month range: {state.monthStart} – {state.monthEnd}
-          <Box sx={{ position: 'relative', mt: 2 }}>
+        <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mb: 3 }}>
+          <Column start={1} width={1}>
+            <Box sx={subheadingSx}>Month range</Box>
+          </Column>
+          <Column start={2} width={3} sx={{ position: 'relative' }}>
+            <Box
+              sx={{
+                mt: ['8px'],
+                bg: 'primary',
+                position: 'absolute',
+                top: 0,
+                left: `calc((${state.monthStart - 1}) * 100% / 11)`,
+                opacity: 1,
+                width: `calc((${state.monthEnd - state.monthStart}) * 100% / 11)`,
+                height: '4px',
+                zIndex: 2,
+                pointerEvents: 'none',
+              }}
+            />
             <Slider
+              sx={{
+                color: 'primary',
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                pointerEvents: 'none',
+                ':focus': {
+                  color: 'primary',
+                  '&::-webkit-slider-thumb': {
+                    boxShadow: ({ colors }) => `0 0 0 4px ${colors.secondary}`,
+                  },
+                  '&::-moz-range-thumb': {
+                    boxShadow: ({ colors }) => `0 0 0 4px ${colors.secondary}`,
+                  },
+                },
+                '&::-webkit-slider-thumb': {
+                  height: [22, 18, 16],
+                  width: [22, 18, 16],
+                  boxShadow: ({ colors }) => `0 0 0 0px ${colors.secondary}`,
+                  transition: 'box-shadow .15s ease',
+                  pointerEvents: 'auto',
+                  zIndex: 3,
+                },
+                '&::-moz-range-thumb': {
+                  height: [22, 18, 16],
+                  width: [22, 18, 16],
+                  boxShadow: ({ colors }) => `0 0 0 0px ${colors.secondary}`,
+                  transition: 'box-shadow .15s ease',
+                  pointerEvents: 'auto',
+                  zIndex: 3,
+                },
+              }}
               min={1}
               max={12}
               step={1}
               value={state.monthStart}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setState({ monthStart: parseInt(e.target.value) })
+                setState({
+                  monthStart: Math.min(
+                    parseFloat(e.target.value),
+                    state.monthEnd,
+                  ),
+                })
               }
             />
             <Slider
+              sx={{
+                color: 'primary',
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                pointerEvents: 'none',
+                bg: 'transparent',
+                ':focus': {
+                  color: 'primary',
+                  bg: 'transparent',
+                  '&::-webkit-slider-thumb': {
+                    boxShadow: ({ colors }) => `0 0 0 4px ${colors.secondary}`,
+                  },
+                  '&::-moz-range-thumb': {
+                    boxShadow: ({ colors }) => `0 0 0 4px ${colors.secondary}`,
+                  },
+                },
+                ':focus-visible': {
+                  outline: 'none !important',
+                  background: `transparent !important`,
+                },
+                '&::-webkit-slider-thumb': {
+                  height: [22, 18, 16],
+                  width: [22, 18, 16],
+                  boxShadow: ({ colors }) => `0 0 0 0px ${colors.secondary}`,
+                  transition: 'box-shadow .15s ease',
+                  pointerEvents: 'auto',
+                  zIndex: 3,
+                },
+                '&::-moz-range-thumb': {
+                  height: [22, 18, 16],
+                  width: [22, 18, 16],
+                  boxShadow: ({ colors }) => `0 0 0 0px ${colors.secondary}`,
+                  transition: 'box-shadow .15s ease',
+                  pointerEvents: 'auto',
+                  zIndex: 3,
+                },
+              }}
               min={1}
               max={12}
               step={1}
               value={state.monthEnd}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setState({ monthEnd: parseInt(e.target.value) })
+                setState({
+                  monthEnd: Math.max(
+                    parseFloat(e.target.value),
+                    state.monthStart,
+                  ),
+                })
               }
-              sx={{ mt: 3 }}
             />
-          </Box>
-        </Box>
+          </Column>
+        </Row>
       ) : (
-        <Box>
-          Month: {state.month}
-          <Slider
-            min={1}
-            max={12}
-            step={1}
-            value={state.month}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setState({ month: parseInt(e.target.value) })
-            }
-          />
-        </Box>
+        <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mb: 3 }}>
+          <Column start={1} width={1}>
+            <Box sx={subheadingSx}>Month</Box>
+          </Column>
+          <Column start={2} width={3}>
+            <Flex sx={{ flexDirection: 'column' }}>
+              <Slider
+                min={1}
+                max={12}
+                step={1}
+                value={state.month}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setState({ month: parseInt(e.target.value) })
+                }
+              />
+              <Box sx={{ textAlign: 'center' }}>{state.month}</Box>
+            </Flex>
+          </Column>
+        </Row>
       )}
 
       {state.band === 'combined' && (
-        <Box>
-          Precip Weight: {state.precipWeight}
-          <Slider
-            min={0}
-            max={5}
-            step={0.1}
-            value={state.precipWeight}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setState({ precipWeight: parseFloat(e.target.value) })
-            }
-          />
-        </Box>
+        <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mt: 2 }}>
+          <Column start={1} width={1}>
+            <Box sx={subheadingSx}>Precip weight</Box>
+          </Column>
+          <Column start={2} width={3}>
+            <Flex sx={{ flexDirection: 'column' }}>
+              <Slider
+                min={0}
+                max={5}
+                step={0.1}
+                value={state.precipWeight}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setState({ precipWeight: parseFloat(e.target.value) })
+                }
+              />
+              <Box sx={{ textAlign: 'center' }}>{state.precipWeight}</Box>
+            </Flex>
+          </Column>
+        </Row>
       )}
     </>
   )
@@ -192,8 +325,9 @@ const carbonplan4dDataset: DatasetModule<Carbonplan4dState> = {
   clim: [-20, 30],
   colormap: 'warm',
   zarrVersion: 2,
-  info: 'CarbonPlan Climate Demo (4D)',
-  sourceInfo: 'Zarr v2 pyramid - temp avg & precipitation by month',
+  info: '4d pyramid, temp/precip by month',
+  sourceInfo:
+    'Zarr v2 pyramid. Select different bands for demonstrations of custom fragment shaders and uniform variables.',
   dimensionNames: {
     lat: 'y',
     lon: 'x',
