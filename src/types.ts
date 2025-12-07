@@ -78,7 +78,6 @@ export interface BoundsLike {
 
 export interface MapLike {
   getProjection?(): { type?: string; name?: string } | null
-  setRenderWorldCopies?(value: boolean): void
   getRenderWorldCopies?(): boolean
   on?(event: string, handler: (...args: unknown[]) => void): void
   off?(event: string, handler: (...args: unknown[]) => void): void

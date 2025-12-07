@@ -62,30 +62,6 @@ export class ZarrLayer {
   private dataManager: DataManager | null = null
   private tileNeedsRender: boolean = true
 
-  private applyWorldCopiesSetting() {
-    if (
-      !this.map ||
-      typeof this.map.getProjection !== 'function' ||
-      typeof this.map.setRenderWorldCopies !== 'function'
-    ) {
-      return
-    }
-    const isGlobe = this.isGlobeProjection()
-    const target = isGlobe
-      ? false
-      : this.initialRenderWorldCopies !== undefined
-      ? this.initialRenderWorldCopies
-      : true
-
-    const current =
-      typeof this.map.getRenderWorldCopies === 'function'
-        ? this.map.getRenderWorldCopies()
-        : undefined
-    if (current !== target) {
-      this.map.setRenderWorldCopies(target)
-    }
-  }
-  private initialRenderWorldCopies: boolean | undefined
   private projectionChangeHandler: (() => void) | null = null
   private resolveGl(
     map: MapLike,
@@ -304,12 +280,8 @@ export class ZarrLayer {
         this.fragmentShaderSource
       )
 
-      if (typeof map.getRenderWorldCopies === 'function') {
-        this.initialRenderWorldCopies = map.getRenderWorldCopies()
-      }
       this.projectionChangeHandler = () => {
         const isGlobe = this.isGlobeProjection()
-        this.applyWorldCopiesSetting()
         this.dataManager?.onProjectionChange(isGlobe)
         this.renderer?.resetSingleImageGeometry()
       }
@@ -317,7 +289,6 @@ export class ZarrLayer {
         map.on('projectionchange', this.projectionChangeHandler)
         map.on('style.load', this.projectionChangeHandler)
       }
-      this.applyWorldCopiesSetting()
 
       await this.initialize()
       await this.initializeManager()
@@ -589,13 +560,6 @@ export class ZarrLayer {
     ) {
       this.map.off('projectionchange', this.projectionChangeHandler)
       this.map.off('style.load', this.projectionChangeHandler)
-    }
-    if (
-      this.map &&
-      typeof this.map.setRenderWorldCopies === 'function' &&
-      this.initialRenderWorldCopies !== undefined
-    ) {
-      this.map.setRenderWorldCopies(this.initialRenderWorldCopies)
     }
   }
 }
