@@ -7586,9 +7586,6 @@ var ZarrLayer = class {
       dataManager: this.dataManager
     });
   }
-  shouldRerenderTiles() {
-    return this.tileNeedsRender;
-  }
   onRemove(_map, gl) {
     this.isRemoved = true;
     this.renderer?.dispose();

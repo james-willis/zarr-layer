@@ -132,7 +132,6 @@ declare class ZarrLayer {
         x: number;
         y: number;
     }): void;
-    shouldRerenderTiles(): boolean;
     onRemove(_map: MapLike, gl: WebGL2RenderingContext): void;
 }
 

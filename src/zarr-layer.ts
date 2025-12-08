@@ -524,10 +524,6 @@ export class ZarrLayer {
     })
   }
 
-  shouldRerenderTiles(): boolean {
-    return this.tileNeedsRender
-  }
-
   onRemove(_map: MapLike, gl: WebGL2RenderingContext) {
     this.isRemoved = true
 
