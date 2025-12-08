@@ -119,7 +119,9 @@ export class Tiles {
       const values = Array.isArray(dimSelection.selected)
         ? dimSelection.selected
         : [dimSelection.selected]
-      return values.map((v) => toIndices(v as number | string | [number, number], dimSelection.type))
+      return values.map((v) =>
+        toIndices(v as number | string | [number, number], dimSelection.type)
+      )
     }
 
     if (Array.isArray(dimSelection)) {
@@ -132,13 +134,16 @@ export class Tiles {
   /**
    * Compute which chunk indices to fetch for a given tile.
    *
-   * Selectors can be in several formats:
-   *   - Direct number: `this.selectors['band'] = 0`
-   *   - Wrapped object with single value: `{ selected: 0, type: 'index' }`
-   *   - Wrapped object with array (multi-band): `{ selected: [0, 1], type: 'index' }`
+   * Selector shapes we accept:
+   *   - Direct number/string: `this.selectors['band'] = 0` or `'t0'`
+   *   - Wrapped: `{ selected: 0 | 't0', type?: 'index' | 'value' }`
+   *   - Arrays (multi-band): `[0, 1]` or `{ selected: [0, 1], type: 'index' }`
    *
-   * For multi-band selectors like [0, 1], we use the first value's chunk index.
-   * If bands span multiple chunks, a warning is logged and only one chunk is fetched.
+   * Default is value-based when coordinates exist: we map numbers/strings to
+   * coordinate indices unless `type: 'index'` is set. Unknown strings fall back
+   * to index 0; unmatched numbers fall back to the numeric index. Multi-band
+   * uses the first value's chunk index; if values span chunks we warn and fetch
+   * one chunk.
    */
   private computeChunkIndices(
     levelArray: zarr.Array<zarr.DataType>,

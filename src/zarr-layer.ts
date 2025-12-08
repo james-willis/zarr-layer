@@ -524,6 +524,13 @@ export class ZarrLayer {
     })
   }
 
+  // Mapbox specific custom layer method required to trigger rerender on eg dataset update.
+  shouldRerenderTiles() {
+    const needsRender = this.tileNeedsRender
+    this.tileNeedsRender = false
+    return needsRender
+  }
+
   onRemove(_map: MapLike, gl: WebGL2RenderingContext) {
     this.isRemoved = true
 
