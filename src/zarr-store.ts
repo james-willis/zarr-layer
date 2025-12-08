@@ -49,8 +49,6 @@ interface ZarrV2Attributes {
   multiscales?: Multiscale[]
   scale_factor?: number
   add_offset?: number
-  _FillValue?: number
-  missing_value?: number
 }
 
 interface ZarrV3GroupMetadata {
@@ -72,24 +70,27 @@ interface ZarrV3ArrayMetadata {
   data_type?: string
   fill_value: number | null
   chunk_grid?: {
+    name?: string
     configuration?: {
       chunk_shape?: number[]
     }
   }
   chunks?: number[]
+  chunk_key_encoding?: {
+    name: string
+    configuration?: Record<string, unknown>
+  }
   codecs?: Array<{
     name: string
     configuration?: {
       chunk_shape?: number[]
     }
   }>
-  attributes?: {
-    _ARRAY_DIMENSIONS?: string[]
-    scale_factor?: number
-    add_offset?: number
-    _FillValue?: number
-    missing_value?: number
-  }
+  storage_transformers?: Array<{
+    name: string
+    configuration?: Record<string, unknown>
+  }>
+  attributes?: Record<string, unknown>
 }
 
 type ConsolidatedStore = zarr.Listable<zarr.FetchStore>
@@ -406,13 +407,6 @@ export class ZarrStore {
     this.shape = zarray?.shape || []
     this.chunks = zarray?.chunks || []
     this.fill_value = zarray?.fill_value ?? null
-    if (this.fill_value === null && zattrs) {
-      if (zattrs._FillValue !== undefined) {
-        this.fill_value = zattrs._FillValue
-      } else if (zattrs.missing_value !== undefined) {
-        this.fill_value = zattrs.missing_value
-      }
-    }
     this.dtype = zarray?.dtype || null
     this.scaleFactor = zattrs?.scale_factor ?? 1
     this.addOffset = zattrs?.add_offset ?? 0
@@ -465,30 +459,36 @@ export class ZarrStore {
     }
     this.arrayMetadata = arrayMetadata
 
-    this.dimensions =
-      arrayMetadata.attributes?._ARRAY_DIMENSIONS ||
-      arrayMetadata.dimension_names ||
-      []
+    const attrs = arrayMetadata.attributes as
+      | Record<string, unknown>
+      | undefined
+    // Legacy v3 support: attributes._ARRAY_DIMENSIONS.
+    const legacyDims =
+      Array.isArray(attrs?._ARRAY_DIMENSIONS) && attrs?._ARRAY_DIMENSIONS
+
+    this.dimensions = arrayMetadata.dimension_names || legacyDims || []
     this.shape = arrayMetadata.shape
 
     const isSharded = arrayMetadata.codecs?.[0]?.name === 'sharding_indexed'
-    this.chunks = isSharded
-      ? arrayMetadata.codecs?.[0]?.configuration?.chunk_shape || this.shape
-      : arrayMetadata.chunk_grid?.configuration?.chunk_shape ||
-        arrayMetadata.chunks ||
-        this.shape
+    const shardedChunkShape =
+      isSharded && arrayMetadata.codecs?.[0]?.configuration
+        ? (arrayMetadata.codecs[0].configuration as { chunk_shape?: number[] })
+            .chunk_shape
+        : undefined
+    const gridChunkShape = arrayMetadata.chunk_grid?.configuration?.chunk_shape
+    // Some pre-spec pyramids used top-level chunks; keep as a fallback.
+    const legacyChunks = Array.isArray(arrayMetadata.chunks)
+      ? arrayMetadata.chunks
+      : undefined
+    this.chunks =
+      shardedChunkShape || gridChunkShape || legacyChunks || this.shape
 
     this.fill_value = arrayMetadata.fill_value
-    if (this.fill_value === null && arrayMetadata.attributes) {
-      if (arrayMetadata.attributes._FillValue !== undefined) {
-        this.fill_value = arrayMetadata.attributes._FillValue
-      } else if (arrayMetadata.attributes.missing_value !== undefined) {
-        this.fill_value = arrayMetadata.attributes.missing_value
-      }
-    }
     this.dtype = arrayMetadata.data_type || null
-    this.scaleFactor = arrayMetadata.attributes?.scale_factor ?? 1
-    this.addOffset = arrayMetadata.attributes?.add_offset ?? 0
+    this.scaleFactor =
+      typeof attrs?.scale_factor === 'number' ? attrs.scale_factor : 1
+    this.addOffset =
+      typeof attrs?.add_offset === 'number' ? attrs.add_offset : 0
 
     await this._computeDimIndices()
   }
