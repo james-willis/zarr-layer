@@ -5,33 +5,44 @@ import {
   resolveProjectionMode,
   type ShaderProgram,
 } from './shader-program'
-import type { ShaderData } from './shaders'
-import type { CustomShaderConfig, RenderParams } from './renderer-types'
+import type { ProjectionData, ShaderData } from './shaders'
+import type {
+  CustomShaderConfig,
+  MapboxGlobeParams,
+  RendererUniforms,
+} from './renderer-types'
 import {
   renderSingleImage,
   type SingleImageState,
 } from './single-image-renderer'
 import { renderTiles } from './tile-renderer'
 
+export { type ShaderProgram } from './shader-program'
+
 export class ZarrRenderer {
-  private gl: WebGL2RenderingContext
+  private _gl: WebGL2RenderingContext
   private fragmentShaderSource: string
   private shaderCache: Map<string, ShaderProgram> = new Map()
   private singleImageState: SingleImageState = {
     uploaded: false,
-    version: null,
+    geometryVersion: null,
+    dataVersion: null,
   }
   private customShaderConfig: CustomShaderConfig | null = null
+
+  get gl(): WebGL2RenderingContext {
+    return this._gl
+  }
 
   constructor(
     gl: WebGL2RenderingContext,
     fragmentShaderSource: string,
     customShaderConfig?: CustomShaderConfig
   ) {
-    this.gl = ZarrRenderer.resolveGl(gl)
+    this._gl = ZarrRenderer.resolveGl(gl)
     this.fragmentShaderSource = fragmentShaderSource
     this.customShaderConfig = customShaderConfig || null
-    this.getOrCreateProgram(undefined, customShaderConfig)
+    this.getProgram(undefined, customShaderConfig)
   }
 
   updateMultiBandConfig(config: CustomShaderConfig | null) {
@@ -63,7 +74,7 @@ export class ZarrRenderer {
     throw new Error('Invalid WebGL2 context: missing required WebGL2 methods')
   }
 
-  private getOrCreateProgram(
+  getProgram(
     shaderData?: ShaderData,
     customShaderConfig?: CustomShaderConfig,
     useMapboxGlobe: boolean = false
@@ -81,7 +92,7 @@ export class ZarrRenderer {
       return cached
     }
 
-    const { shaderProgram } = createShaderProgram(this.gl, {
+    const { shaderProgram } = createShaderProgram(this._gl, {
       fragmentShaderSource: this.fragmentShaderSource,
       shaderData,
       customShaderConfig: config,
@@ -93,41 +104,17 @@ export class ZarrRenderer {
     return shaderProgram
   }
 
-  render(params: RenderParams) {
-    const {
-      matrix,
-      colormapTexture,
-      uniforms,
-      worldOffsets,
-      isMultiscale,
-      visibleTiles,
-      tileCache,
-      tileSize,
-      vertexArr,
-      pixCoordArr,
-      tileBounds,
-      singleImage,
-      shaderData,
-      projectionData,
-      customShaderConfig,
-      mapboxGlobe,
-      mode,
-    } = params
-
-    const isMapboxTile = mode.type === 'mapboxTile'
-    const tileTexOverrides =
-      mode.type === 'mapboxTile' ? mode.tileTexOverrides : undefined
-    const tileOverride =
-      mode.type === 'mapboxTile' ? mode.tileOverride : undefined
-
-    const shaderProgram = this.getOrCreateProgram(
-      shaderData,
-      customShaderConfig,
-      !!mapboxGlobe || isMapboxTile
-    )
-
-    const gl = this.gl
-    gl.useProgram(shaderProgram.program)
+  applyCommonUniforms(
+    shaderProgram: ShaderProgram,
+    colormapTexture: WebGLTexture,
+    uniforms: RendererUniforms,
+    customShaderConfig?: CustomShaderConfig,
+    projectionData?: ProjectionData,
+    mapboxGlobe?: MapboxGlobeParams,
+    matrix?: number[] | Float32Array | Float64Array,
+    isMapboxTile: boolean = false
+  ): void {
+    const gl = this._gl
 
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
@@ -169,49 +156,77 @@ export class ZarrRenderer {
       }
     }
 
-    applyProjectionUniforms(
-      this.gl,
-      shaderProgram,
-      matrix,
-      projectionData,
-      mapboxGlobe,
-      isMapboxTile
-    )
-
-    if (isMultiscale) {
-      if (!tileCache) {
-        console.warn('Missing tile cache for multiscale render, skipping frame')
-        return
-      }
-      renderTiles(
-        this.gl,
+    if (matrix) {
+      applyProjectionUniforms(
+        gl,
         shaderProgram,
-        visibleTiles,
-        worldOffsets,
-        tileCache,
-        tileSize,
-        vertexArr,
-        pixCoordArr,
-        tileBounds,
-        customShaderConfig,
-        isMapboxTile,
-        tileTexOverrides
-      )
-    } else if (singleImage) {
-      this.singleImageState = renderSingleImage(
-        this.gl,
-        shaderProgram,
-        worldOffsets,
-        singleImage,
-        vertexArr,
-        this.singleImageState,
-        tileOverride
+        matrix,
+        projectionData,
+        mapboxGlobe,
+        isMapboxTile
       )
     }
   }
 
+  renderTiles(
+    shaderProgram: ShaderProgram,
+    visibleTiles: import('./map-utils').TileTuple[],
+    worldOffsets: number[],
+    tileCache: import('./zarr-tile-cache').TileRenderCache,
+    tileSize: number,
+    vertexArr: Float32Array,
+    pixCoordArr: Float32Array,
+    tileBounds?: Record<string, import('./map-utils').MercatorBounds>,
+    customShaderConfig?: CustomShaderConfig,
+    isMapboxTile: boolean = false,
+    tileTexOverrides?: Record<
+      string,
+      { texScale: [number, number]; texOffset: [number, number] }
+    >
+  ): void {
+    renderTiles(
+      this._gl,
+      shaderProgram,
+      visibleTiles,
+      worldOffsets,
+      tileCache,
+      tileSize,
+      vertexArr,
+      pixCoordArr,
+      tileBounds,
+      customShaderConfig,
+      isMapboxTile,
+      tileTexOverrides
+    )
+  }
+
+  renderSingleImage(
+    shaderProgram: ShaderProgram,
+    worldOffsets: number[],
+    params: import('./renderer-types').SingleImageParams,
+    vertexArr: Float32Array,
+    tileOverride?: {
+      scaleX: number
+      scaleY: number
+      shiftX: number
+      shiftY: number
+      texScale: [number, number]
+      texOffset: [number, number]
+    }
+  ): void {
+    this.singleImageState = renderSingleImage(
+      this._gl,
+      shaderProgram,
+      worldOffsets,
+      params,
+      vertexArr,
+      this.singleImageState,
+      tileOverride
+    )
+  }
+
   dispose() {
-    const gl = this.gl
+    const gl = this._gl
     for (const [, shader] of this.shaderCache) {
       gl.deleteProgram(shader.program)
     }

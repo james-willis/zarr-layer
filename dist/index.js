@@ -5039,8 +5039,36 @@ function configureDataTexture(gl) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
+function createSubdividedQuad(subdivisions) {
+  const vertices = [];
+  const texCoords = [];
+  const step = 2 / subdivisions;
+  const texStep = 1 / subdivisions;
+  const pushVertex = (col, row) => {
+    const x = -1 + col * step;
+    const y = 1 - row * step;
+    const u = col * texStep;
+    const v = row * texStep;
+    vertices.push(x, y);
+    texCoords.push(u, v);
+  };
+  for (let row = 0; row < subdivisions; row++) {
+    for (let col = 0; col <= subdivisions; col++) {
+      pushVertex(col, row);
+      pushVertex(col, row + 1);
+    }
+    if (row < subdivisions - 1) {
+      pushVertex(subdivisions, row + 1);
+      pushVertex(0, row + 1);
+    }
+  }
+  return {
+    vertexArr: new Float32Array(vertices),
+    texCoordArr: new Float32Array(texCoords)
+  };
+}
 
-// src/zarr-colormap.ts
+// src/colormap.ts
 function hexToRgb(hex) {
   const cleaned = hex.replace("#", "");
   if (cleaned.length !== 6) {
@@ -5291,17 +5319,26 @@ function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, s
     pixCoordBuffer,
     width,
     height,
+    channels = 1,
     pixCoordArr,
-    geometryVersion
+    geometryVersion,
+    dataVersion
   } = params;
   let uploaded = state.uploaded;
-  let version = state.version;
-  if (version === null || version !== geometryVersion) {
+  let currentGeometryVersion = state.geometryVersion;
+  let currentDataVersion = state.dataVersion;
+  const geometryChanged = currentGeometryVersion === null || currentGeometryVersion !== geometryVersion;
+  const dataChanged = currentDataVersion === null || currentDataVersion !== dataVersion;
+  if (geometryChanged) {
     uploaded = false;
-    version = geometryVersion;
+    currentGeometryVersion = geometryVersion;
   }
   if (!data || !bounds || !texture || !vertexBuffer || !pixCoordBuffer) {
-    return { uploaded, version };
+    return {
+      uploaded,
+      geometryVersion: currentGeometryVersion,
+      dataVersion: currentDataVersion
+    };
   }
   const scaleX = tileOverride?.scaleX !== void 0 ? tileOverride.scaleX : (bounds.x1 - bounds.x0) / 2;
   const scaleY = tileOverride?.scaleY !== void 0 ? tileOverride.scaleY : (bounds.y1 - bounds.y0) / 2;
@@ -5329,17 +5366,22 @@ function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, s
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.uniform1i(shaderProgram.texLoc, 0);
   configureDataTexture(gl);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.R32F,
-    width,
-    height,
-    0,
-    gl.RED,
-    gl.FLOAT,
-    data
-  );
+  if (dataChanged) {
+    const format = channels === 2 ? gl.RG : channels === 3 ? gl.RGB : channels >= 4 ? gl.RGBA : gl.RED;
+    const internalFormat = channels === 2 ? gl.RG32F : channels === 3 ? gl.RGB32F : channels >= 4 ? gl.RGBA32F : gl.R32F;
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      internalFormat,
+      width,
+      height,
+      0,
+      format,
+      gl.FLOAT,
+      data
+    );
+    currentDataVersion = dataVersion;
+  }
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
   gl.enableVertexAttribArray(shaderProgram.vertexLoc);
   gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0);
@@ -5351,7 +5393,11 @@ function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, s
     gl.uniform1f(shaderProgram.worldXOffsetLoc, worldOffset);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexCount);
   }
-  return { uploaded, version };
+  return {
+    uploaded,
+    geometryVersion: currentGeometryVersion,
+    dataVersion: currentDataVersion
+  };
 }
 
 // src/map-utils.ts
@@ -5775,13 +5821,17 @@ var ZarrRenderer = class _ZarrRenderer {
     this.shaderCache = /* @__PURE__ */ new Map();
     this.singleImageState = {
       uploaded: false,
-      version: null
+      geometryVersion: null,
+      dataVersion: null
     };
     this.customShaderConfig = null;
-    this.gl = _ZarrRenderer.resolveGl(gl);
+    this._gl = _ZarrRenderer.resolveGl(gl);
     this.fragmentShaderSource = fragmentShaderSource;
     this.customShaderConfig = customShaderConfig || null;
-    this.getOrCreateProgram(void 0, customShaderConfig);
+    this.getProgram(void 0, customShaderConfig);
+  }
+  get gl() {
+    return this._gl;
   }
   updateMultiBandConfig(config) {
     if (config && this.customShaderConfig) {
@@ -5804,7 +5854,7 @@ var ZarrRenderer = class _ZarrRenderer {
     }
     throw new Error("Invalid WebGL2 context: missing required WebGL2 methods");
   }
-  getOrCreateProgram(shaderData, customShaderConfig, useMapboxGlobe = false) {
+  getProgram(shaderData, customShaderConfig, useMapboxGlobe = false) {
     const projectionMode = resolveProjectionMode(shaderData, useMapboxGlobe);
     const config = customShaderConfig || this.customShaderConfig;
     const variantName = makeShaderVariantKey({
@@ -5816,7 +5866,7 @@ var ZarrRenderer = class _ZarrRenderer {
     if (cached) {
       return cached;
     }
-    const { shaderProgram } = createShaderProgram(this.gl, {
+    const { shaderProgram } = createShaderProgram(this._gl, {
       fragmentShaderSource: this.fragmentShaderSource,
       shaderData,
       customShaderConfig: config,
@@ -5826,36 +5876,8 @@ var ZarrRenderer = class _ZarrRenderer {
     this.shaderCache.set(variantName, shaderProgram);
     return shaderProgram;
   }
-  render(params) {
-    const {
-      matrix,
-      colormapTexture,
-      uniforms,
-      worldOffsets,
-      isMultiscale,
-      visibleTiles,
-      tileCache,
-      tileSize,
-      vertexArr,
-      pixCoordArr,
-      tileBounds,
-      singleImage,
-      shaderData,
-      projectionData,
-      customShaderConfig,
-      mapboxGlobe,
-      mode
-    } = params;
-    const isMapboxTile = mode.type === "mapboxTile";
-    const tileTexOverrides = mode.type === "mapboxTile" ? mode.tileTexOverrides : void 0;
-    const tileOverride = mode.type === "mapboxTile" ? mode.tileOverride : void 0;
-    const shaderProgram = this.getOrCreateProgram(
-      shaderData,
-      customShaderConfig,
-      !!mapboxGlobe || isMapboxTile
-    );
-    const gl = this.gl;
-    gl.useProgram(shaderProgram.program);
+  applyCommonUniforms(shaderProgram, colormapTexture, uniforms, customShaderConfig, projectionData, mapboxGlobe, matrix, isMapboxTile = false) {
+    const gl = this._gl;
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.activeTexture(gl.TEXTURE1);
@@ -5891,47 +5913,46 @@ var ZarrRenderer = class _ZarrRenderer {
         }
       }
     }
-    applyProjectionUniforms(
-      this.gl,
-      shaderProgram,
-      matrix,
-      projectionData,
-      mapboxGlobe,
-      isMapboxTile
-    );
-    if (isMultiscale) {
-      if (!tileCache) {
-        console.warn("Missing tile cache for multiscale render, skipping frame");
-        return;
-      }
-      renderTiles(
-        this.gl,
+    if (matrix) {
+      applyProjectionUniforms(
+        gl,
         shaderProgram,
-        visibleTiles,
-        worldOffsets,
-        tileCache,
-        tileSize,
-        vertexArr,
-        pixCoordArr,
-        tileBounds,
-        customShaderConfig,
-        isMapboxTile,
-        tileTexOverrides
-      );
-    } else if (singleImage) {
-      this.singleImageState = renderSingleImage(
-        this.gl,
-        shaderProgram,
-        worldOffsets,
-        singleImage,
-        vertexArr,
-        this.singleImageState,
-        tileOverride
+        matrix,
+        projectionData,
+        mapboxGlobe,
+        isMapboxTile
       );
     }
   }
+  renderTiles(shaderProgram, visibleTiles, worldOffsets, tileCache, tileSize, vertexArr, pixCoordArr, tileBounds, customShaderConfig, isMapboxTile = false, tileTexOverrides) {
+    renderTiles(
+      this._gl,
+      shaderProgram,
+      visibleTiles,
+      worldOffsets,
+      tileCache,
+      tileSize,
+      vertexArr,
+      pixCoordArr,
+      tileBounds,
+      customShaderConfig,
+      isMapboxTile,
+      tileTexOverrides
+    );
+  }
+  renderSingleImage(shaderProgram, worldOffsets, params, vertexArr, tileOverride) {
+    this.singleImageState = renderSingleImage(
+      this._gl,
+      shaderProgram,
+      worldOffsets,
+      params,
+      vertexArr,
+      this.singleImageState,
+      tileOverride
+    );
+  }
   dispose() {
-    const gl = this.gl;
+    const gl = this._gl;
     for (const [, shader] of this.shaderCache) {
       gl.deleteProgram(shader.program);
     }
@@ -6386,11 +6407,295 @@ var Tiles = class {
   }
 };
 
-// src/tiled-data-manager.ts
+// src/constants.ts
 var DEFAULT_TILE_SIZE = 128;
 var MAX_CACHED_TILES = 64;
 var TILE_SUBDIVISIONS = 32;
-var TiledDataManager = class _TiledDataManager {
+
+// src/mapbox-globe-tile-renderer.ts
+var IDENTITY_MATRIX = new Float32Array([
+  1,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  1
+]);
+function renderMapboxTile({
+  renderer,
+  mode,
+  tileId,
+  context
+}) {
+  const { colormapTexture, uniforms, customShaderConfig } = context;
+  const singleImageState = mode.getSingleImageState?.();
+  if (!mode.isMultiscale && singleImageState) {
+    const { singleImage, vertexArr: vertexArr2 } = singleImageState;
+    const bounds = singleImage.bounds;
+    if (!bounds) return false;
+    const tileSizeNorm = 1 / 2 ** tileId.z;
+    const tileX0 = tileId.x * tileSizeNorm;
+    const tileX1 = (tileId.x + 1) * tileSizeNorm;
+    const tileY0 = tileId.y * tileSizeNorm;
+    const tileY1 = (tileId.y + 1) * tileSizeNorm;
+    const intersects = bounds.x0 < tileX1 && bounds.x1 > tileX0 && bounds.y0 < tileY1 && bounds.y1 > tileY0;
+    if (!intersects) return false;
+    const overlapX0 = Math.max(bounds.x0, tileX0);
+    const overlapX1 = Math.min(bounds.x1, tileX1);
+    const overlapY0 = Math.max(bounds.y0, tileY0);
+    const overlapY1 = Math.min(bounds.y1, tileY1);
+    const localX0 = (overlapX0 - tileX0) / tileSizeNorm;
+    const localX1 = (overlapX1 - tileX0) / tileSizeNorm;
+    const localY0 = (overlapY0 - tileY0) / tileSizeNorm;
+    const localY1 = (overlapY1 - tileY0) / tileSizeNorm;
+    const clipX0 = localX0 * 2 - 1;
+    const clipX1 = localX1 * 2 - 1;
+    const clipY0 = localY0 * 2 - 1;
+    const clipY1 = localY1 * 2 - 1;
+    const scaleX = (clipX1 - clipX0) / 2;
+    const scaleY = (clipY1 - clipY0) / 2;
+    const shiftX = (clipX0 + clipX1) / 2;
+    const shiftY = (clipY0 + clipY1) / 2;
+    const imgWidth = bounds.x1 - bounds.x0;
+    const imgHeight = bounds.y1 - bounds.y0;
+    const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1;
+    const texScaleY = imgHeight > 0 ? (overlapY1 - overlapY0) / imgHeight : 1;
+    const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0;
+    const texOffsetY = imgHeight > 0 ? (overlapY0 - bounds.y0) / imgHeight : 0;
+    const shaderProgram2 = renderer.getProgram(
+      context.shaderData,
+      customShaderConfig,
+      true
+    );
+    renderer.gl.useProgram(shaderProgram2.program);
+    renderer.applyCommonUniforms(
+      shaderProgram2,
+      colormapTexture,
+      uniforms,
+      customShaderConfig,
+      context.projectionData,
+      {
+        projection: { name: "globe" },
+        globeToMercatorMatrix: IDENTITY_MATRIX,
+        transition: 0
+      },
+      IDENTITY_MATRIX,
+      true
+    );
+    renderer.renderSingleImage(shaderProgram2, [0], singleImage, vertexArr2, {
+      scaleX,
+      scaleY,
+      shiftX,
+      shiftY,
+      texScale: [texScaleX, texScaleY],
+      texOffset: [texOffsetX, texOffsetY]
+    });
+    return false;
+  }
+  const tiledState = mode.getTiledState?.();
+  if (!tiledState?.tileCache) {
+    return true;
+  }
+  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState;
+  const tilesPerSide = 2 ** tileId.z;
+  const mapboxMercX0 = tileId.x / tilesPerSide;
+  const mapboxMercX1 = (tileId.x + 1) / tilesPerSide;
+  const mapboxMercY0 = tileId.y / tilesPerSide;
+  const mapboxMercY1 = (tileId.y + 1) / tilesPerSide;
+  const EPS = 1e-7;
+  const x0 = Math.max(0, mapboxMercX0 + EPS);
+  const x1 = Math.min(1, mapboxMercX1 - EPS);
+  const y0 = Math.max(0, mapboxMercY0 + EPS);
+  const y1 = Math.min(1, mapboxMercY1 - EPS);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  const tileMatrix = new Float32Array([
+    2 / width,
+    0,
+    0,
+    0,
+    0,
+    2 / height,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    -(x0 + x1) / width,
+    -(y0 + y1) / height,
+    0,
+    1
+  ]);
+  const crs = mode.getCRS();
+  const xyLimits = mode.getXYLimits();
+  const maxZoom = mode.getMaxZoom();
+  if (crs === "EPSG:4326" && xyLimits) {
+    const mapboxGeoBounds = mercatorTileToGeoBounds(
+      tileId.z,
+      tileId.x,
+      tileId.y
+    );
+    const pyramidLevel = zoomToLevel(tileId.z, maxZoom);
+    const overlappingZarrTiles = getOverlapping4326Tiles(
+      mapboxGeoBounds,
+      xyLimits,
+      pyramidLevel
+    );
+    if (overlappingZarrTiles.length === 0) {
+      return false;
+    }
+    const shaderProgram2 = renderer.getProgram(
+      context.shaderData,
+      customShaderConfig,
+      true
+    );
+    renderer.gl.useProgram(shaderProgram2.program);
+    let anyTileRendered = false;
+    let anyMissing = false;
+    for (const zarrTile of overlappingZarrTiles) {
+      const zarrTileKey = tileToKey(zarrTile);
+      let tileData = tileCache.get(zarrTileKey);
+      let renderTileKey = zarrTileKey;
+      let renderTileTuple = zarrTile;
+      if (!tileData?.data) {
+        anyMissing = true;
+        const parent = findBestParentTile(
+          tileCache,
+          zarrTile[0],
+          zarrTile[1],
+          zarrTile[2]
+        );
+        if (!parent) continue;
+        tileData = parent.tile;
+        renderTileTuple = [parent.ancestorZ, parent.ancestorX, parent.ancestorY];
+        renderTileKey = tileToKey(renderTileTuple);
+      }
+      const [z, tx, ty] = renderTileTuple;
+      const zarrGeoBounds = get4326TileGeoBounds(z, tx, ty, xyLimits);
+      const zarrMercX0 = lonToMercatorNorm(zarrGeoBounds.west);
+      const zarrMercX1 = lonToMercatorNorm(zarrGeoBounds.east);
+      const zarrMercY0 = latToMercatorNorm(zarrGeoBounds.north);
+      const zarrMercY1 = latToMercatorNorm(zarrGeoBounds.south);
+      const overlapX0 = Math.max(zarrMercX0, mapboxMercX0);
+      const overlapX1 = Math.min(zarrMercX1, mapboxMercX1);
+      const overlapY0 = Math.max(zarrMercY0, mapboxMercY0);
+      const overlapY1 = Math.min(zarrMercY1, mapboxMercY1);
+      if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) continue;
+      const zarrLonWidth = zarrGeoBounds.east - zarrGeoBounds.west;
+      const overlapWest = mercatorNormToLon(overlapX0);
+      const overlapEast = mercatorNormToLon(overlapX1);
+      const texScaleX = zarrLonWidth > 0 ? (overlapEast - overlapWest) / zarrLonWidth : 1;
+      const texOffsetX = zarrLonWidth > 0 ? (overlapWest - zarrGeoBounds.west) / zarrLonWidth : 0;
+      const texScaleY = 1;
+      const texOffsetY = 0;
+      const tileBoundsForRender = {
+        [renderTileKey]: {
+          x0: overlapX0,
+          y0: overlapY0,
+          x1: overlapX1,
+          y1: overlapY1,
+          latMin: zarrGeoBounds.south,
+          latMax: zarrGeoBounds.north
+        }
+      };
+      renderer.applyCommonUniforms(
+        shaderProgram2,
+        colormapTexture,
+        uniforms,
+        customShaderConfig,
+        context.projectionData,
+        {
+          projection: { name: "globe" },
+          globeToMercatorMatrix: IDENTITY_MATRIX,
+          transition: 0
+        },
+        tileMatrix,
+        true
+      );
+      renderer.renderTiles(
+        shaderProgram2,
+        [renderTileTuple],
+        [0],
+        tileCache,
+        tileSize,
+        vertexArr,
+        pixCoordArr,
+        tileBoundsForRender,
+        customShaderConfig,
+        true,
+        {
+          [renderTileKey]: {
+            texScale: [texScaleX, texScaleY],
+            texOffset: [texOffsetX, texOffsetY]
+          }
+        }
+      );
+      anyTileRendered = true;
+    }
+    return anyMissing || !anyTileRendered;
+  }
+  const tileTuple = [tileId.z, tileId.x, tileId.y];
+  const tileKey = tileTuple.join(",");
+  const boundsForTile = tileBounds?.[tileKey];
+  const tileBoundsOverride = {
+    [tileKey]: {
+      x0: mapboxMercX0,
+      y0: mapboxMercY0,
+      x1: mapboxMercX1,
+      y1: mapboxMercY1,
+      latMin: boundsForTile?.latMin,
+      latMax: boundsForTile?.latMax
+    }
+  };
+  const shaderProgram = renderer.getProgram(
+    context.shaderData,
+    customShaderConfig,
+    true
+  );
+  renderer.gl.useProgram(shaderProgram.program);
+  renderer.applyCommonUniforms(
+    shaderProgram,
+    colormapTexture,
+    uniforms,
+    customShaderConfig,
+    context.projectionData,
+    {
+      projection: { name: "globe" },
+      globeToMercatorMatrix: IDENTITY_MATRIX,
+      transition: 0
+    },
+    tileMatrix,
+    true
+  );
+  renderer.renderTiles(
+    shaderProgram,
+    [tileTuple],
+    [0],
+    tileCache,
+    tileSize,
+    vertexArr,
+    pixCoordArr,
+    tileBoundsOverride,
+    customShaderConfig,
+    true
+  );
+  const tileHasData = tileCache.get(tileKey)?.data;
+  return !tileHasData;
+}
+
+// src/tiled-mode.ts
+var TiledMode = class {
   constructor(store, variable, selector, minRenderZoom, invalidate) {
     this.isMultiscale = true;
     this.tileCache = null;
@@ -6418,22 +6723,29 @@ var TiledDataManager = class _TiledDataManager {
     }
   }
   async initialize() {
-    const desc = this.zarrStore.describe();
-    this.maxZoom = desc.levels.length - 1;
-    this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE;
-    this.crs = desc.crs;
-    this.xyLimits = desc.xyLimits;
-    const bandNames = getBands(this.variable, this.selector);
-    this.tilesManager = new Tiles({
-      store: this.zarrStore,
-      selectors: this.selectors,
-      fillValue: desc.fill_value ?? 0,
-      dimIndices: desc.dimIndices,
-      coordinates: desc.coordinates,
-      maxCachedTiles: MAX_CACHED_TILES,
-      bandNames
-    });
-    this.updateGeometryForProjection(false);
+    this.metadataLoading = true;
+    this.emitLoadingState();
+    try {
+      const desc = this.zarrStore.describe();
+      this.maxZoom = desc.levels.length - 1;
+      this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE;
+      this.crs = desc.crs;
+      this.xyLimits = desc.xyLimits;
+      const bandNames = getBands(this.variable, this.selector);
+      this.tilesManager = new Tiles({
+        store: this.zarrStore,
+        selectors: this.selectors,
+        fillValue: desc.fill_value ?? 0,
+        dimIndices: desc.dimIndices,
+        coordinates: desc.coordinates,
+        maxCachedTiles: MAX_CACHED_TILES,
+        bandNames
+      });
+      this.updateGeometryForProjection(false);
+    } finally {
+      this.metadataLoading = false;
+      this.emitLoadingState();
+    }
   }
   update(map, gl) {
     if (!this.tileCache) {
@@ -6465,23 +6777,73 @@ var TiledDataManager = class _TiledDataManager {
       if (wasEmpty) {
         this.emitLoadingState();
       }
-      this.prefetchTileData(tilesToFetch, currentHash);
+      this.prefetchTileData(tilesToFetch, currentHash).catch((err) => {
+        console.error("Error prefetching tile data:", err);
+        for (const tileTuple of tilesToFetch) {
+          this.pendingChunks.delete(tileToKey(tileTuple));
+        }
+        this.emitLoadingState();
+      });
     }
+  }
+  render(renderer, context) {
+    if (!this.tileCache) {
+      return;
+    }
+    const isMapboxTile = !!context.mapboxGlobe;
+    const shaderProgram = renderer.getProgram(
+      context.shaderData,
+      context.customShaderConfig,
+      isMapboxTile
+    );
+    renderer.gl.useProgram(shaderProgram.program);
+    renderer.applyCommonUniforms(
+      shaderProgram,
+      context.colormapTexture,
+      context.uniforms,
+      context.customShaderConfig,
+      context.projectionData,
+      context.mapboxGlobe,
+      context.matrix,
+      false
+    );
+    renderer.renderTiles(
+      shaderProgram,
+      this.visibleTiles,
+      context.worldOffsets,
+      this.tileCache,
+      this.tileSize,
+      this.vertexArr,
+      this.pixCoordArr,
+      Object.keys(this.tileBounds).length > 0 ? this.tileBounds : void 0,
+      context.customShaderConfig,
+      false
+    );
+  }
+  renderToTile(renderer, tileId, context) {
+    return renderMapboxTile({
+      renderer,
+      mode: this,
+      tileId,
+      context
+    });
   }
   onProjectionChange(isGlobe) {
     this.updateGeometryForProjection(isGlobe);
   }
-  getRenderData() {
+  getTiledState() {
+    if (!this.tileCache) return null;
     return {
-      isMultiscale: true,
-      tileCache: this.tileCache ?? void 0,
+      tileCache: this.tileCache,
       visibleTiles: this.visibleTiles,
       tileSize: this.tileSize,
       vertexArr: this.vertexArr,
       pixCoordArr: this.pixCoordArr,
-      tileBounds: Object.keys(this.tileBounds).length > 0 ? this.tileBounds : void 0,
-      singleImage: void 0
+      tileBounds: Object.keys(this.tileBounds).length > 0 ? this.tileBounds : void 0
     };
+  }
+  getSingleImageState() {
+    return null;
   }
   dispose(gl) {
     this.tileCache?.clear();
@@ -6539,43 +6901,14 @@ var TiledDataManager = class _TiledDataManager {
     }
     this.invalidate();
   }
-  // Helpers
   updateGeometryForProjection(isGlobe) {
     const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1;
     if (this.currentSubdivisions === targetSubdivisions) return;
-    const subdivided = _TiledDataManager.createSubdividedQuad(targetSubdivisions);
+    const subdivided = createSubdividedQuad(targetSubdivisions);
     this.vertexArr = subdivided.vertexArr;
     this.pixCoordArr = subdivided.texCoordArr;
     this.currentSubdivisions = targetSubdivisions;
     this.tileCache?.markGeometryDirty();
-  }
-  static createSubdividedQuad(subdivisions) {
-    const vertices = [];
-    const texCoords = [];
-    const step = 2 / subdivisions;
-    const texStep = 1 / subdivisions;
-    const pushVertex = (col, row) => {
-      const x = -1 + col * step;
-      const y = 1 - row * step;
-      const u = col * texStep;
-      const v = row * texStep;
-      vertices.push(x, y);
-      texCoords.push(u, v);
-    };
-    for (let row = 0; row < subdivisions; row++) {
-      for (let col = 0; col <= subdivisions; col++) {
-        pushVertex(col, row);
-        pushVertex(col, row + 1);
-      }
-      if (row < subdivisions - 1) {
-        pushVertex(subdivisions, row + 1);
-        pushVertex(0, row + 1);
-      }
-    }
-    return {
-      vertexArr: new Float32Array(vertices),
-      texCoordArr: new Float32Array(texCoords)
-    };
   }
   getVisibleTilesWithContext(map) {
     if (!map.getZoom || !map.getBounds) {
@@ -6606,7 +6939,7 @@ var TiledDataManager = class _TiledDataManager {
     };
   }
   computeTileBounds(tiles) {
-    if (this.crs !== "EPSG:4326") return {};
+    if (this.crs !== "EPSG:4326" || !this.xyLimits) return {};
     const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(this.xyLimits);
     const lonExtent = xMax - xMin;
     const latExtent = yMax - yMin;
@@ -6674,14 +7007,14 @@ var TiledDataManager = class _TiledDataManager {
   }
 };
 
-// src/single-image-data-manager.ts
-var TILE_SUBDIVISIONS2 = 16;
-var SingleImageDataManager = class _SingleImageDataManager {
+// src/single-image-mode.ts
+var SingleImageMode = class {
   constructor(store, variable, selector, invalidate) {
     this.isMultiscale = false;
     this.data = null;
     this.width = 0;
     this.height = 0;
+    this.channels = 1;
     this.texture = null;
     this.vertexBuffer = null;
     this.pixCoordBuffer = null;
@@ -6689,6 +7022,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.pixCoordArr = new Float32Array();
     this.currentSubdivisions = 0;
     this.geometryVersion = 0;
+    this.dataVersion = 0;
     this.mercatorBounds = null;
     this.dimIndices = {};
     this.xyLimits = null;
@@ -6696,6 +7030,7 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.zarrArray = null;
     this.isRemoved = false;
     this.isLoadingData = false;
+    this.metadataLoading = false;
     this.fetchRequestId = 0;
     this.dimensionValues = {};
     this.zarrStore = store;
@@ -6704,19 +7039,26 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.invalidate = invalidate;
   }
   async initialize() {
-    const desc = this.zarrStore.describe();
-    this.dimIndices = desc.dimIndices;
-    this.crs = desc.crs;
-    this.xyLimits = desc.xyLimits;
-    this.zarrArray = await this.zarrStore.getArray();
-    this.width = this.zarrArray.shape[this.dimIndices.lon.index];
-    this.height = this.zarrArray.shape[this.dimIndices.lat.index];
-    if (this.xyLimits) {
-      this.mercatorBounds = boundsToMercatorNorm(this.xyLimits, this.crs);
-    } else {
-      console.warn("SingleImageDataManager: No XY limits found");
+    this.metadataLoading = true;
+    this.emitLoadingState();
+    try {
+      const desc = this.zarrStore.describe();
+      this.dimIndices = desc.dimIndices;
+      this.crs = desc.crs;
+      this.xyLimits = desc.xyLimits;
+      this.zarrArray = await this.zarrStore.getArray();
+      this.width = this.zarrArray.shape[this.dimIndices.lon.index];
+      this.height = this.zarrArray.shape[this.dimIndices.lat.index];
+      if (this.xyLimits) {
+        this.mercatorBounds = boundsToMercatorNorm(this.xyLimits, this.crs);
+      } else {
+        console.warn("SingleImageMode: No XY limits found");
+      }
+      this.updateGeometryForProjection(false);
+    } finally {
+      this.metadataLoading = false;
+      this.emitLoadingState();
     }
-    this.updateGeometryForProjection(false);
   }
   update(map, gl) {
     if (!this.texture) {
@@ -6737,63 +7079,66 @@ var SingleImageDataManager = class _SingleImageDataManager {
       });
     }
   }
+  render(renderer, context) {
+    const singleImageState = this.getSingleImageState();
+    if (!singleImageState) return;
+    const isMapboxTile = !!context.mapboxGlobe;
+    const shaderProgram = renderer.getProgram(
+      context.shaderData,
+      context.customShaderConfig,
+      isMapboxTile
+    );
+    renderer.gl.useProgram(shaderProgram.program);
+    renderer.applyCommonUniforms(
+      shaderProgram,
+      context.colormapTexture,
+      context.uniforms,
+      context.customShaderConfig,
+      context.projectionData,
+      context.mapboxGlobe,
+      context.matrix,
+      false
+    );
+    renderer.renderSingleImage(
+      shaderProgram,
+      context.worldOffsets,
+      singleImageState.singleImage,
+      singleImageState.vertexArr
+    );
+  }
+  renderToTile(renderer, tileId, context) {
+    return renderMapboxTile({
+      renderer,
+      mode: this,
+      tileId,
+      context
+    });
+  }
   onProjectionChange(isGlobe) {
     this.updateGeometryForProjection(isGlobe);
   }
-  updateGeometryForProjection(isGlobe) {
-    const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS2 : 1;
-    if (this.currentSubdivisions === targetSubdivisions) return;
-    const subdivided = _SingleImageDataManager.createSubdividedQuad(targetSubdivisions);
-    this.vertexArr = subdivided.vertexArr;
-    this.pixCoordArr = subdivided.texCoordArr;
-    this.currentSubdivisions = targetSubdivisions;
-    this.geometryVersion += 1;
-    this.invalidate();
+  getTiledState() {
+    return null;
   }
-  static createSubdividedQuad(subdivisions) {
-    const vertices = [];
-    const texCoords = [];
-    const step = 2 / subdivisions;
-    const texStep = 1 / subdivisions;
-    const pushVertex = (col, row) => {
-      const x = -1 + col * step;
-      const y = 1 - row * step;
-      const u = col * texStep;
-      const v = row * texStep;
-      vertices.push(x, y);
-      texCoords.push(u, v);
-    };
-    for (let row = 0; row < subdivisions; row++) {
-      for (let col = 0; col <= subdivisions; col++) {
-        pushVertex(col, row);
-        pushVertex(col, row + 1);
-      }
-      if (row < subdivisions - 1) {
-        pushVertex(subdivisions, row + 1);
-        pushVertex(0, row + 1);
-      }
+  getSingleImageState() {
+    if (!this.texture || !this.vertexBuffer || !this.pixCoordBuffer) {
+      return null;
     }
     return {
-      vertexArr: new Float32Array(vertices),
-      texCoordArr: new Float32Array(texCoords)
-    };
-  }
-  getRenderData() {
-    return {
-      isMultiscale: false,
-      vertexArr: this.vertexArr,
-      pixCoordArr: this.pixCoordArr,
       singleImage: {
         data: this.data,
         width: this.width,
         height: this.height,
+        channels: this.channels,
         bounds: this.mercatorBounds,
         texture: this.texture,
         vertexBuffer: this.vertexBuffer,
         pixCoordBuffer: this.pixCoordBuffer,
         pixCoordArr: this.pixCoordArr,
-        geometryVersion: this.geometryVersion
-      }
+        geometryVersion: this.geometryVersion,
+        dataVersion: this.dataVersion
+      },
+      vertexArr: this.vertexArr
     };
   }
   dispose(gl) {
@@ -6823,14 +7168,24 @@ var SingleImageDataManager = class _SingleImageDataManager {
   emitLoadingState() {
     if (!this.loadingCallback) return;
     this.loadingCallback({
-      loading: this.isLoadingData,
-      metadata: false,
+      loading: this.metadataLoading || this.isLoadingData,
+      metadata: this.metadataLoading,
       chunks: this.isLoadingData
     });
   }
   async setSelector(selector) {
     this.selector = selector;
     await this.fetchData();
+    this.invalidate();
+  }
+  updateGeometryForProjection(isGlobe) {
+    const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1;
+    if (this.currentSubdivisions === targetSubdivisions) return;
+    const subdivided = createSubdividedQuad(targetSubdivisions);
+    this.vertexArr = subdivided.vertexArr;
+    this.pixCoordArr = subdivided.texCoordArr;
+    this.currentSubdivisions = targetSubdivisions;
+    this.geometryVersion += 1;
     this.invalidate();
   }
   async fetchData() {
@@ -6840,38 +7195,91 @@ var SingleImageDataManager = class _SingleImageDataManager {
     this.isLoadingData = true;
     this.emitLoadingState();
     try {
-      const sliceArgs = new Array(
+      const baseSliceArgs = new Array(
         this.zarrArray.shape.length
       ).fill(0);
+      const multiValueDims = [];
       for (const dimName of Object.keys(this.dimIndices)) {
         const dimInfo = this.dimIndices[dimName];
         if (dimName === "lon") {
-          sliceArgs[dimInfo.index] = slice(0, this.width);
+          baseSliceArgs[dimInfo.index] = slice(0, this.width);
         } else if (dimName === "lat") {
-          sliceArgs[dimInfo.index] = slice(0, this.height);
+          baseSliceArgs[dimInfo.index] = slice(0, this.height);
         } else {
           const dimSelection = selectorSnapshot[dimName];
           if (dimSelection !== void 0) {
             const isObj = typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection;
             const selectionValue = isObj ? dimSelection.selected : dimSelection;
             const selectionType = isObj ? dimSelection.type : void 0;
-            const primaryValue = Array.isArray(selectionValue) ? selectionValue.find(
-              (v) => typeof v === "number" || typeof v === "string"
-            ) : selectionValue;
-            sliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
-              dimName,
-              dimInfo,
-              primaryValue,
-              selectionType
-            );
+            if (Array.isArray(selectionValue) && selectionValue.length > 1) {
+              const resolvedIndices = [];
+              for (const val of selectionValue) {
+                const idx = await this.resolveSelectionIndex(
+                  dimName,
+                  dimInfo,
+                  val,
+                  selectionType
+                );
+                resolvedIndices.push(idx);
+              }
+              multiValueDims.push({
+                dimIndex: dimInfo.index,
+                values: resolvedIndices
+              });
+              baseSliceArgs[dimInfo.index] = resolvedIndices[0];
+            } else {
+              const primaryValue = Array.isArray(selectionValue) ? selectionValue[0] : selectionValue;
+              baseSliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
+                dimName,
+                dimInfo,
+                primaryValue,
+                selectionType
+              );
+            }
           } else {
-            sliceArgs[dimInfo.index] = 0;
+            baseSliceArgs[dimInfo.index] = 0;
           }
         }
       }
-      const data = await get2(this.zarrArray, sliceArgs);
-      if (this.isRemoved || requestId !== this.fetchRequestId) return;
-      this.data = new Float32Array(data.data.buffer);
+      let channelCombinations = [[]];
+      for (const { values } of multiValueDims) {
+        const next = [];
+        for (const combo of channelCombinations) {
+          for (const val of values) {
+            next.push([...combo, val]);
+          }
+        }
+        channelCombinations = next;
+      }
+      const numChannels = channelCombinations.length || 1;
+      this.channels = numChannels;
+      if (numChannels === 1) {
+        const data = await get2(this.zarrArray, baseSliceArgs);
+        if (this.isRemoved || requestId !== this.fetchRequestId) return;
+        this.data = new Float32Array(data.data.buffer);
+        this.dataVersion++;
+      } else {
+        const packedData = new Float32Array(
+          this.width * this.height * numChannels
+        );
+        for (let c = 0; c < numChannels; c++) {
+          const sliceArgs = [...baseSliceArgs];
+          const combo = channelCombinations[c];
+          for (let i = 0; i < multiValueDims.length; i++) {
+            sliceArgs[multiValueDims[i].dimIndex] = combo[i];
+          }
+          const bandData = await get2(this.zarrArray, sliceArgs);
+          if (this.isRemoved || requestId !== this.fetchRequestId) return;
+          const bandArray = new Float32Array(
+            bandData.data.buffer
+          );
+          for (let pixIdx = 0; pixIdx < this.width * this.height; pixIdx++) {
+            packedData[pixIdx * numChannels + c] = bandArray[pixIdx];
+          }
+        }
+        this.data = packedData;
+        this.dataVersion++;
+      }
       this.invalidate();
     } catch (err) {
       console.error("Error fetching single image data:", err);
@@ -6910,269 +7318,6 @@ var SingleImageDataManager = class _SingleImageDataManager {
     return typeof value === "number" ? value : 0;
   }
 };
-
-// src/mapbox-globe-tile-renderer.ts
-var IDENTITY_MATRIX = new Float32Array([
-  1,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  0,
-  0,
-  0,
-  1
-]);
-function renderMapboxTile({
-  renderer,
-  renderData,
-  tileId,
-  colormapTexture,
-  uniforms,
-  tileSize,
-  customShaderConfig,
-  dataManager
-}) {
-  if (!renderData.isMultiscale && renderData.singleImage) {
-    const singleImage = renderData.singleImage;
-    const bounds = singleImage.bounds;
-    if (!bounds) return false;
-    const tileSizeNorm = 1 / 2 ** tileId.z;
-    const tileX0 = tileId.x * tileSizeNorm;
-    const tileX1 = (tileId.x + 1) * tileSizeNorm;
-    const tileY0 = tileId.y * tileSizeNorm;
-    const tileY1 = (tileId.y + 1) * tileSizeNorm;
-    const intersects = bounds.x0 < tileX1 && bounds.x1 > tileX0 && bounds.y0 < tileY1 && bounds.y1 > tileY0;
-    if (!intersects) return false;
-    const overlapX0 = Math.max(bounds.x0, tileX0);
-    const overlapX1 = Math.min(bounds.x1, tileX1);
-    const overlapY0 = Math.max(bounds.y0, tileY0);
-    const overlapY1 = Math.min(bounds.y1, tileY1);
-    const localX0 = (overlapX0 - tileX0) / tileSizeNorm;
-    const localX1 = (overlapX1 - tileX0) / tileSizeNorm;
-    const localY0 = (overlapY0 - tileY0) / tileSizeNorm;
-    const localY1 = (overlapY1 - tileY0) / tileSizeNorm;
-    const clipX0 = localX0 * 2 - 1;
-    const clipX1 = localX1 * 2 - 1;
-    const clipY0 = localY0 * 2 - 1;
-    const clipY1 = localY1 * 2 - 1;
-    const scaleX = (clipX1 - clipX0) / 2;
-    const scaleY = (clipY1 - clipY0) / 2;
-    const shiftX = (clipX0 + clipX1) / 2;
-    const shiftY = (clipY0 + clipY1) / 2;
-    const imgWidth = bounds.x1 - bounds.x0;
-    const imgHeight = bounds.y1 - bounds.y0;
-    const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1;
-    const texScaleY = imgHeight > 0 ? (overlapY1 - overlapY0) / imgHeight : 1;
-    const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0;
-    const texOffsetY = imgHeight > 0 ? (overlapY0 - bounds.y0) / imgHeight : 0;
-    renderer.render({
-      matrix: IDENTITY_MATRIX,
-      colormapTexture,
-      uniforms,
-      worldOffsets: [0],
-      isMultiscale: false,
-      visibleTiles: [],
-      tileSize,
-      vertexArr: renderData.vertexArr || new Float32Array(),
-      pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-      singleImage,
-      customShaderConfig,
-      mapboxGlobe: {
-        projection: { name: "globe" },
-        globeToMercatorMatrix: IDENTITY_MATRIX,
-        transition: 0
-      },
-      mode: {
-        type: "mapboxTile",
-        tileOverride: {
-          scaleX,
-          scaleY,
-          shiftX,
-          shiftY,
-          texScale: [texScaleX, texScaleY],
-          texOffset: [texOffsetX, texOffsetY]
-        }
-      }
-    });
-    return false;
-  }
-  if (!renderData.tileCache) {
-    return true;
-  }
-  const tilesPerSide = 2 ** tileId.z;
-  const mapboxMercX0 = tileId.x / tilesPerSide;
-  const mapboxMercX1 = (tileId.x + 1) / tilesPerSide;
-  const mapboxMercY0 = tileId.y / tilesPerSide;
-  const mapboxMercY1 = (tileId.y + 1) / tilesPerSide;
-  const EPS = 1e-7;
-  const x0 = Math.max(0, mapboxMercX0 + EPS);
-  const x1 = Math.min(1, mapboxMercX1 - EPS);
-  const y0 = Math.max(0, mapboxMercY0 + EPS);
-  const y1 = Math.min(1, mapboxMercY1 - EPS);
-  const width = x1 - x0;
-  const height = y1 - y0;
-  const tileMatrix = new Float32Array([
-    2 / width,
-    0,
-    0,
-    0,
-    0,
-    2 / height,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    -(x0 + x1) / width,
-    -(y0 + y1) / height,
-    0,
-    1
-  ]);
-  const crs = dataManager.getCRS();
-  const xyLimits = dataManager.getXYLimits();
-  const maxZoom = dataManager.getMaxZoom();
-  if (crs === "EPSG:4326" && xyLimits) {
-    const mapboxGeoBounds = mercatorTileToGeoBounds(
-      tileId.z,
-      tileId.x,
-      tileId.y
-    );
-    const pyramidLevel = zoomToLevel(tileId.z, maxZoom);
-    const overlappingZarrTiles = getOverlapping4326Tiles(
-      mapboxGeoBounds,
-      xyLimits,
-      pyramidLevel
-    );
-    if (overlappingZarrTiles.length === 0) {
-      return false;
-    }
-    let anyTileRendered = false;
-    let anyMissing = false;
-    for (const zarrTile of overlappingZarrTiles) {
-      const zarrTileKey = tileToKey(zarrTile);
-      let tileData = renderData.tileCache.get(zarrTileKey);
-      let renderTileKey = zarrTileKey;
-      let renderTileTuple = zarrTile;
-      if (!tileData?.data) {
-        anyMissing = true;
-        const parent = findBestParentTile(
-          renderData.tileCache,
-          zarrTile[0],
-          zarrTile[1],
-          zarrTile[2]
-        );
-        if (!parent) continue;
-        tileData = parent.tile;
-        renderTileTuple = [parent.ancestorZ, parent.ancestorX, parent.ancestorY];
-        renderTileKey = tileToKey(renderTileTuple);
-      }
-      const [z, tx, ty] = renderTileTuple;
-      const zarrGeoBounds = get4326TileGeoBounds(z, tx, ty, xyLimits);
-      const zarrMercX0 = lonToMercatorNorm(zarrGeoBounds.west);
-      const zarrMercX1 = lonToMercatorNorm(zarrGeoBounds.east);
-      const zarrMercY0 = latToMercatorNorm(zarrGeoBounds.north);
-      const zarrMercY1 = latToMercatorNorm(zarrGeoBounds.south);
-      const overlapX0 = Math.max(zarrMercX0, mapboxMercX0);
-      const overlapX1 = Math.min(zarrMercX1, mapboxMercX1);
-      const overlapY0 = Math.max(zarrMercY0, mapboxMercY0);
-      const overlapY1 = Math.min(zarrMercY1, mapboxMercY1);
-      if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) continue;
-      const zarrLonWidth = zarrGeoBounds.east - zarrGeoBounds.west;
-      const overlapWest = mercatorNormToLon(overlapX0);
-      const overlapEast = mercatorNormToLon(overlapX1);
-      const texScaleX = zarrLonWidth > 0 ? (overlapEast - overlapWest) / zarrLonWidth : 1;
-      const texOffsetX = zarrLonWidth > 0 ? (overlapWest - zarrGeoBounds.west) / zarrLonWidth : 0;
-      const texScaleY = 1;
-      const texOffsetY = 0;
-      const tileBoundsForRender = {
-        [renderTileKey]: {
-          x0: overlapX0,
-          y0: overlapY0,
-          x1: overlapX1,
-          y1: overlapY1,
-          latMin: zarrGeoBounds.south,
-          latMax: zarrGeoBounds.north
-        }
-      };
-      renderer.render({
-        matrix: tileMatrix,
-        colormapTexture,
-        uniforms,
-        worldOffsets: [0],
-        isMultiscale: true,
-        visibleTiles: [renderTileTuple],
-        tileCache: renderData.tileCache,
-        tileSize,
-        vertexArr: renderData.vertexArr || new Float32Array(),
-        pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-        tileBounds: tileBoundsForRender,
-        singleImage: renderData.singleImage,
-        customShaderConfig,
-        mapboxGlobe: {
-          projection: { name: "globe" },
-          globeToMercatorMatrix: IDENTITY_MATRIX,
-          transition: 0
-        },
-        mode: {
-          type: "mapboxTile",
-          tileTexOverrides: {
-            [renderTileKey]: {
-              texScale: [texScaleX, texScaleY],
-              texOffset: [texOffsetX, texOffsetY]
-            }
-          }
-        }
-      });
-      anyTileRendered = true;
-    }
-    return anyMissing || !anyTileRendered;
-  }
-  const tileTuple = [tileId.z, tileId.x, tileId.y];
-  const tileKey = tileTuple.join(",");
-  const boundsForTile = renderData.tileBounds?.[tileKey];
-  const tileBoundsOverride = {
-    [tileKey]: {
-      x0: mapboxMercX0,
-      y0: mapboxMercY0,
-      x1: mapboxMercX1,
-      y1: mapboxMercY1,
-      latMin: boundsForTile?.latMin,
-      latMax: boundsForTile?.latMax
-    }
-  };
-  renderer.render({
-    matrix: tileMatrix,
-    colormapTexture,
-    uniforms,
-    worldOffsets: [0],
-    isMultiscale: renderData.isMultiscale,
-    visibleTiles: [tileTuple],
-    tileCache: renderData.tileCache,
-    tileSize,
-    vertexArr: renderData.vertexArr || new Float32Array(),
-    pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-    tileBounds: tileBoundsOverride,
-    singleImage: renderData.singleImage,
-    customShaderConfig,
-    mapboxGlobe: {
-      projection: { name: "globe" },
-      globeToMercatorMatrix: IDENTITY_MATRIX,
-      transition: 0
-    },
-    mode: { type: "mapboxTile" }
-  });
-  const tileHasData = renderData.tileCache.get(tileKey)?.data;
-  return !tileHasData;
-}
 
 // src/render-utils.ts
 function resolveProjectionParams(params, projection, projectionToMercatorMatrix, projectionToMercatorTransition) {
@@ -7228,7 +7373,6 @@ function computeWorldOffsets(map, isGlobe) {
 }
 
 // src/zarr-layer.ts
-var DEFAULT_TILE_SIZE2 = 128;
 var ZarrLayer = class {
   constructor({
     id,
@@ -7250,14 +7394,13 @@ var ZarrLayer = class {
     this.type = "custom";
     this.zarrVersion = null;
     this.selectorHash = "";
-    this.tileSize = DEFAULT_TILE_SIZE2;
     this.isMultiscale = true;
     this.fillValue = null;
     this.scaleFactor = 1;
     this.offset = 0;
     this.map = null;
     this.renderer = null;
-    this.dataManager = null;
+    this.mode = null;
     this.tileNeedsRender = true;
     this.projectionChangeHandler = null;
     this.zarrStore = null;
@@ -7367,12 +7510,24 @@ var ZarrLayer = class {
     this.invalidate();
   }
   async setVariable(variable) {
-    this.variable = variable;
-    if (this.zarrStore) {
-      this.zarrStore.variable = variable;
+    if (variable === this.variable) return;
+    this.metadataLoading = true;
+    this.emitLoadingState();
+    try {
+      this.variable = variable;
+      if (this.zarrStore) {
+        this.zarrStore.cleanup();
+        this.zarrStore = null;
+      }
+      this.dimensionValues = {};
+      this.fillValue = null;
+      await this.initialize();
+      await this.initializeMode();
+      this.invalidate();
+    } finally {
+      this.metadataLoading = false;
+      this.emitLoadingState();
     }
-    await this.initializeManager();
-    this.invalidate();
   }
   async setSelector(selector) {
     const nextHash = this.computeSelectorHash(selector);
@@ -7394,8 +7549,8 @@ var ZarrLayer = class {
     } else {
       this.customShaderConfig = null;
     }
-    if (this.dataManager) {
-      await this.dataManager.setSelector(selector);
+    if (this.mode) {
+      await this.mode.setSelector(selector);
     }
     this.invalidate();
   }
@@ -7417,7 +7572,7 @@ var ZarrLayer = class {
       );
       this.projectionChangeHandler = () => {
         const isGlobe2 = this.isGlobeProjection();
-        this.dataManager?.onProjectionChange(isGlobe2);
+        this.mode?.onProjectionChange(isGlobe2);
         this.renderer?.resetSingleImageGeometry();
       };
       if (typeof map.on === "function" && this.projectionChangeHandler) {
@@ -7425,10 +7580,10 @@ var ZarrLayer = class {
         map.on("style.load", this.projectionChangeHandler);
       }
       await this.initialize();
-      await this.initializeManager();
+      await this.initializeMode();
       const isGlobe = this.isGlobeProjection();
-      this.dataManager?.onProjectionChange(isGlobe);
-      this.dataManager?.update(this.map, this.gl);
+      this.mode?.onProjectionChange(isGlobe);
+      this.mode?.update(this.map, this.gl);
     } finally {
       this.metadataLoading = false;
       this.emitLoadingState();
@@ -7438,13 +7593,13 @@ var ZarrLayer = class {
   computeSelectorHash(selector) {
     return JSON.stringify(selector, Object.keys(selector).sort());
   }
-  async initializeManager() {
+  async initializeMode() {
     if (!this.zarrStore || !this.gl) return;
-    if (this.dataManager) {
-      this.dataManager.dispose(this.gl);
+    if (this.mode) {
+      this.mode.dispose(this.gl);
     }
     if (this.isMultiscale) {
-      this.dataManager = new TiledDataManager(
+      this.mode = new TiledMode(
         this.zarrStore,
         this.variable,
         this.selector,
@@ -7452,17 +7607,17 @@ var ZarrLayer = class {
         this.invalidate
       );
     } else {
-      this.dataManager = new SingleImageDataManager(
+      this.mode = new SingleImageMode(
         this.zarrStore,
         this.variable,
         this.selector,
         this.invalidate
       );
     }
-    this.dataManager.setLoadingCallback(this.handleChunkLoadingChange);
-    await this.dataManager.initialize();
+    this.mode.setLoadingCallback(this.handleChunkLoadingChange);
+    await this.mode.initialize();
     if (this.map && this.gl) {
-      this.dataManager.update(this.map, this.gl);
+      this.mode.update(this.map, this.gl);
     }
   }
   async initialize() {
@@ -7480,12 +7635,21 @@ var ZarrLayer = class {
       this.dimIndices = desc.dimIndices;
       this.scaleFactor = desc.scaleFactor;
       this.offset = desc.addOffset;
-      this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE2;
       if (this.fillValue === null && desc.fill_value !== null && desc.fill_value !== void 0) {
         this.fillValue = desc.fill_value;
       }
       this.isMultiscale = this.levelInfos.length > 0;
       await this.loadInitialDimensionValues();
+      this.bandNames = getBands(this.variable, this.selector);
+      if (this.bandNames.length > 1 || this.customFrag) {
+        this.customShaderConfig = {
+          bands: this.bandNames,
+          customFrag: this.customFrag,
+          customUniforms: this.customUniforms
+        };
+      } else {
+        this.customShaderConfig = null;
+      }
     } catch (err) {
       console.error("Failed to initialize Zarr layer:", err);
       throw err;
@@ -7517,11 +7681,11 @@ var ZarrLayer = class {
     }
   }
   prerender(_gl, _params) {
-    if (this.isRemoved || !this.gl || !this.dataManager || !this.map) return;
-    this.dataManager.update(this.map, this.gl);
+    if (this.isRemoved || !this.gl || !this.mode || !this.map) return;
+    this.mode.update(this.map, this.gl);
   }
   render(_gl, params, projection, projectionToMercatorMatrix, projectionToMercatorTransition, _centerInMercator, _pixelsPerMeterRatio) {
-    if (this.isRemoved || !this.renderer || !this.gl || !this.dataManager || !this.map) {
+    if (this.isRemoved || !this.renderer || !this.gl || !this.mode || !this.map) {
       return;
     }
     const projectionParams = resolveProjectionParams(
@@ -7536,60 +7700,47 @@ var ZarrLayer = class {
     const isGlobe = this.isGlobeProjection();
     const worldOffsets = computeWorldOffsets(this.map, isGlobe);
     const colormapTexture = this.colormap.ensureTexture(this.gl);
-    const uniforms = {
-      clim: this.clim,
-      opacity: this.opacity,
-      fillValue: this.fillValue,
-      scaleFactor: this.scaleFactor,
-      offset: this.offset
-    };
-    const renderData = this.dataManager.getRenderData();
-    this.renderer.render({
+    const context = {
+      gl: this.gl,
       matrix: projectionParams.matrix,
+      uniforms: {
+        clim: this.clim,
+        opacity: this.opacity,
+        fillValue: this.fillValue,
+        scaleFactor: this.scaleFactor,
+        offset: this.offset
+      },
       colormapTexture,
-      uniforms,
       worldOffsets,
-      isMultiscale: renderData.isMultiscale,
-      visibleTiles: renderData.visibleTiles || [],
-      tileCache: renderData.tileCache,
-      tileSize: renderData.tileSize || this.tileSize,
-      vertexArr: renderData.vertexArr || new Float32Array(),
-      pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-      tileBounds: renderData.tileBounds,
-      singleImage: renderData.singleImage,
+      customShaderConfig: this.customShaderConfig || void 0,
       shaderData: projectionParams.shaderData,
       projectionData: projectionParams.projectionData,
-      customShaderConfig: this.customShaderConfig || void 0,
-      mapboxGlobe: projectionParams.mapboxGlobe,
-      mode: { type: "standard" }
-    });
+      mapboxGlobe: projectionParams.mapboxGlobe
+    };
+    this.mode.render(this.renderer, context);
     this.tileNeedsRender = false;
   }
-  // Mapbox globe draping path
   renderToTile(_gl, tileId) {
-    if (this.isRemoved || !this.renderer || !this.gl || !this.dataManager || !this.map) {
+    if (this.isRemoved || !this.renderer || !this.gl || !this.mode || !this.map) {
       return;
     }
-    this.dataManager.update(this.map, this.gl);
-    const renderData = this.dataManager.getRenderData();
+    this.mode.update(this.map, this.gl);
     const colormapTexture = this.colormap.ensureTexture(this.gl);
-    const uniforms = {
-      clim: this.clim,
-      opacity: this.opacity,
-      fillValue: this.fillValue,
-      scaleFactor: this.scaleFactor,
-      offset: this.offset
-    };
-    this.tileNeedsRender = renderMapboxTile({
-      renderer: this.renderer,
-      renderData,
-      tileId,
+    const context = {
+      gl: this.gl,
+      matrix: new Float32Array(16),
+      uniforms: {
+        clim: this.clim,
+        opacity: this.opacity,
+        fillValue: this.fillValue,
+        scaleFactor: this.scaleFactor,
+        offset: this.offset
+      },
       colormapTexture,
-      uniforms,
-      tileSize: renderData.tileSize || this.tileSize,
-      customShaderConfig: this.customShaderConfig || void 0,
-      dataManager: this.dataManager
-    });
+      worldOffsets: [0],
+      customShaderConfig: this.customShaderConfig || void 0
+    };
+    this.tileNeedsRender = this.mode.renderToTile?.(this.renderer, tileId, context) ?? false;
   }
   // Mapbox specific custom layer method required to trigger rerender on eg dataset update.
   shouldRerenderTiles() {
@@ -7602,8 +7753,8 @@ var ZarrLayer = class {
     this.renderer?.dispose();
     this.renderer = null;
     this.colormap.dispose(gl);
-    this.dataManager?.dispose(gl);
-    this.dataManager = null;
+    this.mode?.dispose(gl);
+    this.mode = null;
     if (this.zarrStore) {
       this.zarrStore.cleanup();
       this.zarrStore = null;

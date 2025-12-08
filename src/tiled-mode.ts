@@ -1,4 +1,9 @@
-import { DataManager, RenderData } from './data-manager'
+import type {
+  ZarrMode,
+  RenderContext,
+  TileId,
+  TiledRenderState,
+} from './zarr-mode'
 import type {
   LoadingStateCallback,
   MapLike,
@@ -23,12 +28,16 @@ import {
   type XYLimits,
 } from './map-utils'
 import { getBands, toSelectorProps } from './zarr-utils'
+import { createSubdividedQuad } from './webgl-utils'
+import {
+  DEFAULT_TILE_SIZE,
+  MAX_CACHED_TILES,
+  TILE_SUBDIVISIONS,
+} from './constants'
+import type { ZarrRenderer } from './zarr-renderer'
+import { renderMapboxTile } from './mapbox-globe-tile-renderer'
 
-const DEFAULT_TILE_SIZE = 128
-const MAX_CACHED_TILES = 64
-const TILE_SUBDIVISIONS = 32
-
-export class TiledDataManager implements DataManager {
+export class TiledMode implements ZarrMode {
   isMultiscale: true = true
   private tileCache: TileRenderCache | null = null
   private tilesManager: Tiles | null = null
@@ -70,33 +79,39 @@ export class TiledDataManager implements DataManager {
     this.minRenderZoom = minRenderZoom
     this.invalidate = invalidate
 
-    // Initialize selectors
     for (const [dimName, value] of Object.entries(selector)) {
       this.selectors[dimName] = toSelectorProps(value)
     }
   }
 
   async initialize(): Promise<void> {
-    const desc = this.zarrStore.describe()
-    this.maxZoom = desc.levels.length - 1
-    this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE
-    this.crs = desc.crs
-    this.xyLimits = desc.xyLimits
+    this.metadataLoading = true
+    this.emitLoadingState()
 
-    const bandNames = getBands(this.variable, this.selector)
+    try {
+      const desc = this.zarrStore.describe()
+      this.maxZoom = desc.levels.length - 1
+      this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE
+      this.crs = desc.crs
+      this.xyLimits = desc.xyLimits
 
-    this.tilesManager = new Tiles({
-      store: this.zarrStore,
-      selectors: this.selectors,
-      fillValue: desc.fill_value ?? 0,
-      dimIndices: desc.dimIndices,
-      coordinates: desc.coordinates,
-      maxCachedTiles: MAX_CACHED_TILES,
-      bandNames,
-    })
+      const bandNames = getBands(this.variable, this.selector)
 
-    // Initialize geometry
-    this.updateGeometryForProjection(false)
+      this.tilesManager = new Tiles({
+        store: this.zarrStore,
+        selectors: this.selectors,
+        fillValue: desc.fill_value ?? 0,
+        dimIndices: desc.dimIndices,
+        coordinates: desc.coordinates,
+        maxCachedTiles: MAX_CACHED_TILES,
+        bandNames,
+      })
+
+      this.updateGeometryForProjection(false)
+    } finally {
+      this.metadataLoading = false
+      this.emitLoadingState()
+    }
   }
 
   update(map: MapLike, gl: WebGL2RenderingContext): void {
@@ -134,26 +149,87 @@ export class TiledDataManager implements DataManager {
       if (wasEmpty) {
         this.emitLoadingState()
       }
-      this.prefetchTileData(tilesToFetch, currentHash)
+      this.prefetchTileData(tilesToFetch, currentHash).catch((err) => {
+        console.error('Error prefetching tile data:', err)
+        for (const tileTuple of tilesToFetch) {
+          this.pendingChunks.delete(tileToKey(tileTuple))
+        }
+        this.emitLoadingState()
+      })
     }
+  }
+
+  render(renderer: ZarrRenderer, context: RenderContext): void {
+    if (!this.tileCache) {
+      return
+    }
+
+    const isMapboxTile = !!context.mapboxGlobe
+    const shaderProgram = renderer.getProgram(
+      context.shaderData,
+      context.customShaderConfig,
+      isMapboxTile
+    )
+
+    renderer.gl.useProgram(shaderProgram.program)
+
+    renderer.applyCommonUniforms(
+      shaderProgram,
+      context.colormapTexture,
+      context.uniforms,
+      context.customShaderConfig,
+      context.projectionData,
+      context.mapboxGlobe,
+      context.matrix,
+      false
+    )
+
+    renderer.renderTiles(
+      shaderProgram,
+      this.visibleTiles,
+      context.worldOffsets,
+      this.tileCache,
+      this.tileSize,
+      this.vertexArr,
+      this.pixCoordArr,
+      Object.keys(this.tileBounds).length > 0 ? this.tileBounds : undefined,
+      context.customShaderConfig,
+      false
+    )
+  }
+
+  renderToTile(
+    renderer: ZarrRenderer,
+    tileId: TileId,
+    context: RenderContext
+  ): boolean {
+    return renderMapboxTile({
+      renderer,
+      mode: this,
+      tileId,
+      context,
+    })
   }
 
   onProjectionChange(isGlobe: boolean) {
     this.updateGeometryForProjection(isGlobe)
   }
 
-  getRenderData(): RenderData {
+  getTiledState(): TiledRenderState | null {
+    if (!this.tileCache) return null
     return {
-      isMultiscale: true,
-      tileCache: this.tileCache ?? undefined,
+      tileCache: this.tileCache,
       visibleTiles: this.visibleTiles,
       tileSize: this.tileSize,
       vertexArr: this.vertexArr,
       pixCoordArr: this.pixCoordArr,
       tileBounds:
         Object.keys(this.tileBounds).length > 0 ? this.tileBounds : undefined,
-      singleImage: undefined,
     }
+  }
+
+  getSingleImageState() {
+    return null
   }
 
   dispose(gl: WebGL2RenderingContext): void {
@@ -204,7 +280,6 @@ export class TiledDataManager implements DataManager {
     this.tilesManager?.updateSelector(this.selectors)
     this.tilesManager?.updateBandNames(bandNames)
 
-    // Optimistically update existing visible tiles if possible
     if (this.tilesManager && this.visibleTiles.length > 0) {
       const currentHash = JSON.stringify(this.selector)
       await this.tilesManager.reextractTileSlices(
@@ -212,7 +287,6 @@ export class TiledDataManager implements DataManager {
         currentHash
       )
 
-      // Update cache
       for (const tileTuple of this.visibleTiles) {
         const tileKey = tileToKey(tileTuple)
         const tile = this.tileCache?.get(tileKey)
@@ -230,51 +304,15 @@ export class TiledDataManager implements DataManager {
     this.invalidate()
   }
 
-  // Helpers
   private updateGeometryForProjection(isGlobe: boolean) {
     const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1
     if (this.currentSubdivisions === targetSubdivisions) return
 
-    const subdivided = TiledDataManager.createSubdividedQuad(targetSubdivisions)
+    const subdivided = createSubdividedQuad(targetSubdivisions)
     this.vertexArr = subdivided.vertexArr
     this.pixCoordArr = subdivided.texCoordArr
     this.currentSubdivisions = targetSubdivisions
     this.tileCache?.markGeometryDirty()
-  }
-
-  private static createSubdividedQuad(subdivisions: number): {
-    vertexArr: Float32Array
-    texCoordArr: Float32Array
-  } {
-    const vertices: number[] = []
-    const texCoords: number[] = []
-    const step = 2 / subdivisions
-    const texStep = 1 / subdivisions
-
-    const pushVertex = (col: number, row: number) => {
-      const x = -1 + col * step
-      const y = 1 - row * step
-      const u = col * texStep
-      const v = row * texStep
-      vertices.push(x, y)
-      texCoords.push(u, v)
-    }
-
-    for (let row = 0; row < subdivisions; row++) {
-      for (let col = 0; col <= subdivisions; col++) {
-        pushVertex(col, row)
-        pushVertex(col, row + 1)
-      }
-      if (row < subdivisions - 1) {
-        pushVertex(subdivisions, row + 1)
-        pushVertex(0, row + 1)
-      }
-    }
-
-    return {
-      vertexArr: new Float32Array(vertices),
-      texCoordArr: new Float32Array(texCoords),
-    }
   }
 
   private getVisibleTilesWithContext(map: MapLike): {
@@ -315,7 +353,7 @@ export class TiledDataManager implements DataManager {
   private computeTileBounds(
     tiles: TileTuple[]
   ): Record<string, MercatorBounds> {
-    if (this.crs !== 'EPSG:4326') return {}
+    if (this.crs !== 'EPSG:4326' || !this.xyLimits) return {}
 
     const { xMin, xMax, yMin, yMax } = normalizeGlobalExtent(this.xyLimits)
     const lonExtent = xMax - xMin

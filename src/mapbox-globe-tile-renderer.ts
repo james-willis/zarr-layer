@@ -10,9 +10,8 @@ import {
   zoomToLevel,
   type TileTuple,
 } from './map-utils'
-import type { DataManager, RenderData } from './data-manager'
 import type { ZarrRenderer } from './zarr-renderer'
-import type { CustomShaderConfig, RendererUniforms } from './renderer-types'
+import type { ZarrMode, RenderContext, TileId } from './zarr-mode'
 
 const IDENTITY_MATRIX = new Float32Array([
   1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
@@ -20,28 +19,22 @@ const IDENTITY_MATRIX = new Float32Array([
 
 interface MapboxTileRenderParams {
   renderer: ZarrRenderer
-  renderData: RenderData
-  tileId: { z: number; x: number; y: number }
-  colormapTexture: WebGLTexture
-  uniforms: RendererUniforms
-  tileSize: number
-  customShaderConfig?: CustomShaderConfig
-  dataManager: DataManager
+  mode: ZarrMode
+  tileId: TileId
+  context: RenderContext
 }
 
 export function renderMapboxTile({
   renderer,
-  renderData,
+  mode,
   tileId,
-  colormapTexture,
-  uniforms,
-  tileSize,
-  customShaderConfig,
-  dataManager,
+  context,
 }: MapboxTileRenderParams): boolean {
-  // Single image path: render the portion of the image that overlaps with this tile
-  if (!renderData.isMultiscale && renderData.singleImage) {
-    const singleImage = renderData.singleImage
+  const { colormapTexture, uniforms, customShaderConfig } = context
+
+  const singleImageState = mode.getSingleImageState?.()
+  if (!mode.isMultiscale && singleImageState) {
+    const { singleImage, vertexArr } = singleImageState
     const bounds = singleImage.bounds
     if (!bounds) return false
 
@@ -86,42 +79,45 @@ export function renderMapboxTile({
     const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0
     const texOffsetY = imgHeight > 0 ? (overlapY0 - bounds.y0) / imgHeight : 0
 
-    renderer.render({
-      matrix: IDENTITY_MATRIX,
+    const shaderProgram = renderer.getProgram(
+      context.shaderData,
+      customShaderConfig,
+      true
+    )
+    renderer.gl.useProgram(shaderProgram.program)
+    renderer.applyCommonUniforms(
+      shaderProgram,
       colormapTexture,
       uniforms,
-      worldOffsets: [0],
-      isMultiscale: false,
-      visibleTiles: [],
-      tileSize,
-      vertexArr: renderData.vertexArr || new Float32Array(),
-      pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-      singleImage: singleImage,
       customShaderConfig,
-      mapboxGlobe: {
+      context.projectionData,
+      {
         projection: { name: 'globe' },
         globeToMercatorMatrix: IDENTITY_MATRIX,
         transition: 0,
       },
-      mode: {
-        type: 'mapboxTile',
-        tileOverride: {
-          scaleX,
-          scaleY,
-          shiftX,
-          shiftY,
-          texScale: [texScaleX, texScaleY],
-          texOffset: [texOffsetX, texOffsetY],
-        },
-      },
+      IDENTITY_MATRIX,
+      true
+    )
+
+    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
+      scaleX,
+      scaleY,
+      shiftX,
+      shiftY,
+      texScale: [texScaleX, texScaleY],
+      texOffset: [texOffsetX, texOffsetY],
     })
 
     return false
   }
 
-  if (!renderData.tileCache) {
+  const tiledState = mode.getTiledState?.()
+  if (!tiledState?.tileCache) {
     return true
   }
+
+  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState
 
   const tilesPerSide = 2 ** tileId.z
   const mapboxMercX0 = tileId.x / tilesPerSide
@@ -155,9 +151,9 @@ export function renderMapboxTile({
     1,
   ])
 
-  const crs = dataManager.getCRS()
-  const xyLimits = dataManager.getXYLimits()
-  const maxZoom = dataManager.getMaxZoom()
+  const crs = mode.getCRS()
+  const xyLimits = mode.getXYLimits()
+  const maxZoom = mode.getMaxZoom()
 
   if (crs === 'EPSG:4326' && xyLimits) {
     const mapboxGeoBounds = mercatorTileToGeoBounds(
@@ -176,17 +172,24 @@ export function renderMapboxTile({
       return false
     }
 
+    const shaderProgram = renderer.getProgram(
+      context.shaderData,
+      customShaderConfig,
+      true
+    )
+    renderer.gl.useProgram(shaderProgram.program)
+
     let anyTileRendered = false
     let anyMissing = false
     for (const zarrTile of overlappingZarrTiles) {
       const zarrTileKey = tileToKey(zarrTile)
-      let tileData = renderData.tileCache.get(zarrTileKey)
+      let tileData = tileCache.get(zarrTileKey)
       let renderTileKey = zarrTileKey
       let renderTileTuple: TileTuple = zarrTile
       if (!tileData?.data) {
         anyMissing = true
         const parent = findBestParentTile(
-          renderData.tileCache,
+          tileCache,
           zarrTile[0],
           zarrTile[1],
           zarrTile[2]
@@ -233,35 +236,39 @@ export function renderMapboxTile({
         },
       }
 
-      renderer.render({
-        matrix: tileMatrix,
+      renderer.applyCommonUniforms(
+        shaderProgram,
         colormapTexture,
         uniforms,
-        worldOffsets: [0],
-        isMultiscale: true,
-        visibleTiles: [renderTileTuple],
-        tileCache: renderData.tileCache,
-        tileSize,
-        vertexArr: renderData.vertexArr || new Float32Array(),
-        pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-        tileBounds: tileBoundsForRender,
-        singleImage: renderData.singleImage,
         customShaderConfig,
-        mapboxGlobe: {
+        context.projectionData,
+        {
           projection: { name: 'globe' },
           globeToMercatorMatrix: IDENTITY_MATRIX,
           transition: 0,
         },
-        mode: {
-          type: 'mapboxTile',
-          tileTexOverrides: {
-            [renderTileKey]: {
-              texScale: [texScaleX, texScaleY],
-              texOffset: [texOffsetX, texOffsetY],
-            },
+        tileMatrix,
+        true
+      )
+
+      renderer.renderTiles(
+        shaderProgram,
+        [renderTileTuple],
+        [0],
+        tileCache,
+        tileSize,
+        vertexArr,
+        pixCoordArr,
+        tileBoundsForRender,
+        customShaderConfig,
+        true,
+        {
+          [renderTileKey]: {
+            texScale: [texScaleX, texScaleY],
+            texOffset: [texOffsetX, texOffsetY],
           },
-        },
-      })
+        }
+      )
 
       anyTileRendered = true
     }
@@ -272,7 +279,7 @@ export function renderMapboxTile({
   const tileTuple: TileTuple = [tileId.z, tileId.x, tileId.y]
   const tileKey = tileTuple.join(',')
 
-  const boundsForTile = renderData.tileBounds?.[tileKey]
+  const boundsForTile = tileBounds?.[tileKey]
   const tileBoundsOverride = {
     [tileKey]: {
       x0: mapboxMercX0,
@@ -284,28 +291,41 @@ export function renderMapboxTile({
     },
   }
 
-  renderer.render({
-    matrix: tileMatrix,
+  const shaderProgram = renderer.getProgram(
+    context.shaderData,
+    customShaderConfig,
+    true
+  )
+  renderer.gl.useProgram(shaderProgram.program)
+
+  renderer.applyCommonUniforms(
+    shaderProgram,
     colormapTexture,
     uniforms,
-    worldOffsets: [0],
-    isMultiscale: renderData.isMultiscale,
-    visibleTiles: [tileTuple],
-    tileCache: renderData.tileCache,
-    tileSize,
-    vertexArr: renderData.vertexArr || new Float32Array(),
-    pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-    tileBounds: tileBoundsOverride,
-    singleImage: renderData.singleImage,
     customShaderConfig,
-    mapboxGlobe: {
+    context.projectionData,
+    {
       projection: { name: 'globe' },
       globeToMercatorMatrix: IDENTITY_MATRIX,
       transition: 0,
     },
-    mode: { type: 'mapboxTile' },
-  })
+    tileMatrix,
+    true
+  )
 
-  const tileHasData = renderData.tileCache.get(tileKey)?.data
+  renderer.renderTiles(
+    shaderProgram,
+    [tileTuple],
+    [0],
+    tileCache,
+    tileSize,
+    vertexArr,
+    pixCoordArr,
+    tileBoundsOverride,
+    customShaderConfig,
+    true
+  )
+
+  const tileHasData = tileCache.get(tileKey)?.data
   return !tileHasData
 }

@@ -1,12 +1,21 @@
 import * as zarr from 'zarrita'
-import { DataManager, RenderData } from './data-manager'
+import type {
+  ZarrMode,
+  RenderContext,
+  TileId,
+  SingleImageRenderState,
+} from './zarr-mode'
 import { ZarrStore } from './zarr-store'
 import {
   boundsToMercatorNorm,
   MercatorBounds,
   type XYLimits as MapXYLimits,
 } from './map-utils'
-import { mustCreateBuffer, mustCreateTexture } from './webgl-utils'
+import {
+  mustCreateBuffer,
+  mustCreateTexture,
+  createSubdividedQuad,
+} from './webgl-utils'
 import type {
   CRS,
   DimIndicesProps,
@@ -16,14 +25,16 @@ import type {
   ZarrSelectorsProps,
 } from './types'
 import { calculateNearestIndex, loadDimensionValues } from './zarr-utils'
+import { TILE_SUBDIVISIONS } from './constants'
+import type { ZarrRenderer } from './zarr-renderer'
+import { renderMapboxTile } from './mapbox-globe-tile-renderer'
 
-const TILE_SUBDIVISIONS = 16
-
-export class SingleImageDataManager implements DataManager {
+export class SingleImageMode implements ZarrMode {
   isMultiscale: false = false
   private data: Float32Array | null = null
   private width: number = 0
   private height: number = 0
+  private channels: number = 1
   private texture: WebGLTexture | null = null
   private vertexBuffer: WebGLBuffer | null = null
   private pixCoordBuffer: WebGLBuffer | null = null
@@ -32,6 +43,7 @@ export class SingleImageDataManager implements DataManager {
   private pixCoordArr: Float32Array = new Float32Array()
   private currentSubdivisions: number = 0
   private geometryVersion: number = 0
+  private dataVersion: number = 0
 
   private mercatorBounds: MercatorBounds | null = null
   private zarrStore: ZarrStore
@@ -48,6 +60,7 @@ export class SingleImageDataManager implements DataManager {
   private isRemoved: boolean = false
   private loadingCallback: LoadingStateCallback | undefined
   private isLoadingData: boolean = false
+  private metadataLoading: boolean = false
   private fetchRequestId: number = 0
   private dimensionValues: { [key: string]: Float64Array | number[] } = {}
 
@@ -67,23 +80,30 @@ export class SingleImageDataManager implements DataManager {
   }
 
   async initialize(): Promise<void> {
-    const desc = this.zarrStore.describe()
-    this.dimIndices = desc.dimIndices
-    this.crs = desc.crs
-    this.xyLimits = desc.xyLimits
+    this.metadataLoading = true
+    this.emitLoadingState()
 
-    this.zarrArray = await this.zarrStore.getArray()
-    this.width = this.zarrArray.shape[this.dimIndices.lon.index]
-    this.height = this.zarrArray.shape[this.dimIndices.lat.index]
+    try {
+      const desc = this.zarrStore.describe()
+      this.dimIndices = desc.dimIndices
+      this.crs = desc.crs
+      this.xyLimits = desc.xyLimits
 
-    if (this.xyLimits) {
-      this.mercatorBounds = boundsToMercatorNorm(this.xyLimits, this.crs)
-    } else {
-      console.warn('SingleImageDataManager: No XY limits found')
+      this.zarrArray = await this.zarrStore.getArray()
+      this.width = this.zarrArray.shape[this.dimIndices.lon.index]
+      this.height = this.zarrArray.shape[this.dimIndices.lat.index]
+
+      if (this.xyLimits) {
+        this.mercatorBounds = boundsToMercatorNorm(this.xyLimits, this.crs)
+      } else {
+        console.warn('SingleImageMode: No XY limits found')
+      }
+
+      this.updateGeometryForProjection(false)
+    } finally {
+      this.metadataLoading = false
+      this.emitLoadingState()
     }
-
-    // Initialize with standard quad (will be updated by onProjectionChange usually)
-    this.updateGeometryForProjection(false)
   }
 
   update(map: MapLike, gl: WebGL2RenderingContext): void {
@@ -108,78 +128,78 @@ export class SingleImageDataManager implements DataManager {
     }
   }
 
+  render(renderer: ZarrRenderer, context: RenderContext): void {
+    const singleImageState = this.getSingleImageState()
+    if (!singleImageState) return
+
+    const isMapboxTile = !!context.mapboxGlobe
+    const shaderProgram = renderer.getProgram(
+      context.shaderData,
+      context.customShaderConfig,
+      isMapboxTile
+    )
+
+    renderer.gl.useProgram(shaderProgram.program)
+
+    renderer.applyCommonUniforms(
+      shaderProgram,
+      context.colormapTexture,
+      context.uniforms,
+      context.customShaderConfig,
+      context.projectionData,
+      context.mapboxGlobe,
+      context.matrix,
+      false
+    )
+
+    renderer.renderSingleImage(
+      shaderProgram,
+      context.worldOffsets,
+      singleImageState.singleImage,
+      singleImageState.vertexArr
+    )
+  }
+
+  renderToTile(
+    renderer: ZarrRenderer,
+    tileId: TileId,
+    context: RenderContext
+  ): boolean {
+    return renderMapboxTile({
+      renderer,
+      mode: this,
+      tileId,
+      context,
+    })
+  }
+
   onProjectionChange(isGlobe: boolean): void {
     this.updateGeometryForProjection(isGlobe)
   }
 
-  private updateGeometryForProjection(isGlobe: boolean) {
-    const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1
-    if (this.currentSubdivisions === targetSubdivisions) return
-
-    const subdivided =
-      SingleImageDataManager.createSubdividedQuad(targetSubdivisions)
-    this.vertexArr = subdivided.vertexArr
-    this.pixCoordArr = subdivided.texCoordArr
-    this.currentSubdivisions = targetSubdivisions
-    this.geometryVersion += 1
-    this.invalidate()
-
-    // We rely on ZarrLayer/Renderer to handle buffer update signalling via resetSingleImageGeometry()
-    // But since SingleImageDataManager doesn't own the renderer, it just provides updated arrays.
+  getTiledState() {
+    return null
   }
 
-  private static createSubdividedQuad(subdivisions: number): {
-    vertexArr: Float32Array
-    texCoordArr: Float32Array
-  } {
-    const vertices: number[] = []
-    const texCoords: number[] = []
-    const step = 2 / subdivisions
-    const texStep = 1 / subdivisions
-
-    const pushVertex = (col: number, row: number) => {
-      const x = -1 + col * step
-      const y = 1 - row * step
-      const u = col * texStep
-      const v = row * texStep
-      vertices.push(x, y)
-      texCoords.push(u, v)
+  getSingleImageState(): SingleImageRenderState | null {
+    if (!this.texture || !this.vertexBuffer || !this.pixCoordBuffer) {
+      return null
     }
-
-    for (let row = 0; row < subdivisions; row++) {
-      for (let col = 0; col <= subdivisions; col++) {
-        pushVertex(col, row)
-        pushVertex(col, row + 1)
-      }
-      if (row < subdivisions - 1) {
-        // Degenerate vertices to connect strips
-        pushVertex(subdivisions, row + 1)
-        pushVertex(0, row + 1)
-      }
-    }
-
     return {
-      vertexArr: new Float32Array(vertices),
-      texCoordArr: new Float32Array(texCoords),
-    }
-  }
-
-  getRenderData(): RenderData {
-    return {
-      isMultiscale: false,
-      vertexArr: this.vertexArr,
-      pixCoordArr: this.pixCoordArr,
       singleImage: {
         data: this.data,
         width: this.width,
         height: this.height,
+        channels: this.channels,
         bounds: this.mercatorBounds,
         texture: this.texture,
         vertexBuffer: this.vertexBuffer,
         pixCoordBuffer: this.pixCoordBuffer,
         pixCoordArr: this.pixCoordArr,
         geometryVersion: this.geometryVersion,
+        dataVersion: this.dataVersion,
       },
+      vertexArr: this.vertexArr,
     }
   }
 
@@ -215,8 +235,8 @@ export class SingleImageDataManager implements DataManager {
   private emitLoadingState(): void {
     if (!this.loadingCallback) return
     this.loadingCallback({
-      loading: this.isLoadingData,
-      metadata: false,
+      loading: this.metadataLoading || this.isLoadingData,
+      metadata: this.metadataLoading,
       chunks: this.isLoadingData,
     })
   }
@@ -232,6 +252,18 @@ export class SingleImageDataManager implements DataManager {
     this.invalidate()
   }
 
+  private updateGeometryForProjection(isGlobe: boolean) {
+    const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1
+    if (this.currentSubdivisions === targetSubdivisions) return
+
+    const subdivided = createSubdividedQuad(targetSubdivisions)
+    this.vertexArr = subdivided.vertexArr
+    this.pixCoordArr = subdivided.texCoordArr
+    this.currentSubdivisions = targetSubdivisions
+    this.geometryVersion += 1
+    this.invalidate()
+  }
+
   private async fetchData(): Promise<void> {
     if (!this.zarrArray || this.isRemoved) return
 
@@ -241,16 +273,21 @@ export class SingleImageDataManager implements DataManager {
     this.emitLoadingState()
 
     try {
-      const sliceArgs: (number | zarr.Slice)[] = new Array(
+      const baseSliceArgs: (number | zarr.Slice)[] = new Array(
         this.zarrArray.shape.length
       ).fill(0)
+
+      const multiValueDims: Array<{
+        dimIndex: number
+        values: number[]
+      }> = []
 
       for (const dimName of Object.keys(this.dimIndices)) {
         const dimInfo = this.dimIndices[dimName]
         if (dimName === 'lon') {
-          sliceArgs[dimInfo.index] = zarr.slice(0, this.width)
+          baseSliceArgs[dimInfo.index] = zarr.slice(0, this.width)
         } else if (dimName === 'lat') {
-          sliceArgs[dimInfo.index] = zarr.slice(0, this.height)
+          baseSliceArgs[dimInfo.index] = zarr.slice(0, this.height)
         } else {
           const dimSelection = selectorSnapshot[dimName] as
             | number
@@ -271,30 +308,92 @@ export class SingleImageDataManager implements DataManager {
             const selectionType = isObj
               ? (dimSelection as ZarrSelectorsProps).type
               : undefined
-            const primaryValue = Array.isArray(selectionValue)
-              ? selectionValue.find(
-                  (v) => typeof v === 'number' || typeof v === 'string'
-                )
-              : selectionValue
 
-            sliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
-              dimName,
-              dimInfo,
-              primaryValue,
-              selectionType
-            )
+            if (Array.isArray(selectionValue) && selectionValue.length > 1) {
+              const resolvedIndices: number[] = []
+              for (const val of selectionValue) {
+                const idx = await this.resolveSelectionIndex(
+                  dimName,
+                  dimInfo,
+                  val as number | string,
+                  selectionType
+                )
+                resolvedIndices.push(idx)
+              }
+              multiValueDims.push({
+                dimIndex: dimInfo.index,
+                values: resolvedIndices,
+              })
+              baseSliceArgs[dimInfo.index] = resolvedIndices[0]
+            } else {
+              const primaryValue = Array.isArray(selectionValue)
+                ? selectionValue[0]
+                : selectionValue
+
+              baseSliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
+                dimName,
+                dimInfo,
+                primaryValue as number | string,
+                selectionType
+              )
+            }
           } else {
-            sliceArgs[dimInfo.index] = 0
+            baseSliceArgs[dimInfo.index] = 0
           }
         }
       }
 
-      const data = (await zarr.get(this.zarrArray, sliceArgs)) as {
-        data: ArrayLike<number>
+      let channelCombinations: number[][] = [[]]
+      for (const { values } of multiValueDims) {
+        const next: number[][] = []
+        for (const combo of channelCombinations) {
+          for (const val of values) {
+            next.push([...combo, val])
+          }
+        }
+        channelCombinations = next
       }
-      if (this.isRemoved || requestId !== this.fetchRequestId) return
 
-      this.data = new Float32Array((data.data as Float32Array).buffer)
+      const numChannels = channelCombinations.length || 1
+      this.channels = numChannels
+
+      if (numChannels === 1) {
+        const data = (await zarr.get(this.zarrArray, baseSliceArgs)) as {
+          data: ArrayLike<number>
+        }
+        if (this.isRemoved || requestId !== this.fetchRequestId) return
+        this.data = new Float32Array((data.data as Float32Array).buffer)
+        this.dataVersion++
+      } else {
+        const packedData = new Float32Array(
+          this.width * this.height * numChannels
+        )
+
+        for (let c = 0; c < numChannels; c++) {
+          const sliceArgs = [...baseSliceArgs]
+          const combo = channelCombinations[c]
+
+          for (let i = 0; i < multiValueDims.length; i++) {
+            sliceArgs[multiValueDims[i].dimIndex] = combo[i]
+          }
+
+          const bandData = (await zarr.get(this.zarrArray, sliceArgs)) as {
+            data: ArrayLike<number>
+          }
+          if (this.isRemoved || requestId !== this.fetchRequestId) return
+
+          const bandArray = new Float32Array(
+            (bandData.data as Float32Array).buffer
+          )
+          for (let pixIdx = 0; pixIdx < this.width * this.height; pixIdx++) {
+            packedData[pixIdx * numChannels + c] = bandArray[pixIdx]
+          }
+        }
+
+        this.data = packedData
+        this.dataVersion++
+      }
+
       this.invalidate()
     } catch (err) {
       console.error('Error fetching single image data:', err)

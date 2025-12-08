@@ -116,3 +116,38 @@ export function configureDataTexture(gl: WebGL2RenderingContext) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 }
+
+export function createSubdividedQuad(subdivisions: number): {
+  vertexArr: Float32Array
+  texCoordArr: Float32Array
+} {
+  const vertices: number[] = []
+  const texCoords: number[] = []
+  const step = 2 / subdivisions
+  const texStep = 1 / subdivisions
+
+  const pushVertex = (col: number, row: number) => {
+    const x = -1 + col * step
+    const y = 1 - row * step
+    const u = col * texStep
+    const v = row * texStep
+    vertices.push(x, y)
+    texCoords.push(u, v)
+  }
+
+  for (let row = 0; row < subdivisions; row++) {
+    for (let col = 0; col <= subdivisions; col++) {
+      pushVertex(col, row)
+      pushVertex(col, row + 1)
+    }
+    if (row < subdivisions - 1) {
+      pushVertex(subdivisions, row + 1)
+      pushVertex(0, row + 1)
+    }
+  }
+
+  return {
+    vertexArr: new Float32Array(vertices),
+    texCoordArr: new Float32Array(texCoords),
+  }
+}

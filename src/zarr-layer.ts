@@ -8,7 +8,7 @@
 import { loadDimensionValues, getBands, toSelectorProps } from './zarr-utils'
 import { ZarrStore } from './zarr-store'
 import { maplibreFragmentShaderSource, type ShaderData } from './shaders'
-import { ColormapState } from './zarr-colormap'
+import { ColormapState } from './colormap'
 import { ZarrRenderer } from './zarr-renderer'
 import type { CustomShaderConfig } from './renderer-types'
 import type {
@@ -20,13 +20,10 @@ import type {
   ZarrLayerOptions,
   ZarrSelectorsProps,
 } from './types'
-import { DataManager } from './data-manager'
-import { TiledDataManager } from './tiled-data-manager'
-import { SingleImageDataManager } from './single-image-data-manager'
-import { renderMapboxTile } from './mapbox-globe-tile-renderer'
+import type { ZarrMode, RenderContext } from './zarr-mode'
+import { TiledMode } from './tiled-mode'
+import { SingleImageMode } from './single-image-mode'
 import { computeWorldOffsets, resolveProjectionParams } from './render-utils'
-
-const DEFAULT_TILE_SIZE = 128
 
 export class ZarrLayer {
   readonly type: 'custom' = 'custom'
@@ -49,7 +46,6 @@ export class ZarrLayer {
   private minRenderZoom: number
   private selectorHash: string = ''
 
-  private tileSize: number = DEFAULT_TILE_SIZE
   private isMultiscale: boolean = true
   private fillValue: number | null = null
   private scaleFactor: number = 1
@@ -58,7 +54,7 @@ export class ZarrLayer {
   private gl: WebGL2RenderingContext | undefined
   private map: MapLike | null = null
   private renderer: ZarrRenderer | null = null
-  private dataManager: DataManager | null = null
+  private mode: ZarrMode | null = null
   private tileNeedsRender: boolean = true
 
   private projectionChangeHandler: (() => void) | null = null
@@ -215,12 +211,26 @@ export class ZarrLayer {
   }
 
   async setVariable(variable: string) {
-    this.variable = variable
-    if (this.zarrStore) {
-      this.zarrStore.variable = variable
+    if (variable === this.variable) return
+
+    this.metadataLoading = true
+    this.emitLoadingState()
+
+    try {
+      this.variable = variable
+      if (this.zarrStore) {
+        this.zarrStore.cleanup()
+        this.zarrStore = null
+      }
+      this.dimensionValues = {}
+      this.fillValue = null
+      await this.initialize()
+      await this.initializeMode()
+      this.invalidate()
+    } finally {
+      this.metadataLoading = false
+      this.emitLoadingState()
     }
-    await this.initializeManager()
-    this.invalidate()
   }
 
   async setSelector(
@@ -250,8 +260,8 @@ export class ZarrLayer {
       this.customShaderConfig = null
     }
 
-    if (this.dataManager) {
-      await this.dataManager.setSelector(selector)
+    if (this.mode) {
+      await this.mode.setSelector(selector)
     }
     this.invalidate()
   }
@@ -277,7 +287,7 @@ export class ZarrLayer {
 
       this.projectionChangeHandler = () => {
         const isGlobe = this.isGlobeProjection()
-        this.dataManager?.onProjectionChange(isGlobe)
+        this.mode?.onProjectionChange(isGlobe)
         this.renderer?.resetSingleImageGeometry()
       }
       if (typeof map.on === 'function' && this.projectionChangeHandler) {
@@ -286,12 +296,12 @@ export class ZarrLayer {
       }
 
       await this.initialize()
-      await this.initializeManager()
+      await this.initializeMode()
 
       const isGlobe = this.isGlobeProjection()
-      this.dataManager?.onProjectionChange(isGlobe)
+      this.mode?.onProjectionChange(isGlobe)
 
-      this.dataManager?.update(this.map, this.gl!)
+      this.mode?.update(this.map, this.gl!)
     } finally {
       this.metadataLoading = false
       this.emitLoadingState()
@@ -309,15 +319,15 @@ export class ZarrLayer {
     return JSON.stringify(selector, Object.keys(selector).sort())
   }
 
-  private async initializeManager() {
+  private async initializeMode() {
     if (!this.zarrStore || !this.gl) return
 
-    if (this.dataManager) {
-      this.dataManager.dispose(this.gl)
+    if (this.mode) {
+      this.mode.dispose(this.gl)
     }
 
     if (this.isMultiscale) {
-      this.dataManager = new TiledDataManager(
+      this.mode = new TiledMode(
         this.zarrStore,
         this.variable,
         this.selector,
@@ -325,7 +335,7 @@ export class ZarrLayer {
         this.invalidate
       )
     } else {
-      this.dataManager = new SingleImageDataManager(
+      this.mode = new SingleImageMode(
         this.zarrStore,
         this.variable,
         this.selector,
@@ -333,11 +343,11 @@ export class ZarrLayer {
       )
     }
 
-    this.dataManager.setLoadingCallback(this.handleChunkLoadingChange)
-    await this.dataManager.initialize()
+    this.mode.setLoadingCallback(this.handleChunkLoadingChange)
+    await this.mode.initialize()
 
     if (this.map && this.gl) {
-      this.dataManager.update(this.map, this.gl)
+      this.mode.update(this.map, this.gl)
     }
   }
 
@@ -359,7 +369,6 @@ export class ZarrLayer {
       this.dimIndices = desc.dimIndices
       this.scaleFactor = desc.scaleFactor
       this.offset = desc.addOffset
-      this.tileSize = desc.tileSize || DEFAULT_TILE_SIZE
 
       if (
         this.fillValue === null &&
@@ -371,9 +380,18 @@ export class ZarrLayer {
 
       this.isMultiscale = this.levelInfos.length > 0
 
-      // Load initial dimension values for UI if needed (kept from original)
-      // But we mostly delegate to manager now for data loading.
       await this.loadInitialDimensionValues()
+
+      this.bandNames = getBands(this.variable, this.selector)
+      if (this.bandNames.length > 1 || this.customFrag) {
+        this.customShaderConfig = {
+          bands: this.bandNames,
+          customFrag: this.customFrag,
+          customUniforms: this.customUniforms,
+        }
+      } else {
+        this.customShaderConfig = null
+      }
     } catch (err) {
       console.error('Failed to initialize Zarr layer:', err)
       throw err
@@ -412,10 +430,9 @@ export class ZarrLayer {
   }
 
   prerender(_gl: WebGL2RenderingContext, _params: unknown) {
-    if (this.isRemoved || !this.gl || !this.dataManager || !this.map) return
+    if (this.isRemoved || !this.gl || !this.mode || !this.map) return
 
-    // Update data manager (prefetch tiles etc)
-    this.dataManager.update(this.map, this.gl)
+    this.mode.update(this.map, this.gl)
   }
 
   render(
@@ -431,7 +448,7 @@ export class ZarrLayer {
       this.isRemoved ||
       !this.renderer ||
       !this.gl ||
-      !this.dataManager ||
+      !this.mode ||
       !this.map
     ) {
       return
@@ -451,41 +468,30 @@ export class ZarrLayer {
     const isGlobe = this.isGlobeProjection()
     const worldOffsets = computeWorldOffsets(this.map, isGlobe)
     const colormapTexture = this.colormap.ensureTexture(this.gl)
-    const uniforms = {
-      clim: this.clim,
-      opacity: this.opacity,
-      fillValue: this.fillValue,
-      scaleFactor: this.scaleFactor,
-      offset: this.offset,
-    }
 
-    const renderData = this.dataManager.getRenderData()
-
-    this.renderer.render({
+    const context: RenderContext = {
+      gl: this.gl,
       matrix: projectionParams.matrix,
+      uniforms: {
+        clim: this.clim,
+        opacity: this.opacity,
+        fillValue: this.fillValue,
+        scaleFactor: this.scaleFactor,
+        offset: this.offset,
+      },
       colormapTexture,
-      uniforms,
       worldOffsets,
-      isMultiscale: renderData.isMultiscale,
-      visibleTiles: renderData.visibleTiles || [],
-      tileCache: renderData.tileCache,
-      tileSize: renderData.tileSize || this.tileSize,
-      vertexArr: renderData.vertexArr || new Float32Array(),
-      pixCoordArr: renderData.pixCoordArr || new Float32Array(),
-      tileBounds: renderData.tileBounds,
-      singleImage: renderData.singleImage,
+      customShaderConfig: this.customShaderConfig || undefined,
       shaderData: projectionParams.shaderData,
       projectionData: projectionParams.projectionData,
-      customShaderConfig: this.customShaderConfig || undefined,
       mapboxGlobe: projectionParams.mapboxGlobe,
-      mode: { type: 'standard' },
-    })
+    }
 
-    // main render path handled; tile path not needed this frame
+    this.mode.render(this.renderer, context)
+
     this.tileNeedsRender = false
   }
 
-  // Mapbox globe draping path
   renderToTile(
     _gl: WebGL2RenderingContext,
     tileId: { z: number; x: number; y: number }
@@ -494,34 +500,33 @@ export class ZarrLayer {
       this.isRemoved ||
       !this.renderer ||
       !this.gl ||
-      !this.dataManager ||
+      !this.mode ||
       !this.map
     ) {
       return
     }
 
-    this.dataManager.update(this.map, this.gl)
+    this.mode.update(this.map, this.gl)
 
-    const renderData = this.dataManager.getRenderData()
     const colormapTexture = this.colormap.ensureTexture(this.gl)
-    const uniforms = {
-      clim: this.clim,
-      opacity: this.opacity,
-      fillValue: this.fillValue,
-      scaleFactor: this.scaleFactor,
-      offset: this.offset,
+
+    const context: RenderContext = {
+      gl: this.gl,
+      matrix: new Float32Array(16),
+      uniforms: {
+        clim: this.clim,
+        opacity: this.opacity,
+        fillValue: this.fillValue,
+        scaleFactor: this.scaleFactor,
+        offset: this.offset,
+      },
+      colormapTexture,
+      worldOffsets: [0],
+      customShaderConfig: this.customShaderConfig || undefined,
     }
 
-    this.tileNeedsRender = renderMapboxTile({
-      renderer: this.renderer,
-      renderData,
-      tileId,
-      colormapTexture,
-      uniforms,
-      tileSize: renderData.tileSize || this.tileSize,
-      customShaderConfig: this.customShaderConfig || undefined,
-      dataManager: this.dataManager,
-    })
+    this.tileNeedsRender =
+      this.mode.renderToTile?.(this.renderer, tileId, context) ?? false
   }
 
   // Mapbox specific custom layer method required to trigger rerender on eg dataset update.
@@ -539,8 +544,8 @@ export class ZarrLayer {
 
     this.colormap.dispose(gl)
 
-    this.dataManager?.dispose(gl)
-    this.dataManager = null
+    this.mode?.dispose(gl)
+    this.mode = null
 
     if (this.zarrStore) {
       this.zarrStore.cleanup()

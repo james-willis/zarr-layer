@@ -4,7 +4,8 @@ import { configureDataTexture } from './webgl-utils'
 
 export interface SingleImageState {
   uploaded: boolean
-  version: number | null
+  geometryVersion: number | null
+  dataVersion: number | null
 }
 
 export function renderSingleImage(
@@ -31,20 +32,33 @@ export function renderSingleImage(
     pixCoordBuffer,
     width,
     height,
+    channels = 1,
     pixCoordArr,
     geometryVersion,
+    dataVersion,
   } = params
 
   let uploaded = state.uploaded
-  let version = state.version
+  let currentGeometryVersion = state.geometryVersion
+  let currentDataVersion = state.dataVersion
 
-  if (version === null || version !== geometryVersion) {
+  const geometryChanged =
+    currentGeometryVersion === null ||
+    currentGeometryVersion !== geometryVersion
+  const dataChanged =
+    currentDataVersion === null || currentDataVersion !== dataVersion
+
+  if (geometryChanged) {
     uploaded = false
-    version = geometryVersion
+    currentGeometryVersion = geometryVersion
   }
 
   if (!data || !bounds || !texture || !vertexBuffer || !pixCoordBuffer) {
-    return { uploaded, version }
+    return {
+      uploaded,
+      geometryVersion: currentGeometryVersion,
+      dataVersion: currentDataVersion,
+    }
   }
 
   const scaleX =
@@ -88,17 +102,38 @@ export function renderSingleImage(
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.uniform1i(shaderProgram.texLoc, 0)
   configureDataTexture(gl)
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.R32F,
-    width,
-    height,
-    0,
-    gl.RED,
-    gl.FLOAT,
-    data
-  )
+
+  if (dataChanged) {
+    const format =
+      channels === 2
+        ? gl.RG
+        : channels === 3
+        ? gl.RGB
+        : channels >= 4
+        ? gl.RGBA
+        : gl.RED
+    const internalFormat =
+      channels === 2
+        ? gl.RG32F
+        : channels === 3
+        ? gl.RGB32F
+        : channels >= 4
+        ? gl.RGBA32F
+        : gl.R32F
+
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      internalFormat,
+      width,
+      height,
+      0,
+      format,
+      gl.FLOAT,
+      data
+    )
+    currentDataVersion = dataVersion
+  }
 
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer)
   gl.enableVertexAttribArray(shaderProgram.vertexLoc)
@@ -115,6 +150,9 @@ export function renderSingleImage(
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexCount)
   }
 
-  return { uploaded, version }
+  return {
+    uploaded,
+    geometryVersion: currentGeometryVersion,
+    dataVersion: currentDataVersion,
+  }
 }
-
