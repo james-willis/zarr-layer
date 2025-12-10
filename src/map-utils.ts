@@ -409,5 +409,9 @@ export function boundsToMercatorNorm(
     y0: latToMercatorNorm(yMax),
     x1: lonToMercatorNorm(xyLimits.xMax),
     y1: latToMercatorNorm(yMin),
+    // Preserve original latitude bounds for equirectangular data so callers
+    // can perform linear-latitude calculations when needed (e.g. queries).
+    latMin: yMin,
+    latMax: yMax,
   }
 }

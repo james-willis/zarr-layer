@@ -5620,7 +5620,11 @@ function boundsToMercatorNorm(xyLimits, crs) {
     x0: lonToMercatorNorm(xyLimits.xMin),
     y0: latToMercatorNorm(yMax),
     x1: lonToMercatorNorm(xyLimits.xMax),
-    y1: latToMercatorNorm(yMin)
+    y1: latToMercatorNorm(yMin),
+    // Preserve original latitude bounds for equirectangular data so callers
+    // can perform linear-latitude calculations when needed (e.g. queries).
+    latMin: yMin,
+    latMax: yMax
   };
 }
 
@@ -6639,9 +6643,52 @@ async function queryRegionSingleImage(variable, geometry, selector, data, width,
   const polyY1 = latToMercatorNorm(bbox.south);
   const overlapX0 = Math.max(bounds.x0, Math.min(polyX0, polyX1));
   const overlapX1 = Math.min(bounds.x1, Math.max(polyX0, polyX1));
-  const overlapY0 = Math.max(bounds.y0, Math.min(polyY0, polyY1));
-  const overlapY1 = Math.min(bounds.y1, Math.max(polyY0, polyY1));
-  if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) {
+  let xStart = 0;
+  let xEnd = 0;
+  let yStart = 0;
+  let yEnd = 0;
+  if (_crs === "EPSG:4326" && bounds.latMin !== void 0 && bounds.latMax !== void 0) {
+    const latMax = bounds.latMax;
+    const latMin = bounds.latMin;
+    const clampedNorth = Math.min(Math.max(bbox.north, latMin), latMax);
+    const clampedSouth = Math.min(Math.max(bbox.south, latMin), latMax);
+    const yStartFrac = (latMax - clampedNorth) / (latMax - latMin);
+    const yEndFrac = (latMax - clampedSouth) / (latMax - latMin);
+    if (overlapX1 <= overlapX0 || yEndFrac <= yStartFrac) {
+      const result2 = {
+        [variable]: results,
+        dimensions: resultDimensions,
+        coordinates: buildResultCoordinates()
+      };
+      return result2;
+    }
+    const minX = (overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
+    const maxX = (overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
+    xStart = Math.max(0, Math.floor(minX));
+    xEnd = Math.min(width, Math.ceil(maxX + 1));
+    yStart = Math.max(0, Math.floor(yStartFrac * height));
+    yEnd = Math.min(height, Math.ceil(yEndFrac * height));
+  } else {
+    const overlapY0 = Math.max(bounds.y0, Math.min(polyY0, polyY1));
+    const overlapY1 = Math.min(bounds.y1, Math.max(polyY0, polyY1));
+    if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) {
+      const result2 = {
+        [variable]: results,
+        dimensions: resultDimensions,
+        coordinates: buildResultCoordinates()
+      };
+      return result2;
+    }
+    const minX = (overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
+    const maxX = (overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
+    const minY = (overlapY0 - bounds.y0) / (bounds.y1 - bounds.y0) * height;
+    const maxY = (overlapY1 - bounds.y0) / (bounds.y1 - bounds.y0) * height;
+    xStart = Math.max(0, Math.floor(minX));
+    xEnd = Math.min(width, Math.ceil(maxX + 1));
+    yStart = Math.max(0, Math.floor(minY));
+    yEnd = Math.min(height, Math.ceil(maxY + 1));
+  }
+  if (xEnd <= xStart || yEnd <= yStart) {
     const result2 = {
       [variable]: results,
       dimensions: resultDimensions,
@@ -6649,14 +6696,6 @@ async function queryRegionSingleImage(variable, geometry, selector, data, width,
     };
     return result2;
   }
-  const minX = (overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
-  const maxX = (overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
-  const minY = (overlapY0 - bounds.y0) / (bounds.y1 - bounds.y0) * height;
-  const maxY = (overlapY1 - bounds.y0) / (bounds.y1 - bounds.y0) * height;
-  const xStart = Math.max(0, Math.floor(minX));
-  const xEnd = Math.min(width, Math.ceil(maxX + 1));
-  const yStart = Math.max(0, Math.floor(minY));
-  const yEnd = Math.min(height, Math.ceil(maxY + 1));
   for (let y = yStart; y < yEnd; y++) {
     for (let x = xStart; x < xEnd; x++) {
       if (!pixelIntersectsGeometrySingle(
