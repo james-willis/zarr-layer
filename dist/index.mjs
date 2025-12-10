@@ -5381,8 +5381,13 @@ function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, s
   };
 }
 
-// src/map-utils.ts
+// src/constants.ts
+var DEFAULT_TILE_SIZE = 128;
+var MAX_CACHED_TILES = 64;
+var TILE_SUBDIVISIONS = 32;
 var MERCATOR_LAT_LIMIT = 85.05112878;
+
+// src/map-utils.ts
 function normalizeGlobalExtent(xyLimits) {
   if (!xyLimits) {
     return { xMin: -180, xMax: 180, yMin: -90, yMax: 90 };
@@ -5444,14 +5449,14 @@ function getTilesAtZoomEquirect(zoom, bounds, xyLimits) {
   const xSpan = xMax - xMin;
   const ySpan = yMax - yMin;
   const maxTiles = Math.pow(2, zoom);
-  const lonToTile = (lon) => Math.floor((lon - xMin) / xSpan * maxTiles);
+  const lonToTile2 = (lon) => Math.floor((lon - xMin) / xSpan * maxTiles);
   const latToTile = (lat) => {
     const clamped = Math.max(Math.min(lat, yMax), yMin);
     const norm = (yMax - clamped) / ySpan;
     return Math.floor(norm * maxTiles);
   };
-  let nwX = lonToTile(west);
-  let seX = lonToTile(east);
+  let nwX = lonToTile2(west);
+  let seX = lonToTile2(east);
   const nwY = latToTile(north);
   const seY = latToTile(south);
   const tiles = [];
@@ -5944,6 +5949,853 @@ var ZarrRenderer = class _ZarrRenderer {
   }
 };
 
+// src/query/query-utils.ts
+function mercatorYFromLat(lat) {
+  return (180 - 180 / Math.PI * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360))) / 360;
+}
+function lonToTile(lon, zoom) {
+  return Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
+}
+function latToTileMercator(lat, zoom) {
+  const clamped = Math.max(
+    -MERCATOR_LAT_LIMIT,
+    Math.min(MERCATOR_LAT_LIMIT, lat)
+  );
+  const z2 = Math.pow(2, zoom);
+  return Math.floor(
+    (1 - Math.log(
+      Math.tan(clamped * Math.PI / 180) + 1 / Math.cos(clamped * Math.PI / 180)
+    ) / Math.PI) / 2 * z2
+  );
+}
+function latToTileEquirect(lat, zoom, xyLimits) {
+  const { yMin, yMax } = xyLimits;
+  const z2 = Math.pow(2, zoom);
+  const clamped = Math.max(Math.min(lat, yMax), yMin);
+  const norm = (yMax - clamped) / (yMax - yMin);
+  return Math.floor(norm * z2);
+}
+function lonToTileEquirect(lon, zoom, xyLimits) {
+  const { xMin, xMax } = xyLimits;
+  const z2 = Math.pow(2, zoom);
+  const clamped = Math.max(Math.min(lon, xMax), xMin);
+  const norm = (clamped - xMin) / (xMax - xMin);
+  return Math.floor(norm * z2);
+}
+function geoToTile(lng, lat, zoom, crs, xyLimits) {
+  if (crs === "EPSG:4326") {
+    return [
+      zoom,
+      lonToTileEquirect(lng, zoom, xyLimits),
+      latToTileEquirect(lat, zoom, xyLimits)
+    ];
+  }
+  return [zoom, lonToTile(lng, zoom), latToTileMercator(lat, zoom)];
+}
+function geoToTileFraction(lng, lat, tile, crs, xyLimits) {
+  const [z, x, y] = tile;
+  const z2 = Math.pow(2, z);
+  if (crs === "EPSG:4326") {
+    const { xMin, xMax, yMin, yMax } = xyLimits;
+    const xSpan = xMax - xMin;
+    const ySpan = yMax - yMin;
+    const globalFracX2 = (lng - xMin) / xSpan;
+    const globalFracY2 = (yMax - lat) / ySpan;
+    const fracX2 = globalFracX2 * z2 - x;
+    const fracY2 = globalFracY2 * z2 - y;
+    return { fracX: fracX2, fracY: fracY2 };
+  }
+  const globalFracX = (lng + 180) / 360;
+  const sin = Math.sin(lat * Math.PI / 180);
+  const globalFracY = 0.5 - 0.25 * Math.log((1 + sin) / (1 - sin)) / Math.PI;
+  const fracX = globalFracX * z2 - x;
+  const fracY = globalFracY * z2 - y;
+  return { fracX, fracY };
+}
+function tilePixelToLatLon(tile, pixelX, pixelY, tileSize, crs, xyLimits) {
+  const [z, x, y] = tile;
+  const z2 = Math.pow(2, z);
+  const fracX = (x + pixelX / tileSize) / z2;
+  const fracY = (y + pixelY / tileSize) / z2;
+  if (crs === "EPSG:4326") {
+    const { xMin, xMax, yMin, yMax } = xyLimits;
+    const lon2 = xMin + fracX * (xMax - xMin);
+    const lat2 = yMax - fracY * (yMax - yMin);
+    return { lat: lat2, lon: lon2 };
+  }
+  const lon = fracX * 360 - 180;
+  const y2 = 180 - fracY * 360;
+  const lat = 360 / Math.PI * Math.atan(Math.exp(y2 * Math.PI / 180)) - 90;
+  return { lat, lon };
+}
+function computeBoundingBox(geometry) {
+  let west = Infinity;
+  let east = -Infinity;
+  let south = Infinity;
+  let north = -Infinity;
+  const processRing = (ring) => {
+    for (const [lon, lat] of ring) {
+      if (lon < west) west = lon;
+      if (lon > east) east = lon;
+      if (lat < south) south = lat;
+      if (lat > north) north = lat;
+    }
+  };
+  if (geometry.type === "Polygon") {
+    geometry.coordinates.forEach(processRing);
+  } else {
+    geometry.coordinates.forEach((polygon) => polygon.forEach(processRing));
+  }
+  return { west, east, south, north };
+}
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  const [x, y] = point;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0];
+    const yi = polygon[i][1];
+    const xj = polygon[j][0];
+    const yj = polygon[j][1];
+    if (yi > y !== yj > y && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+function pointInGeoJSON(point, geometry) {
+  if (geometry.type === "Polygon") {
+    if (!pointInPolygon(point, geometry.coordinates[0])) return false;
+    for (let i = 1; i < geometry.coordinates.length; i++) {
+      if (pointInPolygon(point, geometry.coordinates[i])) return false;
+    }
+    return true;
+  }
+  for (const polygon of geometry.coordinates) {
+    if (pointInPolygon(point, polygon[0])) {
+      let inHole = false;
+      for (let i = 1; i < polygon.length; i++) {
+        if (pointInPolygon(point, polygon[i])) {
+          inHole = true;
+          break;
+        }
+      }
+      if (!inHole) return true;
+    }
+  }
+  return false;
+}
+function rectIntersectsGeometry(rect, geometry) {
+  const rectMinX = Math.min(...rect.map((p) => p[0]));
+  const rectMaxX = Math.max(...rect.map((p) => p[0]));
+  const rectMinY = Math.min(...rect.map((p) => p[1]));
+  const rectMaxY = Math.max(...rect.map((p) => p[1]));
+  const pointInRect = (p) => p[0] >= rectMinX && p[0] <= rectMaxX && p[1] >= rectMinY && p[1] <= rectMaxY;
+  for (const corner of rect) {
+    if (pointInGeoJSON(corner, geometry)) return true;
+  }
+  const rings = geometry.type === "Polygon" ? geometry.coordinates : geometry.coordinates.flatMap((poly) => poly);
+  for (const ring of rings) {
+    for (const [lon, lat] of ring) {
+      if (pointInRect([lon, lat])) return true;
+    }
+  }
+  const rectEdges = [
+    [rect[0], rect[1]],
+    [rect[1], rect[2]],
+    [rect[2], rect[3]],
+    [rect[3], rect[0]]
+  ];
+  const edgesFromRing = (ring) => ring.slice(0, -1).map(
+    (_, i) => [ring[i], ring[i + 1]]
+  );
+  const segments = geometry.type === "Polygon" ? edgesFromRing(geometry.coordinates[0]) : geometry.coordinates.flatMap((poly) => edgesFromRing(poly[0]));
+  const intersects = (a1, a2, b1, b2) => {
+    const cross = (v1, v2) => v1[0] * v2[1] - v1[1] * v2[0];
+    const sub = (p1, p2) => [p1[0] - p2[0], p1[1] - p2[1]];
+    const d1 = sub(a2, a1);
+    const d2 = sub(b2, b1);
+    const denom = cross(d1, d2);
+    if (denom === 0) return false;
+    const s = cross(sub(b1, a1), d2) / denom;
+    const t = cross(sub(b1, a1), d1) / denom;
+    return s >= 0 && s <= 1 && t >= 0 && t <= 1;
+  };
+  for (const edge of rectEdges) {
+    for (const seg of segments) {
+      if (intersects(edge[0], edge[1], seg[0], seg[1])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function pixelRectLonLat(tile, pixelX, pixelY, tileSize, crs, xyLimits) {
+  const corners = [];
+  const offsets = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1]
+  ];
+  for (const [dx, dy] of offsets) {
+    const p = tilePixelToLatLon(
+      tile,
+      pixelX + dx,
+      pixelY + dy,
+      tileSize,
+      crs,
+      xyLimits
+    );
+    corners.push([p.lon, p.lat]);
+  }
+  return corners;
+}
+function pixelRectLonLatSingle(bounds, width, height, x, y, crs) {
+  const offsets = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1]
+  ];
+  const corners = [];
+  for (const [dx, dy] of offsets) {
+    const mercX = bounds.x0 + (x + dx) / width * (bounds.x1 - bounds.x0);
+    const mercY = bounds.y0 + (y + dy) / height * (bounds.y1 - bounds.y0);
+    const lon = mercatorNormToLon(mercX);
+    const lat = crs === "EPSG:4326" && bounds.latMin !== void 0 && bounds.latMax !== void 0 ? bounds.latMax - (mercY - bounds.y0) / (bounds.y1 - bounds.y0) * (bounds.latMax - bounds.latMin) : mercatorNormToLat(mercY);
+    corners.push([lon, lat]);
+  }
+  return corners;
+}
+function pixelIntersectsGeometryTiled(tile, pixelX, pixelY, tileSize, crs, xyLimits, geometry) {
+  const rect = pixelRectLonLat(tile, pixelX, pixelY, tileSize, crs, xyLimits);
+  return rectIntersectsGeometry(rect, geometry);
+}
+function pixelIntersectsGeometrySingle(bounds, width, height, x, y, crs, geometry) {
+  const rect = pixelRectLonLatSingle(bounds, width, height, x, y, crs);
+  return rectIntersectsGeometry(rect, geometry);
+}
+function getTilesForBoundingBox(bbox, zoom, crs, xyLimits) {
+  const bounds = [
+    [bbox.west, bbox.south],
+    [bbox.east, bbox.north]
+  ];
+  if (crs === "EPSG:4326") {
+    return getTilesAtZoomEquirect(zoom, bounds, xyLimits);
+  }
+  return getTilesAtZoom(zoom, bounds);
+}
+function getTilesForPolygon(geometry, zoom, crs, xyLimits) {
+  const bbox = computeBoundingBox(geometry);
+  return getTilesForBoundingBox(bbox, zoom, crs, xyLimits);
+}
+function mercatorBoundsToPixel(lng, lat, bounds, width, height, crs) {
+  let normX;
+  let normY;
+  if (crs === "EPSG:4326" && bounds.latMin !== void 0 && bounds.latMax !== void 0) {
+    normX = (lonToMercatorNorm(lng) - bounds.x0) / (bounds.x1 - bounds.x0);
+    const latNorm = (bounds.latMax - lat) / (bounds.latMax - bounds.latMin);
+    normY = latNorm;
+  } else {
+    normX = (lonToMercatorNorm(lng) - bounds.x0) / (bounds.x1 - bounds.x0);
+    normY = (latToMercatorNorm(lat) - bounds.y0) / (bounds.y1 - bounds.y0);
+  }
+  if (normX < 0 || normX > 1 || normY < 0 || normY > 1) {
+    return null;
+  }
+  const x = Math.floor(normX * width);
+  const y = Math.floor(normY * height);
+  return {
+    x: Math.min(x, width - 1),
+    y: Math.min(y, height - 1)
+  };
+}
+
+// src/query/selector-utils.ts
+function hasArraySelector(selector) {
+  for (const key of Object.keys(selector)) {
+    const value = selector[key];
+    if (Array.isArray(value)) return true;
+    if (typeof value === "object" && value !== null && "selected" in value && Array.isArray(value.selected)) {
+      return true;
+    }
+  }
+  return false;
+}
+function getPointValues(data, pixelX, pixelY, selector, dimensions, coordinates, shape, chunks, chunkIndices) {
+  const result = [];
+  let combinedIndices = [[]];
+  const keys = [[]];
+  for (let i = 0; i < dimensions.length; i++) {
+    const dimension = dimensions[i];
+    const dimLower = dimension.toLowerCase();
+    const chunkOffset = chunkIndices[i] * chunks[i];
+    const coords = coordinates[dimension];
+    if (["x", "lon", "longitude"].includes(dimLower)) {
+      combinedIndices = combinedIndices.map((prev) => [...prev, pixelX]);
+    } else if (["y", "lat", "latitude"].includes(dimLower)) {
+      combinedIndices = combinedIndices.map((prev) => [...prev, pixelY]);
+    } else {
+      const selectorValue = selector[dimension];
+      let selectorIndices;
+      let selectorKeys;
+      if (selectorValue === void 0) {
+        selectorIndices = [];
+        selectorKeys = [];
+        for (let j = 0; j < chunks[i]; j++) {
+          const globalIndex = chunkOffset + j;
+          if (globalIndex < shape[i]) {
+            selectorIndices.push(globalIndex);
+            if (coords) {
+              selectorKeys.push(coords[globalIndex]);
+            }
+          }
+        }
+      } else if (Array.isArray(selectorValue)) {
+        selectorIndices = [];
+        selectorKeys = [];
+        for (const v of selectorValue) {
+          let idx;
+          if (coords) {
+            idx = coords.indexOf(v);
+            if (idx < 0) idx = typeof v === "number" ? v : 0;
+          } else {
+            idx = typeof v === "number" ? v : 0;
+          }
+          if (idx >= chunkOffset && idx < chunkOffset + chunks[i]) {
+            selectorIndices.push(idx);
+            selectorKeys.push(v);
+          }
+        }
+      } else if (typeof selectorValue === "object" && "selected" in selectorValue) {
+        const selected = selectorValue.selected;
+        const type = selectorValue.type;
+        const values = Array.isArray(selected) ? selected : [selected];
+        selectorIndices = [];
+        selectorKeys = [];
+        for (const v of values) {
+          let idx;
+          if (type === "index") {
+            idx = typeof v === "number" ? v : 0;
+          } else if (coords) {
+            idx = coords.indexOf(v);
+            if (idx < 0) idx = typeof v === "number" ? v : 0;
+          } else {
+            idx = typeof v === "number" ? v : 0;
+          }
+          if (idx >= chunkOffset && idx < chunkOffset + chunks[i]) {
+            selectorIndices.push(idx);
+            if (Array.isArray(selected)) {
+              selectorKeys.push(v);
+            }
+          }
+        }
+      } else {
+        let idx;
+        if (coords) {
+          idx = coords.indexOf(selectorValue);
+          if (idx < 0)
+            idx = typeof selectorValue === "number" ? selectorValue : 0;
+        } else {
+          idx = typeof selectorValue === "number" ? selectorValue : 0;
+        }
+        selectorIndices = [idx];
+        selectorKeys = [];
+      }
+      const newCombined = [];
+      const newKeys = [];
+      for (let j = 0; j < selectorIndices.length; j++) {
+        for (let k = 0; k < combinedIndices.length; k++) {
+          newCombined.push([...combinedIndices[k], selectorIndices[j]]);
+          if (selectorKeys.length > 0) {
+            newKeys.push([...keys[k], selectorKeys[j]]);
+          } else {
+            newKeys.push([...keys[k]]);
+          }
+        }
+      }
+      combinedIndices = newCombined.length > 0 ? newCombined : combinedIndices.map((prev) => [...prev, 0]);
+      keys.length = 0;
+      keys.push(...newKeys.length > 0 ? newKeys : keys.map(() => []));
+    }
+  }
+  for (let i = 0; i < combinedIndices.length; i++) {
+    const indices = combinedIndices[i];
+    const entryKeys = keys[i] || [];
+    const localIndices = indices.map((idx, j) => {
+      const dimLower = dimensions[j].toLowerCase();
+      if (["x", "lon", "longitude", "y", "lat", "latitude"].includes(dimLower)) {
+        return idx;
+      }
+      return idx - chunkIndices[j] * chunks[j];
+    });
+    const strides = new Array(dimensions.length);
+    strides[dimensions.length - 1] = 1;
+    for (let j = dimensions.length - 2; j >= 0; j--) {
+      strides[j] = strides[j + 1] * chunks[j + 1];
+    }
+    let dataIndex = 0;
+    for (let j = 0; j < dimensions.length; j++) {
+      dataIndex += localIndices[j] * strides[j];
+    }
+    const value = data[dataIndex];
+    result.push({ keys: entryKeys, value });
+  }
+  return result;
+}
+function setObjectValues(obj, keys, value) {
+  if (keys.length === 0) {
+    if (Array.isArray(obj)) {
+      obj.push(value);
+    }
+    return obj;
+  }
+  let ref = obj;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (i === keys.length - 1) {
+      if (!ref[key]) {
+        ref[key] = [];
+      }
+      const arr = ref[key];
+      if (Array.isArray(arr)) {
+        arr.push(value);
+      }
+    } else {
+      if (!ref[key]) {
+        ref[key] = {};
+      }
+      ref = ref[key];
+    }
+  }
+  return obj;
+}
+function getSelectorHash(selector) {
+  return JSON.stringify(selector, Object.keys(selector).sort());
+}
+function getChunks(selector, dimensions, coordinates, shape, chunks, x, y) {
+  const chunkIndicesToUse = dimensions.map((dimension, i) => {
+    const dimLower = dimension.toLowerCase();
+    if (["x", "lon", "longitude"].includes(dimLower)) {
+      return [x];
+    } else if (["y", "lat", "latitude"].includes(dimLower)) {
+      return [y];
+    }
+    const selectorValue = selector[dimension];
+    const coords = coordinates[dimension];
+    const chunkSize = chunks[i];
+    let indices;
+    if (selectorValue === void 0) {
+      indices = Array(shape[i]).fill(null).map((_, j) => j);
+    } else if (Array.isArray(selectorValue)) {
+      indices = selectorValue.map((v) => {
+        const idx = coords ? coords.indexOf(v) : typeof v === "number" ? v : 0;
+        return idx >= 0 ? idx : typeof v === "number" ? v : 0;
+      });
+    } else if (typeof selectorValue === "object" && "selected" in selectorValue) {
+      const selected = selectorValue.selected;
+      const type = selectorValue.type;
+      const values = Array.isArray(selected) ? selected : [selected];
+      indices = values.map((v) => {
+        if (type === "index") {
+          return typeof v === "number" ? v : 0;
+        }
+        if (coords) {
+          const idx = coords.indexOf(v);
+          return idx >= 0 ? idx : typeof v === "number" ? v : 0;
+        }
+        return typeof v === "number" ? v : 0;
+      });
+    } else {
+      if (coords) {
+        const idx = coords.indexOf(selectorValue);
+        indices = [
+          idx >= 0 ? idx : typeof selectorValue === "number" ? selectorValue : 0
+        ];
+      } else {
+        indices = [typeof selectorValue === "number" ? selectorValue : 0];
+      }
+    }
+    const chunkIndices = indices.map((index) => Math.floor(index / chunkSize)).filter((v, i2, a) => a.indexOf(v) === i2);
+    return chunkIndices;
+  });
+  let result = [[]];
+  chunkIndicesToUse.forEach((chunkIndices) => {
+    const updatedResult = [];
+    chunkIndices.forEach((chunkIndex) => {
+      result.forEach((prev) => {
+        updatedResult.push([...prev, chunkIndex]);
+      });
+    });
+    result = updatedResult;
+  });
+  return result;
+}
+
+// src/query/point-query.ts
+async function queryPointTiled(lng, lat, tilesManager, selector, crs, xyLimits, maxZoom, tileSize) {
+  const tile = geoToTile(lng, lat, maxZoom, crs, xyLimits);
+  const [z, x, y] = tile;
+  const { fracX, fracY } = geoToTileFraction(lng, lat, tile, crs, xyLimits);
+  const pixelX = Math.floor(fracX * tileSize);
+  const pixelY = Math.floor(fracY * tileSize);
+  const clampedPixelX = Math.max(0, Math.min(pixelX, tileSize - 1));
+  const clampedPixelY = Math.max(0, Math.min(pixelY, tileSize - 1));
+  if (pixelX < 0 || pixelX >= tileSize || pixelY < 0 || pixelY >= tileSize) {
+    return {
+      lng,
+      lat,
+      value: null,
+      tile: { z, x, y },
+      pixel: { x: clampedPixelX, y: clampedPixelY }
+    };
+  }
+  const selectorHash = getSelectorHash(selector);
+  let tileData = tilesManager.getTile(tile) || null;
+  if (!tileData || !tileData.data || tileData.selectorHash !== selectorHash) {
+    tileData = await tilesManager.fetchTile(tile, selectorHash);
+  }
+  if (!tileData || !tileData.data) {
+    return {
+      lng,
+      lat,
+      value: null,
+      tile: { z, x, y },
+      pixel: { x: clampedPixelX, y: clampedPixelY }
+    };
+  }
+  const channels = tileData.channels || 1;
+  const dataIndex = clampedPixelY * tileSize * channels + clampedPixelX * channels;
+  const value = tileData.data[dataIndex];
+  let bandValues;
+  if (tileData.bandData && tileData.bandData.size > 0) {
+    bandValues = {};
+    for (const [bandName, bandData] of tileData.bandData) {
+      const bandIndex = clampedPixelY * tileSize + clampedPixelX;
+      bandValues[bandName] = bandData[bandIndex] ?? null;
+    }
+  }
+  return {
+    lng,
+    lat,
+    value: value ?? null,
+    bandValues,
+    tile: { z, x, y },
+    pixel: { x: clampedPixelX, y: clampedPixelY }
+  };
+}
+function queryPointSingleImage(lng, lat, data, width, height, bounds, crs, channels = 1, channelLabels, multiValueDimNames) {
+  if (!data) {
+    return { lng, lat, value: null };
+  }
+  const pixel = mercatorBoundsToPixel(lng, lat, bounds, width, height, crs);
+  if (!pixel) {
+    return { lng, lat, value: null };
+  }
+  const { x, y } = pixel;
+  const baseIndex = (y * width + x) * channels;
+  const value = data[baseIndex];
+  let bandValues;
+  if (channels > 1) {
+    bandValues = {};
+    for (let c = 0; c < channels; c++) {
+      const labels = channelLabels?.[c];
+      let key;
+      if (labels && multiValueDimNames && labels.length === multiValueDimNames.length) {
+        key = labels.map((label, i) => `${multiValueDimNames[i]}=${label}`).join("|");
+      } else if (labels && labels.length > 0) {
+        key = labels.join("|");
+      } else {
+        key = `band${c}`;
+      }
+      const channelValue = data[baseIndex + c];
+      bandValues[key] = channelValue ?? null;
+    }
+  }
+  return {
+    lng,
+    lat,
+    value: value ?? null,
+    bandValues,
+    pixel: { x, y }
+  };
+}
+
+// src/query/region-query.ts
+async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xyLimits, maxZoom, tileSize) {
+  const desc = zarrStore.describe();
+  const dimensions = desc.dimensions;
+  const coordinates = desc.coordinates;
+  const shape = desc.shape || [];
+  const chunks = desc.chunks || [];
+  const singleValuedDims = Object.keys(selector).filter(
+    (k) => !Array.isArray(selector[k])
+  ).length;
+  const resultDim = dimensions.length - singleValuedDims;
+  const useNestedResults = resultDim > 2;
+  let results = useNestedResults ? {} : [];
+  const latCoords = [];
+  const lonCoords = [];
+  const resultCoordinates = {
+    lat: latCoords,
+    lon: lonCoords
+  };
+  for (const dim of dimensions) {
+    const dimLower = dim.toLowerCase();
+    if (!["x", "lon", "longitude", "y", "lat", "latitude"].includes(dimLower)) {
+      const selectorValue = selector[dim];
+      if (Array.isArray(selectorValue)) {
+        resultCoordinates[dim] = selectorValue;
+      } else if (selectorValue !== void 0 && typeof selectorValue !== "object") {
+        resultCoordinates[dim] = [selectorValue];
+      } else if (coordinates[dim]) {
+        resultCoordinates[dim] = coordinates[dim];
+      }
+    }
+  }
+  const tiles = getTilesForPolygon(geometry, maxZoom, crs, xyLimits);
+  if (tiles.length === 0) {
+    const result2 = {
+      [variable]: results,
+      dimensions: useNestedResults ? dimensions.filter((d) => {
+        const dimLower = d.toLowerCase();
+        return !["x", "lon", "longitude"].includes(dimLower);
+      }) : ["lat", "lon"],
+      coordinates: resultCoordinates
+    };
+    return result2;
+  }
+  const levelPath = zarrStore.levels[maxZoom];
+  if (!levelPath) {
+    throw new Error(`No level path found for zoom ${maxZoom}`);
+  }
+  const tileChunkData = /* @__PURE__ */ new Map();
+  for (const tileTuple of tiles) {
+    const [, x, y] = tileTuple;
+    const chunksToFetch = getChunks(
+      selector,
+      dimensions,
+      coordinates,
+      shape,
+      chunks,
+      x,
+      y
+    );
+    const tileKey = tileToKey(tileTuple);
+    const chunkDataMap = /* @__PURE__ */ new Map();
+    await Promise.all(
+      chunksToFetch.map(async (chunkIndices) => {
+        try {
+          const chunk = await zarrStore.getChunk(levelPath, chunkIndices);
+          const chunkData = new Float32Array(chunk.data);
+          const chunkKey = chunkIndices.join(",");
+          chunkDataMap.set(chunkKey, chunkData);
+        } catch (err) {
+          console.warn(
+            `Failed to fetch chunk ${chunkIndices} for tile ${tileKey}:`,
+            err
+          );
+        }
+      })
+    );
+    tileChunkData.set(tileKey, chunkDataMap);
+  }
+  for (const tileTuple of tiles) {
+    const tileKey = tileToKey(tileTuple);
+    const chunkDataMap = tileChunkData.get(tileKey);
+    if (!chunkDataMap || chunkDataMap.size === 0) continue;
+    const [, x, y] = tileTuple;
+    const chunksForTile = getChunks(
+      selector,
+      dimensions,
+      coordinates,
+      shape,
+      chunks,
+      x,
+      y
+    );
+    for (let pixelY = 0; pixelY < tileSize; pixelY++) {
+      for (let pixelX = 0; pixelX < tileSize; pixelX++) {
+        if (!pixelIntersectsGeometryTiled(
+          tileTuple,
+          pixelX,
+          pixelY,
+          tileSize,
+          crs,
+          xyLimits,
+          geometry
+        )) {
+          continue;
+        }
+        const geo = tilePixelToLatLon(
+          tileTuple,
+          pixelX + 0.5,
+          pixelY + 0.5,
+          tileSize,
+          crs,
+          xyLimits
+        );
+        latCoords.push(geo.lat);
+        lonCoords.push(geo.lon);
+        for (const chunkIndices of chunksForTile) {
+          const chunkKey = chunkIndices.join(",");
+          const chunkData = chunkDataMap.get(chunkKey);
+          if (!chunkData) continue;
+          const valuesToSet = getPointValues(
+            chunkData,
+            pixelX,
+            pixelY,
+            selector,
+            dimensions,
+            coordinates,
+            shape,
+            chunks,
+            chunkIndices
+          );
+          valuesToSet.forEach(({ keys, value }) => {
+            if (keys.length > 0) {
+              setObjectValues(results, keys, value);
+            } else {
+              if (Array.isArray(results)) {
+                results.push(value);
+              }
+            }
+          });
+        }
+      }
+    }
+  }
+  const resultDimensions = useNestedResults ? dimensions.filter((d) => {
+    const dimLower = d.toLowerCase();
+    return !["x", "lon", "longitude"].includes(dimLower);
+  }) : ["lat", "lon"];
+  const result = {
+    [variable]: results,
+    dimensions: resultDimensions,
+    coordinates: resultCoordinates
+  };
+  return result;
+}
+async function queryRegionSingleImage(variable, geometry, selector, data, width, height, bounds, _crs, dimensions, coordinates, channels = 1, channelLabels, multiValueDimNames) {
+  const hasMultiValue = hasArraySelector(selector);
+  if (hasMultiValue) {
+    console.warn(
+      "queryRegion with multi-valued selectors is not fully supported in single-image mode. Results may not match the requested selector. Consider using tiled mode for complex queries."
+    );
+  }
+  const singleValuedDims = Object.keys(selector).filter(
+    (k) => !Array.isArray(selector[k])
+  ).length;
+  const resultDim = dimensions.length - singleValuedDims;
+  const useNestedResults = resultDim > 2;
+  let results = useNestedResults ? {} : [];
+  const latCoords = [];
+  const lonCoords = [];
+  const resultCoordinates = {
+    lat: latCoords,
+    lon: lonCoords
+  };
+  for (const dim of dimensions) {
+    const dimLower = dim.toLowerCase();
+    if (!["x", "lon", "longitude", "y", "lat", "latitude"].includes(dimLower)) {
+      const selectorValue = selector[dim];
+      if (Array.isArray(selectorValue)) {
+        resultCoordinates[dim] = selectorValue;
+      } else if (selectorValue !== void 0 && typeof selectorValue !== "object") {
+        resultCoordinates[dim] = [selectorValue];
+      } else if (coordinates[dim]) {
+        resultCoordinates[dim] = coordinates[dim];
+      }
+    }
+  }
+  if (!data) {
+    const result2 = {
+      [variable]: results,
+      dimensions: useNestedResults ? dimensions.filter((d) => {
+        const dimLower = d.toLowerCase();
+        return !["x", "lon", "longitude"].includes(dimLower);
+      }) : ["lat", "lon"],
+      coordinates: resultCoordinates
+    };
+    return result2;
+  }
+  const bbox = computeBoundingBox(geometry);
+  const polyX0 = lonToMercatorNorm(bbox.west);
+  const polyX1 = lonToMercatorNorm(bbox.east);
+  const polyY0 = latToMercatorNorm(bbox.north);
+  const polyY1 = latToMercatorNorm(bbox.south);
+  const overlapX0 = Math.max(bounds.x0, Math.min(polyX0, polyX1));
+  const overlapX1 = Math.min(bounds.x1, Math.max(polyX0, polyX1));
+  const overlapY0 = Math.max(bounds.y0, Math.min(polyY0, polyY1));
+  const overlapY1 = Math.min(bounds.y1, Math.max(polyY0, polyY1));
+  if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) {
+    const result2 = {
+      [variable]: results,
+      dimensions: useNestedResults ? dimensions.filter((d) => {
+        const dimLower = d.toLowerCase();
+        return !["x", "lon", "longitude"].includes(dimLower);
+      }) : ["lat", "lon"],
+      coordinates: resultCoordinates
+    };
+    return result2;
+  }
+  const minX = (overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
+  const maxX = (overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0) * width;
+  const minY = (overlapY0 - bounds.y0) / (bounds.y1 - bounds.y0) * height;
+  const maxY = (overlapY1 - bounds.y0) / (bounds.y1 - bounds.y0) * height;
+  const xStart = Math.max(0, Math.floor(minX));
+  const xEnd = Math.min(width, Math.ceil(maxX + 1));
+  const yStart = Math.max(0, Math.floor(minY));
+  const yEnd = Math.min(height, Math.ceil(maxY + 1));
+  for (let y = yStart; y < yEnd; y++) {
+    for (let x = xStart; x < xEnd; x++) {
+      if (!pixelIntersectsGeometrySingle(
+        bounds,
+        width,
+        height,
+        x,
+        y,
+        _crs,
+        geometry
+      )) {
+        continue;
+      }
+      const mercX = bounds.x0 + (x + 0.5) / width * (bounds.x1 - bounds.x0);
+      const mercY = bounds.y0 + (y + 0.5) / height * (bounds.y1 - bounds.y0);
+      const lon = mercatorNormToLon(mercX);
+      const lat = _crs === "EPSG:4326" && bounds.latMin !== void 0 && bounds.latMax !== void 0 ? bounds.latMax - (mercY - bounds.y0) / (bounds.y1 - bounds.y0) * (bounds.latMax - bounds.latMin) : mercatorNormToLat(mercY);
+      const baseIndex = (y * width + x) * channels;
+      let coordPushed = false;
+      for (let c = 0; c < channels; c++) {
+        const value = data[baseIndex + c];
+        if (value === void 0 || value === null || isNaN(value)) continue;
+        if (!coordPushed) {
+          latCoords.push(lat);
+          lonCoords.push(lon);
+          coordPushed = true;
+        }
+        if (useNestedResults && multiValueDimNames) {
+          const labels = channelLabels?.[c];
+          const keys = labels && labels.length === multiValueDimNames.length ? labels : [c];
+          setObjectValues(results, keys, value);
+        } else if (Array.isArray(results)) {
+          results.push(value);
+        }
+      }
+    }
+  }
+  const resultDimensions = useNestedResults ? dimensions.filter((d) => {
+    const dimLower = d.toLowerCase();
+    return !["x", "lon", "longitude"].includes(dimLower);
+  }) : ["lat", "lon"];
+  const result = {
+    [variable]: results,
+    dimensions: resultDimensions,
+    coordinates: resultCoordinates
+  };
+  return result;
+}
+
 // src/zarr-tile-cache.ts
 var TileRenderCache = class {
   constructor(gl, maxTiles) {
@@ -6388,11 +7240,6 @@ var Tiles = class {
   }
 };
 
-// src/constants.ts
-var DEFAULT_TILE_SIZE = 128;
-var MAX_CACHED_TILES = 64;
-var TILE_SUBDIVISIONS = 32;
-
 // src/mapbox-globe-tile-renderer.ts
 var IDENTITY_MATRIX = new Float32Array([
   1,
@@ -6694,6 +7541,7 @@ var TiledMode = class {
     this.tileBounds = {};
     this.pendingChunks = /* @__PURE__ */ new Set();
     this.metadataLoading = false;
+    this.currentLevel = null;
     this.zarrStore = store;
     this.variable = variable;
     this.selector = selector;
@@ -6738,6 +7586,9 @@ var TiledMode = class {
     const visibleInfo = this.getVisibleTilesWithContext(map);
     this.visibleTiles = visibleInfo.tiles;
     this.tileBounds = this.computeTileBounds(this.visibleTiles);
+    if (visibleInfo.pyramidLevel !== null) {
+      this.currentLevel = visibleInfo.pyramidLevel;
+    }
     const currentHash = JSON.stringify(this.selector);
     const tilesToFetch = [];
     for (const tileTuple of this.visibleTiles) {
@@ -6826,7 +7677,7 @@ var TiledMode = class {
   getSingleImageState() {
     return null;
   }
-  dispose(gl) {
+  dispose(_gl) {
     this.tileCache?.clear();
     this.tileCache = null;
     this.pendingChunks.clear();
@@ -6986,6 +7837,48 @@ var TiledMode = class {
       throw err;
     }
   }
+  /**
+   * Query the data value at a geographic point.
+   */
+  async queryPoint(lng, lat) {
+    if (!this.tilesManager || !this.xyLimits) {
+      return { lng, lat, value: null };
+    }
+    return queryPointTiled(
+      lng,
+      lat,
+      this.tilesManager,
+      this.selector,
+      this.crs,
+      this.xyLimits,
+      this.maxZoom,
+      this.tileSize
+    );
+  }
+  /**
+   * Query all data values within a geographic region.
+   */
+  async queryRegion(geometry, selector) {
+    if (!this.tilesManager || !this.xyLimits) {
+      return {
+        [this.variable]: [],
+        dimensions: [],
+        coordinates: { lat: [], lon: [] }
+      };
+    }
+    const querySelector = selector || this.selector;
+    const level = this.currentLevel ?? this.maxZoom;
+    return queryRegionTiled(
+      this.variable,
+      geometry,
+      querySelector,
+      this.zarrStore,
+      this.crs,
+      this.xyLimits,
+      level,
+      this.tileSize
+    );
+  }
 };
 
 // src/single-image-mode.ts
@@ -6996,6 +7889,8 @@ var SingleImageMode = class {
     this.width = 0;
     this.height = 0;
     this.channels = 1;
+    this.channelLabels = [];
+    this.multiValueDimNames = [];
     this.texture = null;
     this.vertexBuffer = null;
     this.pixCoordBuffer = null;
@@ -7194,6 +8089,7 @@ var SingleImageMode = class {
             const selectionType = isObj ? dimSelection.type : void 0;
             if (Array.isArray(selectionValue) && selectionValue.length > 1) {
               const resolvedIndices = [];
+              const labelValues = [];
               for (const val of selectionValue) {
                 const idx = await this.resolveSelectionIndex(
                   dimName,
@@ -7202,10 +8098,13 @@ var SingleImageMode = class {
                   selectionType
                 );
                 resolvedIndices.push(idx);
+                labelValues.push(val);
               }
               multiValueDims.push({
                 dimIndex: dimInfo.index,
-                values: resolvedIndices
+                dimName,
+                values: resolvedIndices,
+                labels: labelValues
               });
               baseSliceArgs[dimInfo.index] = resolvedIndices[0];
             } else {
@@ -7223,17 +8122,25 @@ var SingleImageMode = class {
         }
       }
       let channelCombinations = [[]];
-      for (const { values } of multiValueDims) {
+      let channelLabelCombinations = [[]];
+      for (const { values, labels } of multiValueDims) {
         const next = [];
-        for (const combo of channelCombinations) {
-          for (const val of values) {
-            next.push([...combo, val]);
+        const nextLabels = [];
+        for (let idx = 0; idx < values.length; idx++) {
+          const val = values[idx];
+          const label = labels[idx];
+          for (let c = 0; c < channelCombinations.length; c++) {
+            next.push([...channelCombinations[c], val]);
+            nextLabels.push([...channelLabelCombinations[c], label]);
           }
         }
         channelCombinations = next;
+        channelLabelCombinations = nextLabels;
       }
       const numChannels = channelCombinations.length || 1;
       this.channels = numChannels;
+      this.multiValueDimNames = multiValueDims.map((d) => d.dimName);
+      this.channelLabels = channelLabelCombinations;
       if (numChannels === 1) {
         const data = await get2(this.zarrArray, baseSliceArgs);
         if (this.isRemoved || requestId !== this.fetchRequestId) return;
@@ -7297,6 +8204,55 @@ var SingleImageMode = class {
     } catch {
     }
     return typeof value === "number" ? value : 0;
+  }
+  /**
+   * Query the data value at a geographic point.
+   */
+  async queryPoint(lng, lat) {
+    if (!this.mercatorBounds) {
+      return { lng, lat, value: null };
+    }
+    return queryPointSingleImage(
+      lng,
+      lat,
+      this.data,
+      this.width,
+      this.height,
+      this.mercatorBounds,
+      this.crs ?? "EPSG:4326",
+      this.channels,
+      this.channelLabels,
+      this.multiValueDimNames
+    );
+  }
+  /**
+   * Query all data values within a geographic region.
+   */
+  async queryRegion(geometry, selector) {
+    if (!this.mercatorBounds) {
+      return {
+        [this.variable]: [],
+        dimensions: [],
+        coordinates: { lat: [], lon: [] }
+      };
+    }
+    const desc = this.zarrStore.describe();
+    const querySelector = selector || this.selector;
+    return queryRegionSingleImage(
+      this.variable,
+      geometry,
+      querySelector,
+      this.data,
+      this.width,
+      this.height,
+      this.mercatorBounds,
+      this.crs ?? "EPSG:4326",
+      desc.dimensions,
+      desc.coordinates,
+      this.channels,
+      this.channelLabels,
+      this.multiValueDimNames
+    );
   }
 };
 
@@ -7376,7 +8332,7 @@ var ZarrLayer = class {
     this.zarrVersion = null;
     this.selectorHash = "";
     this.isMultiscale = true;
-    this.fillValue = null;
+    this._fillValue = null;
     this.scaleFactor = 1;
     this.offset = 0;
     this.map = null;
@@ -7432,7 +8388,7 @@ var ZarrLayer = class {
         customUniforms: this.customUniforms
       };
     }
-    if (fillValue !== void 0) this.fillValue = fillValue;
+    if (fillValue !== void 0) this._fillValue = fillValue;
     this.onLoadingStateChange = onLoadingStateChange;
   }
   resolveGl(map, gl) {
@@ -7450,6 +8406,9 @@ var ZarrLayer = class {
       rendererGl: describe(map?.renderer?.getContext?.())
     });
     throw new Error("MapLibre did not provide a valid WebGL2 context");
+  }
+  get fillValue() {
+    return this._fillValue;
   }
   isGlobeProjection(shaderData) {
     if (shaderData?.vertexShaderPrelude) return true;
@@ -7501,7 +8460,7 @@ var ZarrLayer = class {
         this.zarrStore = null;
       }
       this.dimensionValues = {};
-      this.fillValue = null;
+      this._fillValue = null;
       await this.initialize();
       await this.initializeMode();
       this.invalidate();
@@ -7616,8 +8575,8 @@ var ZarrLayer = class {
       this.dimIndices = desc.dimIndices;
       this.scaleFactor = desc.scaleFactor;
       this.offset = desc.addOffset;
-      if (this.fillValue === null && desc.fill_value !== null && desc.fill_value !== void 0) {
-        this.fillValue = desc.fill_value;
+      if (this._fillValue === null && desc.fill_value !== null && desc.fill_value !== void 0) {
+        this._fillValue = desc.fill_value;
       }
       this.isMultiscale = this.levelInfos.length > 0;
       await this.loadInitialDimensionValues();
@@ -7687,7 +8646,7 @@ var ZarrLayer = class {
       uniforms: {
         clim: this.clim,
         opacity: this.opacity,
-        fillValue: this.fillValue,
+        fillValue: this._fillValue,
         scaleFactor: this.scaleFactor,
         offset: this.offset
       },
@@ -7713,7 +8672,7 @@ var ZarrLayer = class {
       uniforms: {
         clim: this.clim,
         opacity: this.opacity,
-        fillValue: this.fillValue,
+        fillValue: this._fillValue,
         scaleFactor: this.scaleFactor,
         offset: this.offset
       },
@@ -7745,8 +8704,38 @@ var ZarrLayer = class {
       this.map.off("style.load", this.projectionChangeHandler);
     }
   }
+  // ========== Query Interface ==========
+  /**
+   * Query the data value at a geographic point.
+   * @param lng - Longitude in degrees.
+   * @param lat - Latitude in degrees.
+   * @returns Promise resolving to the query result.
+   */
+  async queryPoint(lng, lat) {
+    if (!this.mode?.queryPoint) {
+      return { lng, lat, value: null };
+    }
+    return this.mode.queryPoint(lng, lat);
+  }
+  /**
+   * Query all data values within a geographic region.
+   * @param geometry - GeoJSON Polygon or MultiPolygon geometry.
+   * @param selector - Optional selector to override the layer's selector.
+   * @returns Promise resolving to the query result matching carbonplan/maps structure.
+   */
+  async queryRegion(geometry, selector) {
+    if (!this.mode?.queryRegion) {
+      return {
+        [this.variable]: [],
+        dimensions: [],
+        coordinates: { lat: [], lon: [] }
+      };
+    }
+    return this.mode.queryRegion(geometry, selector);
+  }
 };
 export {
-  ZarrLayer
+  ZarrLayer,
+  mercatorYFromLat
 };
 //# sourceMappingURL=index.mjs.map

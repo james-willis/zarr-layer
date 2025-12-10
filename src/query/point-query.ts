@@ -5,10 +5,8 @@
  * Queries a single geographic point and returns the data value.
  */
 
-import type { TileTuple, MercatorBounds, XYLimits } from '../map-utils'
-import { tileToKey } from '../map-utils'
+import type { MercatorBounds, XYLimits } from '../map-utils'
 import type { Tiles, TileDataCache } from '../tiles'
-import type { ZarrStore } from '../zarr-store'
 import type { CRS } from '../types'
 import type { PointQueryResult, QuerySelector } from './types'
 import {
@@ -25,7 +23,6 @@ export async function queryPointTiled(
   lng: number,
   lat: number,
   tilesManager: Tiles,
-  zarrStore: ZarrStore,
   selector: QuerySelector,
   crs: CRS,
   xyLimits: XYLimits,
@@ -79,7 +76,8 @@ export async function queryPointTiled(
 
   // Extract value from tile data
   const channels = tileData.channels || 1
-  const dataIndex = clampedPixelY * tileSize * channels + clampedPixelX * channels
+  const dataIndex =
+    clampedPixelY * tileSize * channels + clampedPixelX * channels
   const value = tileData.data[dataIndex]
 
   // Get band values if multi-band
@@ -112,7 +110,10 @@ export function queryPointSingleImage(
   width: number,
   height: number,
   bounds: MercatorBounds,
-  crs: CRS
+  crs: CRS,
+  channels: number = 1,
+  channelLabels?: (string | number)[][],
+  multiValueDimNames?: string[]
 ): PointQueryResult {
   if (!data) {
     return { lng, lat, value: null }
@@ -125,13 +126,38 @@ export function queryPointSingleImage(
   }
 
   const { x, y } = pixel
-  const index = y * width + x
-  const value = data[index]
+  const baseIndex = (y * width + x) * channels
+  const value = data[baseIndex]
+
+  let bandValues: Record<string, number | null> | undefined
+  if (channels > 1) {
+    bandValues = {}
+    for (let c = 0; c < channels; c++) {
+      const labels = channelLabels?.[c]
+      let key: string
+      if (
+        labels &&
+        multiValueDimNames &&
+        labels.length === multiValueDimNames.length
+      ) {
+        key = labels
+          .map((label, i) => `${multiValueDimNames[i]}=${label}`)
+          .join('|')
+      } else if (labels && labels.length > 0) {
+        key = labels.join('|')
+      } else {
+        key = `band${c}`
+      }
+      const channelValue = data[baseIndex + c]
+      bandValues[key] = channelValue ?? null
+    }
+  }
 
   return {
     lng,
     lat,
     value: value ?? null,
+    bandValues,
     pixel: { x, y },
   }
 }

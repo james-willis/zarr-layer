@@ -592,15 +592,16 @@ export class ZarrLayer {
    * Query all data values within a geographic region.
    * @param geometry - GeoJSON Polygon or MultiPolygon geometry.
    * @param selector - Optional selector to override the layer's selector.
-   * @returns Promise resolving to the query result.
+   * @returns Promise resolving to the query result matching carbonplan/maps structure.
    */
   async queryRegion(
     geometry: QueryGeometry,
     selector?: QuerySelector
   ): Promise<RegionQueryResult> {
     if (!this.mode?.queryRegion) {
+      // Return empty result matching carbonplan/maps structure
       return {
-        values: [],
+        [this.variable]: [],
         dimensions: [],
         coordinates: { lat: [], lon: [] },
       }

@@ -11,6 +11,8 @@ import {
   getTilesAtZoomEquirect,
   latToMercatorNorm,
   lonToMercatorNorm,
+  mercatorNormToLat,
+  mercatorNormToLon,
 } from '../map-utils'
 import type { CRS } from '../types'
 import type { BoundingBox, QueryGeometry } from './types'
@@ -265,6 +267,184 @@ export function pointInGeoJSON(
   }
 
   return false
+}
+
+/**
+ * Lightweight polygon-rectangle intersection test.
+ * Returns true if any rectangle corner is inside geometry,
+ * any geometry vertex is inside rectangle, or if any edges intersect.
+ */
+function rectIntersectsGeometry(
+  rect: [number, number][],
+  geometry: QueryGeometry
+): boolean {
+  const rectMinX = Math.min(...rect.map((p) => p[0]))
+  const rectMaxX = Math.max(...rect.map((p) => p[0]))
+  const rectMinY = Math.min(...rect.map((p) => p[1]))
+  const rectMaxY = Math.max(...rect.map((p) => p[1]))
+
+  const pointInRect = (p: [number, number]) =>
+    p[0] >= rectMinX && p[0] <= rectMaxX && p[1] >= rectMinY && p[1] <= rectMaxY
+
+  // Any rect corner inside polygon
+  for (const corner of rect) {
+    if (pointInGeoJSON(corner, geometry)) return true
+  }
+
+  // Any polygon vertex inside rect
+  const rings =
+    geometry.type === 'Polygon'
+      ? geometry.coordinates
+      : geometry.coordinates.flatMap((poly) => poly)
+  for (const ring of rings) {
+    for (const [lon, lat] of ring) {
+      if (pointInRect([lon, lat])) return true
+    }
+  }
+
+  // Edge intersection: rectangle edges vs polygon edges (outer rings only)
+  const rectEdges: [[number, number], [number, number]][] = [
+    [rect[0], rect[1]],
+    [rect[1], rect[2]],
+    [rect[2], rect[3]],
+    [rect[3], rect[0]],
+  ]
+
+  const edgesFromRing = (ring: number[][]) =>
+    ring
+      .slice(0, -1)
+      .map(
+        (_, i) => [ring[i], ring[i + 1]] as [[number, number], [number, number]]
+      )
+
+  const segments =
+    geometry.type === 'Polygon'
+      ? edgesFromRing(geometry.coordinates[0])
+      : geometry.coordinates.flatMap((poly) => edgesFromRing(poly[0]))
+
+  const intersects = (
+    a1: [number, number],
+    a2: [number, number],
+    b1: [number, number],
+    b2: [number, number]
+  ): boolean => {
+    const cross = (v1: [number, number], v2: [number, number]) =>
+      v1[0] * v2[1] - v1[1] * v2[0]
+    const sub = (p1: [number, number], p2: [number, number]) =>
+      [p1[0] - p2[0], p1[1] - p2[1]] as [number, number]
+
+    const d1 = sub(a2, a1)
+    const d2 = sub(b2, b1)
+    const denom = cross(d1, d2)
+    if (denom === 0) return false
+
+    const s = cross(sub(b1, a1), d2) / denom
+    const t = cross(sub(b1, a1), d1) / denom
+    return s >= 0 && s <= 1 && t >= 0 && t <= 1
+  }
+
+  for (const edge of rectEdges) {
+    for (const seg of segments) {
+      if (intersects(edge[0], edge[1], seg[0], seg[1])) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+/**
+ * Rectangle (pixel) corners in lon/lat for tiled mode.
+ */
+function pixelRectLonLat(
+  tile: TileTuple,
+  pixelX: number,
+  pixelY: number,
+  tileSize: number,
+  crs: CRS,
+  xyLimits: XYLimits
+): [number, number][] {
+  const corners: [number, number][] = []
+  const offsets = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ]
+  for (const [dx, dy] of offsets) {
+    const p = tilePixelToLatLon(
+      tile,
+      pixelX + dx,
+      pixelY + dy,
+      tileSize,
+      crs,
+      xyLimits
+    )
+    corners.push([p.lon, p.lat])
+  }
+  return corners
+}
+
+/**
+ * Rectangle (pixel) corners in lon/lat for single-image mode.
+ */
+function pixelRectLonLatSingle(
+  bounds: MercatorBounds,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  crs: CRS
+): [number, number][] {
+  const offsets = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ]
+  const corners: [number, number][] = []
+  for (const [dx, dy] of offsets) {
+    const mercX = bounds.x0 + ((x + dx) / width) * (bounds.x1 - bounds.x0)
+    const mercY = bounds.y0 + ((y + dy) / height) * (bounds.y1 - bounds.y0)
+    const lon = mercatorNormToLon(mercX)
+    const lat =
+      crs === 'EPSG:4326' &&
+      bounds.latMin !== undefined &&
+      bounds.latMax !== undefined
+        ? bounds.latMax -
+          ((mercY - bounds.y0) / (bounds.y1 - bounds.y0)) *
+            (bounds.latMax - bounds.latMin)
+        : mercatorNormToLat(mercY)
+    corners.push([lon, lat])
+  }
+  return corners
+}
+
+export function pixelIntersectsGeometryTiled(
+  tile: TileTuple,
+  pixelX: number,
+  pixelY: number,
+  tileSize: number,
+  crs: CRS,
+  xyLimits: XYLimits,
+  geometry: QueryGeometry
+): boolean {
+  const rect = pixelRectLonLat(tile, pixelX, pixelY, tileSize, crs, xyLimits)
+  return rectIntersectsGeometry(rect, geometry)
+}
+
+export function pixelIntersectsGeometrySingle(
+  bounds: MercatorBounds,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  crs: CRS,
+  geometry: QueryGeometry
+): boolean {
+  const rect = pixelRectLonLatSingle(bounds, width, height, x, y, crs)
+  return rectIntersectsGeometry(rect, geometry)
 }
 
 /**

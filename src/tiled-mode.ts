@@ -12,7 +12,6 @@ import type {
 } from './query/types'
 import { queryPointTiled } from './query/point-query'
 import { queryRegionTiled } from './query/region-query'
-import { getSelectorHash } from './query/selector-utils'
 import type {
   LoadingStateCallback,
   MapLike,
@@ -71,6 +70,7 @@ export class TiledMode implements ZarrMode {
   private loadingCallback: LoadingStateCallback | undefined
   private pendingChunks: Set<string> = new Set()
   private metadataLoading: boolean = false
+  private currentLevel: number | null = null
 
   constructor(
     store: ZarrStore,
@@ -135,6 +135,9 @@ export class TiledMode implements ZarrMode {
     const visibleInfo = this.getVisibleTilesWithContext(map)
     this.visibleTiles = visibleInfo.tiles
     this.tileBounds = this.computeTileBounds(this.visibleTiles)
+    if (visibleInfo.pyramidLevel !== null) {
+      this.currentLevel = visibleInfo.pyramidLevel
+    }
 
     const currentHash = JSON.stringify(this.selector)
     const tilesToFetch: TileTuple[] = []
@@ -241,7 +244,7 @@ export class TiledMode implements ZarrMode {
     return null
   }
 
-  dispose(gl: WebGL2RenderingContext): void {
+  dispose(_gl: WebGL2RenderingContext): void {
     this.tileCache?.clear()
     this.tileCache = null
     this.pendingChunks.clear()
@@ -459,7 +462,6 @@ export class TiledMode implements ZarrMode {
       lng,
       lat,
       this.tilesManager,
-      this.zarrStore,
       this.selector as QuerySelector,
       this.crs,
       this.xyLimits,
@@ -476,8 +478,9 @@ export class TiledMode implements ZarrMode {
     selector?: QuerySelector
   ): Promise<RegionQueryResult> {
     if (!this.tilesManager || !this.xyLimits) {
+      // Return empty result matching carbonplan/maps structure
       return {
-        values: [],
+        [this.variable]: [],
         dimensions: [],
         coordinates: { lat: [], lon: [] },
       }
@@ -485,15 +488,16 @@ export class TiledMode implements ZarrMode {
 
     // Use provided selector or fall back to layer's selector
     const querySelector = selector || (this.selector as QuerySelector)
+    const level = this.currentLevel ?? this.maxZoom
 
     return queryRegionTiled(
+      this.variable,
       geometry,
       querySelector,
-      this.tilesManager,
       this.zarrStore,
       this.crs,
       this.xyLimits,
-      this.maxZoom,
+      level,
       this.tileSize
     )
   }

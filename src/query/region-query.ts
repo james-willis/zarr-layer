@@ -3,14 +3,19 @@
  *
  * Region query implementation for zarr-layer.
  * Queries all data points within a GeoJSON polygon.
+ * Matches carbonplan/maps structure and behavior.
  */
 
-import type { TileTuple, MercatorBounds, XYLimits } from '../map-utils'
-import { tileToKey } from '../map-utils'
-import type { Tiles, TileDataCache } from '../tiles'
+import type { MercatorBounds, XYLimits } from '../map-utils'
+import {
+  latToMercatorNorm,
+  lonToMercatorNorm,
+  mercatorNormToLat,
+  mercatorNormToLon,
+  tileToKey,
+} from '../map-utils'
 import type { ZarrStore } from '../zarr-store'
 import type { CRS } from '../types'
-import { queryPointTiled } from './point-query'
 import type {
   QueryGeometry,
   QuerySelector,
@@ -20,24 +25,25 @@ import type {
 import {
   computeBoundingBox,
   getTilesForPolygon,
-  pointInGeoJSON,
+  pixelIntersectsGeometrySingle,
+  pixelIntersectsGeometryTiled,
   tilePixelToLatLon,
-  mercatorBoundsToPixel,
 } from './query-utils'
 import {
   hasArraySelector,
   setObjectValues,
-  getSelectorHash,
-  getChunksForSelector,
+  getChunks,
+  getPointValues,
 } from './selector-utils'
 
 /**
  * Query a region in tiled mode.
+ * Returns structure matching carbonplan/maps: { [variable]: values, dimensions, coordinates }
  */
 export async function queryRegionTiled(
+  variable: string,
   geometry: QueryGeometry,
   selector: QuerySelector,
-  tilesManager: Tiles,
   zarrStore: ZarrStore,
   crs: CRS,
   xyLimits: XYLimits,
@@ -47,361 +53,390 @@ export async function queryRegionTiled(
   const desc = zarrStore.describe()
   const dimensions = desc.dimensions
   const coordinates = desc.coordinates
+  const shape = desc.shape || []
+  const chunks = desc.chunks || []
 
-  // Determine if results should be nested based on selector
-  const useNestedResults = hasArraySelector(selector)
+  // Calculate result dimension based on selector
+  // resultDim = total dims - (number of single-valued dims)
+  const singleValuedDims = Object.keys(selector).filter(
+    (k) => !Array.isArray(selector[k])
+  ).length
+  const resultDim = dimensions.length - singleValuedDims
+
+  // Determine if results should be nested
+  const useNestedResults = resultDim > 2
   let results: RegionValues = useNestedResults ? {} : []
 
-  const lat: number[] = []
-  const lon: number[] = []
-  const bandResults: Record<string, number[]> = {}
+  const latCoords: number[] = []
+  const lonCoords: number[] = []
+
+  // Build coordinates object for all dimensions
+  const resultCoordinates: Record<string, (number | string)[]> = {
+    lat: latCoords,
+    lon: lonCoords,
+  }
+
+  // Add non-spatial dimension coordinates from selector
+  for (const dim of dimensions) {
+    const dimLower = dim.toLowerCase()
+    if (!['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)) {
+      const selectorValue = selector[dim]
+      if (Array.isArray(selectorValue)) {
+        resultCoordinates[dim] = selectorValue as (string | number)[]
+      } else if (
+        selectorValue !== undefined &&
+        typeof selectorValue !== 'object'
+      ) {
+        resultCoordinates[dim] = [selectorValue]
+      } else if (coordinates[dim]) {
+        // Unconstrained dimension: include all coordinate values
+        resultCoordinates[dim] = coordinates[dim]
+      }
+    }
+  }
 
   // Get tiles that intersect the polygon
   const tiles = getTilesForPolygon(geometry, maxZoom, crs, xyLimits)
+  if (tiles.length === 0) {
+    // Return empty result in carbonplan/maps format
+    const result = {
+      [variable]: results,
+      dimensions: useNestedResults
+        ? dimensions.filter((d) => {
+            const dimLower = d.toLowerCase()
+            return !['x', 'lon', 'longitude'].includes(dimLower)
+          })
+        : ['lat', 'lon'],
+      coordinates: resultCoordinates,
+    } as RegionQueryResult
+    return result
+  }
 
-  // Fetch all required tiles
-  const selectorHash = getSelectorHash(selector)
-  await Promise.all(
-    tiles.map(async (tileTuple) => {
-      let tileData = tilesManager.getTile(tileTuple) || null
-      if (
-        !tileData ||
-        !tileData.data ||
-        tileData.selectorHash !== selectorHash
-      ) {
-        await tilesManager.fetchTile(tileTuple, selectorHash)
-      }
-    })
-  )
+  // Get level path for chunk fetching
+  const levelPath = zarrStore.levels[maxZoom]
+  if (!levelPath) {
+    throw new Error(`No level path found for zoom ${maxZoom}`)
+  }
 
-  // Iterate over tiles and pixels
+  // For each tile, determine which chunks we need based on selector and fetch them
+  const tileChunkData = new Map<string, Map<string, Float32Array>>()
+
   for (const tileTuple of tiles) {
-    const tileData = tilesManager.getTile(tileTuple)
-    if (!tileData || !tileData.data) continue
+    const [, x, y] = tileTuple
+    const chunksToFetch = getChunks(
+      selector,
+      dimensions,
+      coordinates,
+      shape,
+      chunks,
+      x,
+      y
+    )
 
-    const [z, x, y] = tileTuple
-    const channels = tileData.channels || 1
+    const tileKey = tileToKey(tileTuple)
+    const chunkDataMap = new Map<string, Float32Array>()
+
+    // Fetch all chunks for this tile
+    await Promise.all(
+      chunksToFetch.map(async (chunkIndices) => {
+        try {
+          const chunk = await zarrStore.getChunk(levelPath, chunkIndices)
+          // Make a proper copy to avoid buffer sharing issues
+          const chunkData = new Float32Array(chunk.data as ArrayLike<number>)
+
+          // Store chunk with indices as key
+          const chunkKey = chunkIndices.join(',')
+          chunkDataMap.set(chunkKey, chunkData)
+        } catch (err) {
+          console.warn(
+            `Failed to fetch chunk ${chunkIndices} for tile ${tileKey}:`,
+            err
+          )
+        }
+      })
+    )
+
+    tileChunkData.set(tileKey, chunkDataMap)
+  }
+
+  // Iterate over tiles and pixels to extract values
+  for (const tileTuple of tiles) {
+    const tileKey = tileToKey(tileTuple)
+    const chunkDataMap = tileChunkData.get(tileKey)
+    if (!chunkDataMap || chunkDataMap.size === 0) continue
+
+    // Get all chunk indices for this tile
+    const [, x, y] = tileTuple
+    const chunksForTile = getChunks(
+      selector,
+      dimensions,
+      coordinates,
+      shape,
+      chunks,
+      x,
+      y
+    )
 
     for (let pixelY = 0; pixelY < tileSize; pixelY++) {
       for (let pixelX = 0; pixelX < tileSize; pixelX++) {
-        // Convert pixel to geographic coordinates
+        if (
+          !pixelIntersectsGeometryTiled(
+            tileTuple,
+            pixelX,
+            pixelY,
+            tileSize,
+            crs,
+            xyLimits,
+            geometry
+          )
+        ) {
+          continue
+        }
+
         const geo = tilePixelToLatLon(
           tileTuple,
-          pixelX,
-          pixelY,
+          pixelX + 0.5,
+          pixelY + 0.5,
           tileSize,
           crs,
           xyLimits
         )
 
-        // Test if point is inside polygon
-        if (!pointInGeoJSON([geo.lon, geo.lat], geometry)) {
-          continue
-        }
+        latCoords.push(geo.lat)
+        lonCoords.push(geo.lon)
 
-        // Point is inside - collect values
-        lon.push(geo.lon)
-        lat.push(geo.lat)
+        for (const chunkIndices of chunksForTile) {
+          const chunkKey = chunkIndices.join(',')
+          const chunkData = chunkDataMap.get(chunkKey)
+          if (!chunkData) continue
 
-        const dataIndex = pixelY * tileSize * channels + pixelX * channels
-        const value = tileData.data[dataIndex]
+          const valuesToSet = getPointValues(
+            chunkData,
+            pixelX,
+            pixelY,
+            selector,
+            dimensions,
+            coordinates,
+            shape,
+            chunks,
+            chunkIndices
+          )
 
-        if (useNestedResults) {
-          // For nested results, we need to determine the keys based on selector
-          const keys = getSelectorKeys(selector, dimensions, coordinates)
-          if (keys.length > 0) {
-            setObjectValues(results, keys, value)
-          } else {
-            // Should not happen with array selector, but fallback
-            if (Array.isArray(results)) {
-              results.push(value)
+          valuesToSet.forEach(({ keys, value }) => {
+            if (keys.length > 0) {
+              setObjectValues(results, keys, value)
+            } else {
+              if (Array.isArray(results)) {
+                results.push(value)
+              }
             }
-          }
-        } else {
-          // Flat array results
-          if (Array.isArray(results)) {
-            results.push(value)
-          }
-        }
-
-        if (tileData.bandData && tileData.bandData.size > 0) {
-          const bandIndex = pixelY * tileSize + pixelX
-          for (const [bandName, bandData] of tileData.bandData) {
-            const arr = bandResults[bandName] || []
-            arr.push(bandData[bandIndex])
-            bandResults[bandName] = arr
-          }
+          })
         }
       }
     }
   }
 
-  // Build coordinates object
-  const coordsResult: Record<string, (number | string)[]> = { lat, lon }
+  // Build final result matching carbonplan/maps structure
+  const resultDimensions = useNestedResults
+    ? dimensions.filter((d) => {
+        const dimLower = d.toLowerCase()
+        return !['x', 'lon', 'longitude'].includes(dimLower)
+      })
+    : ['lat', 'lon']
 
-  // Add non-spatial dimension coordinates from selector
-  for (const dim of dimensions) {
-    const dimLower = dim.toLowerCase()
-    if (['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)) {
-      continue
-    }
+  const result = {
+    [variable]: results,
+    dimensions: resultDimensions,
+    coordinates: resultCoordinates,
+  } as RegionQueryResult
 
-    const selectorValue = selector[dim]
-    if (selectorValue !== undefined) {
-      if (Array.isArray(selectorValue)) {
-        coordsResult[dim] = selectorValue
-      } else if (
-        typeof selectorValue === 'object' &&
-        'selected' in selectorValue
-      ) {
-        const selected = selectorValue.selected
-        coordsResult[dim] = Array.isArray(selected) ? selected : [selected]
-      } else {
-        coordsResult[dim] = [selectorValue]
-      }
-    } else if (coordinates[dim]) {
-      coordsResult[dim] = coordinates[dim]
-    }
-  }
-
-  const hasValues =
-    (Array.isArray(results) && results.length > 0) ||
-    (!Array.isArray(results) && Object.keys(results).length > 0)
-
-  let fallbackBandValues: Record<string, RegionValues> | undefined
-
-  // Fallback: if the polygon is smaller than a pixel and missed all centers,
-  // sample the polygon center with a point query so viewport queries still return.
-  if (!hasValues) {
-    const bbox = computeBoundingBox(geometry)
-    const centerLng = (bbox.west + bbox.east) / 2
-    const centerLat = (bbox.south + bbox.north) / 2
-    const pointResult = await queryPointTiled(
-      centerLng,
-      centerLat,
-      tilesManager,
-      zarrStore,
-      selector,
-      crs,
-      xyLimits,
-      maxZoom,
-      tileSize
-    )
-
-    lat.push(pointResult.lat)
-    lon.push(pointResult.lng)
-
-    const value = pointResult.value ?? Number.NaN
-    if (useNestedResults) {
-      const keys = getSelectorKeys(selector, dimensions, coordinates)
-      setObjectValues(results, keys, value)
-    } else {
-      if (Array.isArray(results)) {
-        results.push(value)
-      }
-    }
-
-    if (pointResult.bandValues) {
-      fallbackBandValues = {}
-      for (const [band, bandValue] of Object.entries(pointResult.bandValues)) {
-        fallbackBandValues[band] = [bandValue ?? Number.NaN]
-      }
-    }
-  }
-
-  return {
-    values: results,
-    dimensions: dimensions.map((d) => {
-      const lower = d.toLowerCase()
-      if (['x', 'lon', 'longitude'].includes(lower)) return 'lon'
-      if (['y', 'lat', 'latitude'].includes(lower)) return 'lat'
-      return d
-    }),
-    coordinates: coordsResult as RegionQueryResult['coordinates'],
-    bandValues:
-      Object.keys(bandResults).length > 0 ? bandResults : fallbackBandValues,
-  }
+  return result
 }
 
 /**
  * Query a region in single-image mode.
+ * Returns structure matching carbonplan/maps: { [variable]: values, dimensions, coordinates }
  */
-export function queryRegionSingleImage(
+export async function queryRegionSingleImage(
+  variable: string,
   geometry: QueryGeometry,
   selector: QuerySelector,
   data: Float32Array | null,
   width: number,
   height: number,
   bounds: MercatorBounds,
-  crs: CRS,
+  _crs: CRS,
   dimensions: string[],
-  coordinates: Record<string, (string | number)[]>
-): RegionQueryResult {
-  const useNestedResults = hasArraySelector(selector)
+  coordinates: Record<string, (string | number)[]>,
+  channels: number = 1,
+  channelLabels?: (string | number)[][],
+  multiValueDimNames?: string[]
+): Promise<RegionQueryResult> {
+  // Warn if selector has multi-valued dimensions
+  const hasMultiValue = hasArraySelector(selector)
+  if (hasMultiValue) {
+    console.warn(
+      'queryRegion with multi-valued selectors is not fully supported in single-image mode. ' +
+        'Results may not match the requested selector. Consider using tiled mode for complex queries.'
+    )
+  }
+
+  // Calculate result dimension
+  const singleValuedDims = Object.keys(selector).filter(
+    (k) => !Array.isArray(selector[k])
+  ).length
+  const resultDim = dimensions.length - singleValuedDims
+
+  // Determine if results should be nested
+  const useNestedResults = resultDim > 2
   let results: RegionValues = useNestedResults ? {} : []
 
-  const lat: number[] = []
-  const lon: number[] = []
+  const latCoords: number[] = []
+  const lonCoords: number[] = []
 
-  if (!data) {
-    return {
-      values: results,
-      dimensions: ['lat', 'lon'],
-      coordinates: { lat, lon },
+  // Build coordinates object
+  const resultCoordinates: Record<string, (number | string)[]> = {
+    lat: latCoords,
+    lon: lonCoords,
+  }
+
+  // Add non-spatial dimension coordinates from selector
+  for (const dim of dimensions) {
+    const dimLower = dim.toLowerCase()
+    if (!['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)) {
+      const selectorValue = selector[dim]
+      if (Array.isArray(selectorValue)) {
+        resultCoordinates[dim] = selectorValue as (string | number)[]
+      } else if (
+        selectorValue !== undefined &&
+        typeof selectorValue !== 'object'
+      ) {
+        resultCoordinates[dim] = [selectorValue]
+      } else if (coordinates[dim]) {
+        resultCoordinates[dim] = coordinates[dim]
+      }
     }
   }
 
-  // Iterate over all pixels in the image
-  for (let pixelY = 0; pixelY < height; pixelY++) {
-    for (let pixelX = 0; pixelX < width; pixelX++) {
-      // Convert pixel to geographic coordinates
-      const geo = pixelToGeo(pixelX, pixelY, width, height, bounds, crs)
-      if (!geo) continue
+  if (!data) {
+    const result = {
+      [variable]: results,
+      dimensions: useNestedResults
+        ? dimensions.filter((d) => {
+            const dimLower = d.toLowerCase()
+            return !['x', 'lon', 'longitude'].includes(dimLower)
+          })
+        : ['lat', 'lon'],
+      coordinates: resultCoordinates,
+    } as RegionQueryResult
+    return result
+  }
 
-      // Test if point is inside polygon
-      if (!pointInGeoJSON([geo.lon, geo.lat], geometry)) {
+  const bbox = computeBoundingBox(geometry)
+
+  // Compute overlap of polygon bbox with image bounds in mercator space
+  const polyX0 = lonToMercatorNorm(bbox.west)
+  const polyX1 = lonToMercatorNorm(bbox.east)
+  const polyY0 = latToMercatorNorm(bbox.north)
+  const polyY1 = latToMercatorNorm(bbox.south)
+
+  const overlapX0 = Math.max(bounds.x0, Math.min(polyX0, polyX1))
+  const overlapX1 = Math.min(bounds.x1, Math.max(polyX0, polyX1))
+  const overlapY0 = Math.max(bounds.y0, Math.min(polyY0, polyY1))
+  const overlapY1 = Math.min(bounds.y1, Math.max(polyY0, polyY1))
+
+  if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) {
+    const result = {
+      [variable]: results,
+      dimensions: useNestedResults
+        ? dimensions.filter((d) => {
+            const dimLower = d.toLowerCase()
+            return !['x', 'lon', 'longitude'].includes(dimLower)
+          })
+        : ['lat', 'lon'],
+      coordinates: resultCoordinates,
+    } as RegionQueryResult
+    return result
+  }
+
+  const minX = ((overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0)) * width
+  const maxX = ((overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0)) * width
+  const minY = ((overlapY0 - bounds.y0) / (bounds.y1 - bounds.y0)) * height
+  const maxY = ((overlapY1 - bounds.y0) / (bounds.y1 - bounds.y0)) * height
+
+  const xStart = Math.max(0, Math.floor(minX))
+  const xEnd = Math.min(width, Math.ceil(maxX + 1))
+  const yStart = Math.max(0, Math.floor(minY))
+  const yEnd = Math.min(height, Math.ceil(maxY + 1))
+
+  // Iterate pixels within bounding box
+  for (let y = yStart; y < yEnd; y++) {
+    for (let x = xStart; x < xEnd; x++) {
+      if (
+        !pixelIntersectsGeometrySingle(
+          bounds,
+          width,
+          height,
+          x,
+          y,
+          _crs,
+          geometry
+        )
+      ) {
         continue
       }
 
-      // Point is inside - collect values
-      lon.push(geo.lon)
-      lat.push(geo.lat)
+      const mercX = bounds.x0 + ((x + 0.5) / width) * (bounds.x1 - bounds.x0)
+      const mercY = bounds.y0 + ((y + 0.5) / height) * (bounds.y1 - bounds.y0)
 
-      const dataIndex = pixelY * width + pixelX
-      const value = data[dataIndex]
+      const lon = mercatorNormToLon(mercX)
+      const lat =
+        _crs === 'EPSG:4326' &&
+        bounds.latMin !== undefined &&
+        bounds.latMax !== undefined
+          ? bounds.latMax -
+            ((mercY - bounds.y0) / (bounds.y1 - bounds.y0)) *
+              (bounds.latMax - bounds.latMin)
+          : mercatorNormToLat(mercY)
 
-      if (useNestedResults) {
-        const keys = getSelectorKeys(selector, dimensions, coordinates)
-        if (keys.length > 0) {
-          setObjectValues(results, keys, value)
-        } else {
-          if (Array.isArray(results)) {
-            results.push(value)
-          }
+      const baseIndex = (y * width + x) * channels
+      let coordPushed = false
+
+      for (let c = 0; c < channels; c++) {
+        const value = data[baseIndex + c]
+        if (value === undefined || value === null || isNaN(value)) continue
+
+        if (!coordPushed) {
+          latCoords.push(lat)
+          lonCoords.push(lon)
+          coordPushed = true
         }
-      } else {
-        if (Array.isArray(results)) {
+
+        if (useNestedResults && multiValueDimNames) {
+          const labels = channelLabels?.[c]
+          const keys =
+            labels && labels.length === multiValueDimNames.length ? labels : [c]
+          setObjectValues(results, keys, value)
+        } else if (Array.isArray(results)) {
           results.push(value)
         }
       }
     }
   }
 
-  // Build coordinates object
-  const coordsResult: Record<string, (number | string)[]> = { lat, lon }
+  // Build final result
+  const resultDimensions = useNestedResults
+    ? dimensions.filter((d) => {
+        const dimLower = d.toLowerCase()
+        return !['x', 'lon', 'longitude'].includes(dimLower)
+      })
+    : ['lat', 'lon']
 
-  for (const dim of dimensions) {
-    const dimLower = dim.toLowerCase()
-    if (['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)) {
-      continue
-    }
+  const result = {
+    [variable]: results,
+    dimensions: resultDimensions,
+    coordinates: resultCoordinates,
+  } as RegionQueryResult
 
-    const selectorValue = selector[dim]
-    if (selectorValue !== undefined) {
-      if (Array.isArray(selectorValue)) {
-        coordsResult[dim] = selectorValue
-      } else if (
-        typeof selectorValue === 'object' &&
-        'selected' in selectorValue
-      ) {
-        const selected = selectorValue.selected
-        coordsResult[dim] = Array.isArray(selected) ? selected : [selected]
-      } else {
-        coordsResult[dim] = [selectorValue]
-      }
-    } else if (coordinates[dim]) {
-      coordsResult[dim] = coordinates[dim]
-    }
-  }
-
-  return {
-    values: results,
-    dimensions: dimensions.map((d) => {
-      const lower = d.toLowerCase()
-      if (['x', 'lon', 'longitude'].includes(lower)) return 'lon'
-      if (['y', 'lat', 'latitude'].includes(lower)) return 'lat'
-      return d
-    }),
-    coordinates: coordsResult as RegionQueryResult['coordinates'],
-  }
-}
-
-/**
- * Gets the keys for nested results based on selector.
- */
-function getSelectorKeys(
-  selector: QuerySelector,
-  dimensions: string[],
-  coordinates: Record<string, (string | number)[]>
-): (string | number)[] {
-  const keys: (string | number)[] = []
-
-  for (const dim of dimensions) {
-    const dimLower = dim.toLowerCase()
-    if (['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)) {
-      continue
-    }
-
-    const selectorValue = selector[dim]
-    if (selectorValue === undefined) {
-      // No selector - include all coordinate values as keys
-      if (coordinates[dim] && coordinates[dim].length > 1) {
-        // This would need iteration - handled differently in full implementation
-      }
-    } else if (Array.isArray(selectorValue)) {
-      // Array selector - first value as key (full implementation needs iteration)
-      if (selectorValue.length > 0) {
-        keys.push(selectorValue[0])
-      }
-    } else if (
-      typeof selectorValue === 'object' &&
-      'selected' in selectorValue
-    ) {
-      const selected = selectorValue.selected
-      if (Array.isArray(selected) && selected.length > 0) {
-        keys.push(selected[0])
-      }
-    }
-    // Single value selectors don't contribute keys
-  }
-
-  return keys
-}
-
-/**
- * Converts pixel coordinates to geographic coordinates for single-image mode.
- */
-function pixelToGeo(
-  pixelX: number,
-  pixelY: number,
-  width: number,
-  height: number,
-  bounds: MercatorBounds,
-  crs: CRS
-): { lat: number; lon: number } | null {
-  const normX = pixelX / width
-  const normY = pixelY / height
-
-  // Convert normalized coordinates to mercator
-  const mercX = bounds.x0 + normX * (bounds.x1 - bounds.x0)
-  const mercY = bounds.y0 + normY * (bounds.y1 - bounds.y0)
-
-  // Convert mercator to geographic
-  const lon = mercX * 360 - 180
-
-  if (
-    crs === 'EPSG:4326' &&
-    bounds.latMin !== undefined &&
-    bounds.latMax !== undefined
-  ) {
-    // For equirectangular data, use linear lat mapping
-    const lat = bounds.latMax - normY * (bounds.latMax - bounds.latMin)
-    return { lat, lon }
-  }
-
-  // Invert mercator Y to latitude
-  const y2 = 180 - mercY * 360
-  const lat = (360 / Math.PI) * Math.atan(Math.exp((y2 * Math.PI) / 180)) - 90
-
-  return { lat, lon }
+  return result
 }

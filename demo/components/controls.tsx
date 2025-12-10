@@ -164,8 +164,16 @@ const clamp = (value: number, min: number, max: number) =>
 const collectNumbers = (
   values: RegionValues | undefined,
   fillValue: number,
+  depth: number = 0,
 ): number[] => {
   if (!values) return []
+
+  // Prevent infinite recursion
+  if (depth > 10) {
+    console.warn('collectNumbers: max depth reached')
+    return []
+  }
+
   if (Array.isArray(values)) {
     return values.filter(
       (value): value is number =>
@@ -175,9 +183,19 @@ const collectNumbers = (
     )
   }
 
-  const results: number[] = []
+  // Only process plain objects
+  if (typeof values !== 'object' || values === null) return []
+
+  let results: number[] = []
   for (const entry of Object.values(values)) {
-    results.push(...collectNumbers(entry as RegionValues, fillValue))
+    if (entry === values) continue // Skip circular references
+    // Use concat instead of spread to avoid stack overflow with large arrays
+    const collected = collectNumbers(
+      entry as RegionValues,
+      fillValue,
+      depth + 1,
+    )
+    results = results.concat(collected)
   }
   return results
 }
@@ -193,7 +211,7 @@ const collectRangeBandValues = (
   if (!bandValues || monthStart === null || monthEnd === null) return []
 
   const inRange = (month: number) => month >= monthStart && month <= monthEnd
-  const collected: number[] = []
+  let collected: number[] = []
 
   for (const [bandName, values] of Object.entries(bandValues)) {
     const match = /^month_(\d+)/.exec(bandName)
@@ -207,7 +225,10 @@ const collectRangeBandValues = (
       continue
     }
     if (values === null || values === undefined) continue
-    collected.push(...collectNumbers(values as RegionValues, fillValue))
+    // Use concat instead of spread to avoid stack overflow with large arrays
+    collected = collected.concat(
+      collectNumbers(values as RegionValues, fillValue),
+    )
   }
 
   return collected
@@ -216,32 +237,27 @@ const collectRangeBandValues = (
 const getRegionMean = (
   result: RegionQueryResult | null,
   fillValue: number,
-  monthStart: number | null,
-  monthEnd: number | null,
 ): number | null => {
   if (!result) return null
 
-  const bandRangeValues = collectRangeBandValues(
-    result.bandValues as
-      | Record<string, RegionValues | number | null | undefined>
-      | undefined,
-    monthStart,
-    monthEnd,
-    fillValue,
-  )
-  if (bandRangeValues.length > 0) {
-    const sum = bandRangeValues.reduce((acc, value) => acc + value, 0)
-    return sum / bandRangeValues.length
-  }
+  let numbers: number[] = []
 
-  const numbers: number[] = []
+  for (const [key, value] of Object.entries(result)) {
+    // Skip metadata fields
+    if (key === 'dimensions' || key === 'coordinates') continue
 
-  if (result.bandValues) {
-    for (const values of Object.values(result.bandValues)) {
-      numbers.push(...collectNumbers(values as RegionValues, fillValue))
+    // Skip if value is not object or array
+    if (!value || typeof value !== 'object') continue
+
+    // This is the variable data - collect all numbers from it
+    try {
+      // Use concat instead of spread to avoid stack overflow with large arrays
+      numbers = numbers.concat(
+        collectNumbers(value as RegionValues, fillValue, 0),
+      )
+    } catch (error) {
+      console.error('Error collecting numbers from', key, error)
     }
-  } else if (result.values) {
-    numbers.push(...collectNumbers(result.values, fillValue))
   }
 
   if (numbers.length === 0) return null
@@ -285,12 +301,12 @@ const Controls = () => {
     }
 
     updateZoom()
-    ;(mapInstance as any).on?.('zoom', updateZoom)
-    ;(mapInstance as any).on?.('move', updateZoom)
+    mapInstance.on?.('zoom', updateZoom)
+    mapInstance.on?.('move', updateZoom)
 
     return () => {
-      ;(mapInstance as any)?.off?.('zoom', updateZoom)
-      ;(mapInstance as any)?.off?.('move', updateZoom)
+      mapInstance?.off?.('zoom', updateZoom)
+      mapInstance?.off?.('move', updateZoom)
     }
   }, [mapInstance])
 
@@ -310,6 +326,7 @@ const Controls = () => {
     (state) => state.setActiveDatasetState,
   )
   const setRegionResult = useAppStore((state) => state.setRegionResult)
+  const setPointResult = useAppStore((state) => state.setPointResult)
   const themedColormap = useThemedColormap(colormap)
 
   const layerConfig = useMemo(
@@ -324,6 +341,12 @@ const Controls = () => {
   const isRangeBand =
     isCarbonplan4d &&
     (currentBand === 'tavg_range' || currentBand === 'prec_range')
+
+  useEffect(() => {
+    // Clear query results when switching dataset or band to avoid stale display
+    setPointResult(null)
+    setRegionResult(null)
+  }, [datasetId, currentBand, setPointResult, setRegionResult])
 
   const pointDisplayValue = useMemo(() => {
     if (isRangeBand) {
@@ -342,13 +365,18 @@ const Controls = () => {
     }
 
     const value = pointResult?.value
-    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (
+      typeof value === 'number' &&
+      Number.isFinite(value) &&
+      value !== fillValue
+    )
+      return value
     return null
   }, [fillValue, isRangeBand, monthEnd, monthStart, pointResult])
 
   const regionMean = useMemo(
-    () => getRegionMean(regionResult, fillValue, monthStart, monthEnd),
-    [regionResult, fillValue, monthStart, monthEnd],
+    () => getRegionMean(regionResult, fillValue),
+    [regionResult, fillValue],
   )
 
   const handleClimChange = (
@@ -389,7 +417,24 @@ const Controls = () => {
         throw new Error('Viewport query is not available')
       }
       const geometry = boundsToGeometry(bounds)
-      const result = await zarrLayer.queryRegion(geometry, layerConfig.selector)
+      console.log('geometry', geometry)
+      // If in range mode, query only the selected month range
+      let querySelector = layerConfig.selector
+      if (isRangeBand && monthStart !== null && monthEnd !== null) {
+        const monthRange: number[] = []
+        for (let m = monthStart; m <= monthEnd; m++) {
+          monthRange.push(m)
+        }
+        // Get the base band (tavg or prec) from current selection
+        const baseBand = currentBand === 'tavg_range' ? 'tavg' : 'prec'
+        querySelector = { band: baseBand, month: monthRange }
+        console.log(
+          `Querying range mode: band=${baseBand}, months=${monthRange.join(',')}`,
+        )
+      }
+
+      const result = await zarrLayer.queryRegion(geometry, querySelector)
+      console.log('Query result:', result)
       setRegionResult(result)
     } catch (error) {
       console.error('Viewport query failed', error)
@@ -424,21 +469,24 @@ const Controls = () => {
           <Box sx={headingSx}>Query</Box>
         </Column>
         <Column start={1} width={1}>
-          <Box sx={subheadingSx}>Click</Box>
+          <Box sx={subheadingSx}>Point</Box>
         </Column>
         <Column start={2} width={3}>
           <Box sx={{ color: 'secondary' }}>
-            <Badge>
-              {pointDisplayValue !== null
-                ? pointDisplayValue.toFixed(2)
-                : '---'}
-            </Badge>
+            <Flex sx={{ justifyContent: 'space-between' }}>
+              <Badge>
+                {pointDisplayValue !== null
+                  ? pointDisplayValue.toFixed(2)
+                  : '---'}
+              </Badge>
+              <Box>Click map to query</Box>
+            </Flex>
           </Box>
         </Column>
       </Row>
       <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline' }}>
         <Column start={1} width={1}>
-          <Box sx={subheadingSx}>Viewport</Box>
+          <Box sx={subheadingSx}>Region</Box>
         </Column>
         <Column start={2} width={3}>
           <Flex sx={{ justifyContent: 'space-between' }}>

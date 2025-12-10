@@ -124,7 +124,7 @@ export function getChunksForSelector(
       indices = selectorValue.map((v) => {
         if (coords) {
           const idx = coords.indexOf(v)
-          return idx >= 0 ? idx : (typeof v === 'number' ? v : 0)
+          return idx >= 0 ? idx : typeof v === 'number' ? v : 0
         }
         return typeof v === 'number' ? v : 0
       })
@@ -143,7 +143,7 @@ export function getChunksForSelector(
         indices = values.map((v) => {
           if (coords) {
             const idx = coords.indexOf(v as string | number)
-            return idx >= 0 ? idx : (typeof v === 'number' ? v : 0)
+            return idx >= 0 ? idx : typeof v === 'number' ? v : 0
           }
           return typeof v === 'number' ? v : 0
         })
@@ -152,7 +152,13 @@ export function getChunksForSelector(
       // Single value
       if (coords) {
         const idx = coords.indexOf(selectorValue)
-        indices = [idx >= 0 ? idx : (typeof selectorValue === 'number' ? selectorValue : 0)]
+        indices = [
+          idx >= 0
+            ? idx
+            : typeof selectorValue === 'number'
+            ? selectorValue
+            : 0,
+        ]
       } else {
         indices = [typeof selectorValue === 'number' ? selectorValue : 0]
       }
@@ -187,8 +193,6 @@ export function getPointValues(
   data: Float32Array,
   pixelX: number,
   pixelY: number,
-  tileSize: number,
-  channels: number,
   selector: QuerySelector,
   dimensions: string[],
   coordinates: Record<string, (string | number)[]>,
@@ -200,7 +204,7 @@ export function getPointValues(
 
   // Build combined indices for all selector combinations
   let combinedIndices: number[][] = [[]]
-  const keys: ((string | number)[])[] = [[]]
+  const keys: (string | number)[][] = [[]]
 
   for (let i = 0; i < dimensions.length; i++) {
     const dimension = dimensions[i]
@@ -281,7 +285,8 @@ export function getPointValues(
         let idx: number
         if (coords) {
           idx = coords.indexOf(selectorValue)
-          if (idx < 0) idx = typeof selectorValue === 'number' ? selectorValue : 0
+          if (idx < 0)
+            idx = typeof selectorValue === 'number' ? selectorValue : 0
         } else {
           idx = typeof selectorValue === 'number' ? selectorValue : 0
         }
@@ -291,7 +296,7 @@ export function getPointValues(
 
       // Expand combined indices with selector indices
       const newCombined: number[][] = []
-      const newKeys: ((string | number)[])[] = []
+      const newKeys: (string | number)[][] = []
       for (let j = 0; j < selectorIndices.length; j++) {
         for (let k = 0; k < combinedIndices.length; k++) {
           newCombined.push([...combinedIndices[k], selectorIndices[j]])
@@ -302,7 +307,10 @@ export function getPointValues(
           }
         }
       }
-      combinedIndices = newCombined.length > 0 ? newCombined : combinedIndices.map((prev) => [...prev, 0])
+      combinedIndices =
+        newCombined.length > 0
+          ? newCombined
+          : combinedIndices.map((prev) => [...prev, 0])
       keys.length = 0
       keys.push(...(newKeys.length > 0 ? newKeys : keys.map(() => [])))
     }
@@ -316,30 +324,34 @@ export function getPointValues(
     // Convert global indices to local chunk indices for non-spatial dimensions
     const localIndices = indices.map((idx, j) => {
       const dimLower = dimensions[j].toLowerCase()
-      if (['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)) {
+      if (
+        ['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(dimLower)
+      ) {
         return idx
       }
       return idx - chunkIndices[j] * chunks[j]
     })
 
     // Calculate flat index in data array
-    // For simple 2D lat/lon data: index = y * width + x
-    // For higher-dimensional data, we need to compute based on shape
-    const latIdx = dimensions.findIndex((d) =>
-      ['y', 'lat', 'latitude'].includes(d.toLowerCase())
-    )
-    const lonIdx = dimensions.findIndex((d) =>
-      ['x', 'lon', 'longitude'].includes(d.toLowerCase())
-    )
+    // For multi-dimensional data, we need to compute strides for each dimension
+    // Formula: index = sum(localIndices[i] * stride[i]) where stride[i] = product of all subsequent dimension sizes
 
-    if (latIdx >= 0 && lonIdx >= 0) {
-      const dataIndex =
-        localIndices[latIdx] * tileSize * channels +
-        localIndices[lonIdx] * channels
-
-      const value = data[dataIndex]
-      result.push({ keys: entryKeys, value })
+    // The chunk size is just the chunks array - data array contains the full chunk
+    // Calculate strides (product of subsequent chunk dimensions)
+    const strides = new Array(dimensions.length)
+    strides[dimensions.length - 1] = 1
+    for (let j = dimensions.length - 2; j >= 0; j--) {
+      strides[j] = strides[j + 1] * chunks[j + 1]
     }
+
+    // Compute flat index
+    let dataIndex = 0
+    for (let j = 0; j < dimensions.length; j++) {
+      dataIndex += localIndices[j] * strides[j]
+    }
+
+    const value = data[dataIndex]
+    result.push({ keys: entryKeys, value })
   }
 
   return result
@@ -388,4 +400,111 @@ export function setObjectValues(
  */
 export function getSelectorHash(selector: QuerySelector): string {
   return JSON.stringify(selector, Object.keys(selector).sort())
+}
+
+/**
+ * Get all chunk indices for a selector (cartesian product).
+ * Directly ported from carbonplan/maps getChunks().
+ *
+ * @param selector - The query selector (can have multi-valued dimensions)
+ * @param dimensions - Dimension names in order
+ * @param coordinates - Coordinate values for each dimension
+ * @param shape - Array shape
+ * @param chunks - Chunk sizes for each dimension
+ * @param x - Tile x coordinate (for lon dimension)
+ * @param y - Tile y coordinate (for lat dimension)
+ * @returns Array of chunk index arrays (cartesian product)
+ */
+export function getChunks(
+  selector: QuerySelector,
+  dimensions: string[],
+  coordinates: Record<string, (string | number)[]>,
+  shape: number[],
+  chunks: number[],
+  x: number,
+  y: number
+): number[][] {
+  // Map each dimension to its relevant chunk indices
+  const chunkIndicesToUse = dimensions.map((dimension, i) => {
+    const dimLower = dimension.toLowerCase()
+
+    // Spatial dimensions: use tile coordinates
+    if (['x', 'lon', 'longitude'].includes(dimLower)) {
+      return [x]
+    } else if (['y', 'lat', 'latitude'].includes(dimLower)) {
+      return [y]
+    }
+
+    const selectorValue = selector[dimension]
+    const coords = coordinates[dimension]
+    const chunkSize = chunks[i]
+    let indices: number[]
+
+    if (selectorValue === undefined) {
+      // Unconstrained dimension: span entire dimension
+      indices = Array(shape[i])
+        .fill(null)
+        .map((_, j) => j)
+    } else if (Array.isArray(selectorValue)) {
+      // Multi-value: find ALL indices
+      indices = selectorValue.map((v) => {
+        const idx = coords ? coords.indexOf(v) : typeof v === 'number' ? v : 0
+        return idx >= 0 ? idx : typeof v === 'number' ? v : 0
+      })
+    } else if (
+      typeof selectorValue === 'object' &&
+      'selected' in selectorValue
+    ) {
+      // ZarrSelectorsProps format
+      const selected = selectorValue.selected
+      const type = selectorValue.type
+      const values = Array.isArray(selected) ? selected : [selected]
+
+      indices = values.map((v) => {
+        if (type === 'index') {
+          return typeof v === 'number' ? v : 0
+        }
+        if (coords) {
+          const idx = coords.indexOf(v as string | number)
+          return idx >= 0 ? idx : typeof v === 'number' ? (v as number) : 0
+        }
+        return typeof v === 'number' ? (v as number) : 0
+      })
+    } else {
+      // Single value
+      if (coords) {
+        const idx = coords.indexOf(selectorValue)
+        indices = [
+          idx >= 0
+            ? idx
+            : typeof selectorValue === 'number'
+            ? selectorValue
+            : 0,
+        ]
+      } else {
+        indices = [typeof selectorValue === 'number' ? selectorValue : 0]
+      }
+    }
+
+    // Map indices to chunk indices and deduplicate
+    const chunkIndices = indices
+      .map((index) => Math.floor(index / chunkSize))
+      .filter((v, i, a) => a.indexOf(v) === i)
+
+    return chunkIndices
+  })
+
+  // Compute cartesian product of all chunk indices
+  let result: number[][] = [[]]
+  chunkIndicesToUse.forEach((chunkIndices) => {
+    const updatedResult: number[][] = []
+    chunkIndices.forEach((chunkIndex) => {
+      result.forEach((prev) => {
+        updatedResult.push([...prev, chunkIndex])
+      })
+    })
+    result = updatedResult
+  })
+
+  return result
 }

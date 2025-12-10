@@ -248,7 +248,7 @@ export function latToMercatorNorm(lat: number): number {
   )
 }
 
-function mercatorNormToLat(mercY: number): number {
+export function mercatorNormToLat(mercY: number): number {
   const t = Math.PI * (1 - 2 * mercY)
   return (180 / Math.PI) * Math.atan(Math.sinh(t))
 }

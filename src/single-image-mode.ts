@@ -43,6 +43,8 @@ export class SingleImageMode implements ZarrMode {
   private width: number = 0
   private height: number = 0
   private channels: number = 1
+  private channelLabels: (string | number)[][] = []
+  private multiValueDimNames: string[] = []
   private texture: WebGLTexture | null = null
   private vertexBuffer: WebGLBuffer | null = null
   private pixCoordBuffer: WebGLBuffer | null = null
@@ -287,7 +289,9 @@ export class SingleImageMode implements ZarrMode {
 
       const multiValueDims: Array<{
         dimIndex: number
+        dimName: string
         values: number[]
+        labels: (number | string)[]
       }> = []
 
       for (const dimName of Object.keys(this.dimIndices)) {
@@ -319,6 +323,7 @@ export class SingleImageMode implements ZarrMode {
 
             if (Array.isArray(selectionValue) && selectionValue.length > 1) {
               const resolvedIndices: number[] = []
+              const labelValues: (number | string)[] = []
               for (const val of selectionValue) {
                 const idx = await this.resolveSelectionIndex(
                   dimName,
@@ -327,10 +332,13 @@ export class SingleImageMode implements ZarrMode {
                   selectionType
                 )
                 resolvedIndices.push(idx)
+                labelValues.push(val as number | string)
               }
               multiValueDims.push({
                 dimIndex: dimInfo.index,
+                dimName,
                 values: resolvedIndices,
+                labels: labelValues,
               })
               baseSliceArgs[dimInfo.index] = resolvedIndices[0]
             } else {
@@ -352,18 +360,26 @@ export class SingleImageMode implements ZarrMode {
       }
 
       let channelCombinations: number[][] = [[]]
-      for (const { values } of multiValueDims) {
+      let channelLabelCombinations: (number | string)[][] = [[]]
+      for (const { values, labels } of multiValueDims) {
         const next: number[][] = []
-        for (const combo of channelCombinations) {
-          for (const val of values) {
-            next.push([...combo, val])
+        const nextLabels: (number | string)[][] = []
+        for (let idx = 0; idx < values.length; idx++) {
+          const val = values[idx]
+          const label = labels[idx]
+          for (let c = 0; c < channelCombinations.length; c++) {
+            next.push([...channelCombinations[c], val])
+            nextLabels.push([...channelLabelCombinations[c], label])
           }
         }
         channelCombinations = next
+        channelLabelCombinations = nextLabels
       }
 
       const numChannels = channelCombinations.length || 1
       this.channels = numChannels
+      this.multiValueDimNames = multiValueDims.map((d) => d.dimName)
+      this.channelLabels = channelLabelCombinations
 
       if (numChannels === 1) {
         const data = (await zarr.get(this.zarrArray, baseSliceArgs)) as {
@@ -470,7 +486,10 @@ export class SingleImageMode implements ZarrMode {
       this.width,
       this.height,
       this.mercatorBounds,
-      this.crs ?? 'EPSG:4326'
+      this.crs ?? 'EPSG:4326',
+      this.channels,
+      this.channelLabels,
+      this.multiValueDimNames
     )
   }
 
@@ -482,8 +501,9 @@ export class SingleImageMode implements ZarrMode {
     selector?: QuerySelector
   ): Promise<RegionQueryResult> {
     if (!this.mercatorBounds) {
+      // Return empty result matching carbonplan/maps structure
       return {
-        values: [],
+        [this.variable]: [],
         dimensions: [],
         coordinates: { lat: [], lon: [] },
       }
@@ -493,6 +513,7 @@ export class SingleImageMode implements ZarrMode {
     const querySelector = selector || (this.selector as QuerySelector)
 
     return queryRegionSingleImage(
+      this.variable,
       geometry,
       querySelector,
       this.data,
@@ -501,7 +522,10 @@ export class SingleImageMode implements ZarrMode {
       this.mercatorBounds,
       this.crs ?? 'EPSG:4326',
       desc.dimensions,
-      desc.coordinates
+      desc.coordinates,
+      this.channels,
+      this.channelLabels,
+      this.multiValueDimNames
     )
   }
 }

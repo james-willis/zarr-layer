@@ -36,12 +36,11 @@ export type RegionValues = number[] | NestedValues
 
 /**
  * Result from a region query within a geographic polygon.
+ * Matches carbonplan/maps structure: { [variable]: values, dimensions, coordinates }
  */
 export interface RegionQueryResult {
-  /** Values within the region (flat or nested based on selector) */
-  values: RegionValues
-  /** Values per band if multi-band data */
-  bandValues?: Record<string, RegionValues>
+  /** Variable name mapped to its values (flat array or nested based on selector) */
+  [variable: string]: RegionValues | string[] | { [key: string]: (number | string)[] }
   /** Dimension names in order (e.g., ['month', 'lat', 'lon']) */
   dimensions: string[]
   /** Coordinate arrays for each dimension */
