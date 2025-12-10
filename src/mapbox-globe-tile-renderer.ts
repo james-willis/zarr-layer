@@ -6,12 +6,15 @@ import {
   tileToKey,
   latToMercatorNorm,
   lonToMercatorNorm,
+  mercatorNormToLat,
   mercatorNormToLon,
   zoomToLevel,
+  type MercatorBounds,
   type TileTuple,
 } from './map-utils'
 import type { ZarrRenderer } from './zarr-renderer'
 import type { ZarrMode, RenderContext, TileId } from './zarr-mode'
+import type { SingleImageParams } from './renderer-types'
 
 const IDENTITY_MATRIX = new Float32Array([
   1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
@@ -24,115 +27,25 @@ interface MapboxTileRenderParams {
   context: RenderContext
 }
 
-export function renderMapboxTile({
-  renderer,
-  mode,
-  tileId,
-  context,
-}: MapboxTileRenderParams): boolean {
-  const { colormapTexture, uniforms, customShaderConfig } = context
-
-  const singleImageState = mode.getSingleImageState?.()
-  if (!mode.isMultiscale && singleImageState) {
-    const { singleImage, vertexArr } = singleImageState
-    const bounds = singleImage.bounds
-    if (!bounds) return false
-
-    const tileSizeNorm = 1 / 2 ** tileId.z
-    const tileX0 = tileId.x * tileSizeNorm
-    const tileX1 = (tileId.x + 1) * tileSizeNorm
-    const tileY0 = tileId.y * tileSizeNorm
-    const tileY1 = (tileId.y + 1) * tileSizeNorm
-
-    const intersects =
-      bounds.x0 < tileX1 &&
-      bounds.x1 > tileX0 &&
-      bounds.y0 < tileY1 &&
-      bounds.y1 > tileY0
-
-    if (!intersects) return false
-
-    const overlapX0 = Math.max(bounds.x0, tileX0)
-    const overlapX1 = Math.min(bounds.x1, tileX1)
-    const overlapY0 = Math.max(bounds.y0, tileY0)
-    const overlapY1 = Math.min(bounds.y1, tileY1)
-
-    const localX0 = (overlapX0 - tileX0) / tileSizeNorm
-    const localX1 = (overlapX1 - tileX0) / tileSizeNorm
-    const localY0 = (overlapY0 - tileY0) / tileSizeNorm
-    const localY1 = (overlapY1 - tileY0) / tileSizeNorm
-
-    const clipX0 = localX0 * 2 - 1
-    const clipX1 = localX1 * 2 - 1
-    const clipY0 = localY0 * 2 - 1
-    const clipY1 = localY1 * 2 - 1
-
-    const scaleX = (clipX1 - clipX0) / 2
-    const scaleY = (clipY1 - clipY0) / 2
-    const shiftX = (clipX0 + clipX1) / 2
-    const shiftY = (clipY0 + clipY1) / 2
-
-    const imgWidth = bounds.x1 - bounds.x0
-    const imgHeight = bounds.y1 - bounds.y0
-    const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1
-    const texScaleY = imgHeight > 0 ? (overlapY1 - overlapY0) / imgHeight : 1
-    const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0
-    const texOffsetY = imgHeight > 0 ? (overlapY0 - bounds.y0) / imgHeight : 0
-
-    const shaderProgram = renderer.getProgram(
-      context.shaderData,
-      customShaderConfig,
-      true
-    )
-    renderer.gl.useProgram(shaderProgram.program)
-    renderer.applyCommonUniforms(
-      shaderProgram,
-      colormapTexture,
-      uniforms,
-      customShaderConfig,
-      context.projectionData,
-      {
-        projection: { name: 'globe' },
-        globeToMercatorMatrix: IDENTITY_MATRIX,
-        transition: 0,
-      },
-      IDENTITY_MATRIX,
-      true
-    )
-
-    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
-      scaleX,
-      scaleY,
-      shiftX,
-      shiftY,
-      texScale: [texScaleX, texScaleY],
-      texOffset: [texOffsetX, texOffsetY],
-    })
-
-    return false
-  }
-
-  const tiledState = mode.getTiledState?.()
-  if (!tiledState?.tileCache) {
-    return true
-  }
-
-  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState
-
-  const tilesPerSide = 2 ** tileId.z
-  const mapboxMercX0 = tileId.x / tilesPerSide
-  const mapboxMercX1 = (tileId.x + 1) / tilesPerSide
-  const mapboxMercY0 = tileId.y / tilesPerSide
-  const mapboxMercY1 = (tileId.y + 1) / tilesPerSide
+/**
+ * Creates a 4x4 matrix that transforms from Mercator normalized coordinates [0,1]
+ * to clip space [-1,1] for a specific tile region.
+ */
+function createTileMatrix(
+  tileX0: number,
+  tileY0: number,
+  tileX1: number,
+  tileY1: number
+): Float32Array {
   const EPS = 1e-7
-  const x0 = Math.max(0, mapboxMercX0 + EPS)
-  const x1 = Math.min(1, mapboxMercX1 - EPS)
-  const y0 = Math.max(0, mapboxMercY0 + EPS)
-  const y1 = Math.min(1, mapboxMercY1 - EPS)
+  const x0 = Math.max(0, tileX0 + EPS)
+  const x1 = Math.min(1, tileX1 - EPS)
+  const y0 = Math.max(0, tileY0 + EPS)
+  const y1 = Math.min(1, tileY1 - EPS)
   const width = x1 - x0
   const height = y1 - y0
 
-  const tileMatrix = new Float32Array([
+  return new Float32Array([
     2 / width,
     0,
     0,
@@ -150,6 +63,243 @@ export function renderMapboxTile({
     0,
     1,
   ])
+}
+
+/**
+ * Computes texture override values that, when composed with the base transform
+ * in renderSingleImage, produce the correct flip(crop(v)) ordering.
+ *
+ * Background: renderSingleImage applies transforms in crop(flip(v)) order, but
+ * for correct lat/lon reprojection we need flip(crop(v)) order. This function
+ * computes the override values that achieve the correct result.
+ *
+ * The formula: overrideOffset = baseScale * cropOffset + baseOffset * (1 - cropScale)
+ */
+function computeTexOverride(
+  cropScale: [number, number],
+  cropOffset: [number, number],
+  baseScale: [number, number],
+  baseOffset: [number, number]
+): { texScale: [number, number]; texOffset: [number, number] } {
+  return {
+    texScale: cropScale,
+    texOffset: [
+      baseScale[0] * cropOffset[0] + baseOffset[0] * (1 - cropScale[0]),
+      baseScale[1] * cropOffset[1] + baseOffset[1] * (1 - cropScale[1]),
+    ],
+  }
+}
+
+/**
+ * Renders a single image (non-tiled zarr data) to a Mapbox globe tile.
+ * Handles both EPSG:4326 (equirectangular) and EPSG:3857 (Web Mercator) data.
+ *
+ * For EPSG:4326 data: Uses the shader's equirectangular reprojection to correctly
+ * transform lat/lon linear data to Mercator space for globe rendering.
+ *
+ * For EPSG:3857 data: Direct texture sampling since the data is already in
+ * Mercator projection.
+ */
+function renderSingleImageToTile(
+  renderer: ZarrRenderer,
+  context: RenderContext,
+  tileId: TileId,
+  singleImage: SingleImageParams,
+  vertexArr: Float32Array,
+  bounds: MercatorBounds
+): void {
+  const { colormapTexture, uniforms, customShaderConfig } = context
+
+  const tilesPerSide = 2 ** tileId.z
+  const tileX0 = tileId.x / tilesPerSide
+  const tileX1 = (tileId.x + 1) / tilesPerSide
+  const tileY0 = tileId.y / tilesPerSide
+  const tileY1 = (tileId.y + 1) / tilesPerSide
+
+  // Calculate overlap between image and tile in Mercator normalized space
+  const overlapX0 = Math.max(bounds.x0, tileX0)
+  const overlapX1 = Math.min(bounds.x1, tileX1)
+  const overlapY0 = Math.max(bounds.y0, tileY0)
+  const overlapY1 = Math.min(bounds.y1, tileY1)
+
+  const tileMatrix = createTileMatrix(tileX0, tileY0, tileX1, tileY1)
+
+  const shaderProgram = renderer.getProgram(
+    context.shaderData,
+    customShaderConfig,
+    true
+  )
+  renderer.gl.useProgram(shaderProgram.program)
+  renderer.applyCommonUniforms(
+    shaderProgram,
+    colormapTexture,
+    uniforms,
+    customShaderConfig,
+    context.projectionData,
+    {
+      projection: { name: 'globe' },
+      globeToMercatorMatrix: IDENTITY_MATRIX,
+      transition: 0,
+    },
+    tileMatrix,
+    true
+  )
+
+  const baseTexScale: [number, number] = singleImage.texScale ?? [1, 1]
+  const baseTexOffset: [number, number] = singleImage.texOffset ?? [0, 0]
+
+  // Check if this is equirectangular (EPSG:4326) data that needs reprojection
+  const isEquirectangular =
+    bounds.latMin !== undefined && bounds.latMax !== undefined
+
+  if (isEquirectangular) {
+    // EPSG:4326 path: Enable shader's equirectangular reprojection
+    // The shader converts Mercator Y to latitude, then maps to texture V coordinate
+    const cropLatNorth = mercatorNormToLat(overlapY0)
+    const cropLatSouth = mercatorNormToLat(overlapY1)
+
+    // Set scale/shift in Mercator space (required for shader's mercY calculation)
+    const scaleX = (overlapX1 - overlapX0) / 2
+    const scaleY = (overlapY1 - overlapY0) / 2
+    const shiftX = (overlapX0 + overlapX1) / 2
+    const shiftY = (overlapY0 + overlapY1) / 2
+
+    // Enable equirectangular mode with crop region's lat bounds
+    if (shaderProgram.isEquirectangularLoc) {
+      renderer.gl.uniform1i(shaderProgram.isEquirectangularLoc, 1)
+    }
+    if (shaderProgram.latMinLoc) {
+      renderer.gl.uniform1f(shaderProgram.latMinLoc, cropLatSouth)
+    }
+    if (shaderProgram.latMaxLoc) {
+      renderer.gl.uniform1f(shaderProgram.latMaxLoc, cropLatNorth)
+    }
+
+    // Map crop region's lat range to full image texture coordinates
+    // Shader outputs v in [0,1] for crop region; we map to full image space
+    const fullLatRange = bounds.latMax! - bounds.latMin!
+    const vNorth = (bounds.latMax! - cropLatNorth) / fullLatRange
+    const vSouth = (bounds.latMax! - cropLatSouth) / fullLatRange
+
+    // X mapping is linear in lon/Mercator space
+    const imgWidth = bounds.x1 - bounds.x0
+    const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1
+    const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0
+
+    const texOverride = computeTexOverride(
+      [texScaleX, vSouth - vNorth],
+      [texOffsetX, vNorth],
+      baseTexScale,
+      baseTexOffset
+    )
+
+    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
+      scaleX,
+      scaleY,
+      shiftX,
+      shiftY,
+      ...texOverride,
+    })
+  } else {
+    // EPSG:3857 path: Direct Mercator mapping, no reprojection needed
+    const tileSizeNorm = 1 / tilesPerSide
+    const localX0 = (overlapX0 - tileX0) / tileSizeNorm
+    const localX1 = (overlapX1 - tileX0) / tileSizeNorm
+    const localY0 = (overlapY0 - tileY0) / tileSizeNorm
+    const localY1 = (overlapY1 - tileY0) / tileSizeNorm
+
+    // Position geometry in clip space
+    const clipX0 = localX0 * 2 - 1
+    const clipX1 = localX1 * 2 - 1
+    const clipY0 = localY0 * 2 - 1
+    const clipY1 = localY1 * 2 - 1
+
+    const scaleX = (clipX1 - clipX0) / 2
+    const scaleY = (clipY1 - clipY0) / 2
+    const shiftX = (clipX0 + clipX1) / 2
+    const shiftY = (clipY0 + clipY1) / 2
+
+    // Texture crop mapping
+    const imgWidth = bounds.x1 - bounds.x0
+    const imgHeight = bounds.y1 - bounds.y0
+    const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1
+    const texScaleY = imgHeight > 0 ? (overlapY1 - overlapY0) / imgHeight : 1
+    const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0
+    const texOffsetY = imgHeight > 0 ? (overlapY0 - bounds.y0) / imgHeight : 0
+
+    const texOverride = computeTexOverride(
+      [texScaleX, texScaleY],
+      [texOffsetX, texOffsetY],
+      baseTexScale,
+      baseTexOffset
+    )
+
+    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
+      scaleX,
+      scaleY,
+      shiftX,
+      shiftY,
+      ...texOverride,
+    })
+  }
+}
+
+export function renderMapboxTile({
+  renderer,
+  mode,
+  tileId,
+  context,
+}: MapboxTileRenderParams): boolean {
+  const { colormapTexture, uniforms, customShaderConfig } = context
+
+  // Handle single image (non-tiled) data
+  const singleImageState = mode.getSingleImageState?.()
+  if (!mode.isMultiscale && singleImageState) {
+    const { singleImage, vertexArr } = singleImageState
+    const bounds = singleImage.bounds
+    if (!bounds) return false
+
+    const tilesPerSide = 2 ** tileId.z
+    const tileX0 = tileId.x / tilesPerSide
+    const tileX1 = (tileId.x + 1) / tilesPerSide
+    const tileY0 = tileId.y / tilesPerSide
+    const tileY1 = (tileId.y + 1) / tilesPerSide
+
+    // Check if image intersects this tile
+    const intersects =
+      bounds.x0 < tileX1 &&
+      bounds.x1 > tileX0 &&
+      bounds.y0 < tileY1 &&
+      bounds.y1 > tileY0
+
+    if (!intersects) return false
+
+    renderSingleImageToTile(
+      renderer,
+      context,
+      tileId,
+      singleImage,
+      vertexArr,
+      bounds
+    )
+    return false
+  }
+
+  // Handle tiled (pyramid) data
+  const tiledState = mode.getTiledState?.()
+  if (!tiledState?.tileCache) {
+    return true
+  }
+
+  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState
+
+  const tilesPerSide = 2 ** tileId.z
+  const mapboxMercX0 = tileId.x / tilesPerSide
+  const mapboxMercX1 = (tileId.x + 1) / tilesPerSide
+  const mapboxMercY0 = tileId.y / tilesPerSide
+  const mapboxMercY1 = (tileId.y + 1) / tilesPerSide
+
+  const tileMatrix = createTileMatrix(mapboxMercX0, mapboxMercY0, mapboxMercX1, mapboxMercY1)
 
   const crs = mode.getCRS()
   const xyLimits = mode.getXYLimits()

@@ -4581,7 +4581,7 @@ var _ZarrStore = class _ZarrStore {
     this.dimensions = zattrs?._ARRAY_DIMENSIONS || [];
     this.shape = zarray?.shape || [];
     this.chunks = zarray?.chunks || [];
-    this.fill_value = zarray?.fill_value ?? null;
+    this.fill_value = this.normalizeFillValue(zarray?.fill_value ?? null);
     this.dtype = zarray?.dtype || null;
     this.scaleFactor = zattrs?.scale_factor ?? 1;
     this.addOffset = zattrs?.add_offset ?? 0;
@@ -4630,7 +4630,7 @@ var _ZarrStore = class _ZarrStore {
     const gridChunkShape = arrayMetadata.chunk_grid?.configuration?.chunk_shape;
     const legacyChunks = Array.isArray(arrayMetadata.chunks) ? arrayMetadata.chunks : void 0;
     this.chunks = shardedChunkShape || gridChunkShape || legacyChunks || this.shape;
-    this.fill_value = arrayMetadata.fill_value;
+    this.fill_value = this.normalizeFillValue(arrayMetadata.fill_value);
     this.dtype = arrayMetadata.data_type || null;
     this.scaleFactor = typeof attrs?.scale_factor === "number" ? attrs.scale_factor : 1;
     this.addOffset = typeof attrs?.add_offset === "number" ? attrs.add_offset : 0;
@@ -4657,6 +4657,19 @@ var _ZarrStore = class _ZarrStore {
       this.dimensionNames,
       coordinates
     );
+  }
+  normalizeFillValue(value) {
+    if (value === void 0 || value === null) return null;
+    if (typeof value === "string") {
+      const lower = value.toLowerCase();
+      if (lower === "nan") return Number.NaN;
+      const parsed = Number(value);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+    if (typeof value === "number") {
+      return value;
+    }
+    return null;
   }
   async _loadXYLimits() {
     if (!this.dimIndices.lon || !this.dimIndices.lat || !this.root) return;
@@ -4860,7 +4873,7 @@ void main() {
   float raw = texture(tex, sample_coord).r;
   float value = raw * u_scaleFactor + u_addOffset;
   
-  if (raw == fillValue || raw != raw || value != value) {
+  if (raw == fillValue || isnan(raw) || isnan(value)) {
     discard;
   }
   
@@ -4892,7 +4905,7 @@ function createFragmentShaderSource(options) {
   ).join("\n");
   const bandAliases = bands.map((name) => `  float ${name} = ${name}_val;`).join("\n");
   const fillValueChecks = bands.map(
-    (name) => `(${name}_raw == fillValue || ${name}_raw != ${name}_raw || ${name}_val != ${name}_val)`
+    (name) => `(${name}_raw == fillValue || isnan(${name}_raw) || isnan(${name}_val))`
   ).join(" || ");
   const commonDiscardChecks = hasBands ? `
   if (${fillValueChecks}) {
@@ -4930,7 +4943,7 @@ ${processedFragBody.replace(/gl_FragColor/g, "fragColor")}` : bands.length === 1
   float value = ${bands[0]};
   float raw = ${bands[0]}_raw;
   
-  if (raw == fillValue || raw != raw || value != value) {
+  if (raw == fillValue || isnan(raw) || isnan(value)) {
     discard;
   }
   
@@ -7273,29 +7286,114 @@ var IDENTITY_MATRIX = new Float32Array([
   0,
   1
 ]);
-function renderMapboxTile({
-  renderer,
-  mode,
-  tileId,
-  context
-}) {
+function createTileMatrix(tileX0, tileY0, tileX1, tileY1) {
+  const EPS = 1e-7;
+  const x0 = Math.max(0, tileX0 + EPS);
+  const x1 = Math.min(1, tileX1 - EPS);
+  const y0 = Math.max(0, tileY0 + EPS);
+  const y1 = Math.min(1, tileY1 - EPS);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  return new Float32Array([
+    2 / width,
+    0,
+    0,
+    0,
+    0,
+    2 / height,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    -(x0 + x1) / width,
+    -(y0 + y1) / height,
+    0,
+    1
+  ]);
+}
+function computeTexOverride(cropScale, cropOffset, baseScale, baseOffset) {
+  return {
+    texScale: cropScale,
+    texOffset: [
+      baseScale[0] * cropOffset[0] + baseOffset[0] * (1 - cropScale[0]),
+      baseScale[1] * cropOffset[1] + baseOffset[1] * (1 - cropScale[1])
+    ]
+  };
+}
+function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexArr, bounds) {
   const { colormapTexture, uniforms, customShaderConfig } = context;
-  const singleImageState = mode.getSingleImageState?.();
-  if (!mode.isMultiscale && singleImageState) {
-    const { singleImage, vertexArr: vertexArr2 } = singleImageState;
-    const bounds = singleImage.bounds;
-    if (!bounds) return false;
-    const tileSizeNorm = 1 / 2 ** tileId.z;
-    const tileX0 = tileId.x * tileSizeNorm;
-    const tileX1 = (tileId.x + 1) * tileSizeNorm;
-    const tileY0 = tileId.y * tileSizeNorm;
-    const tileY1 = (tileId.y + 1) * tileSizeNorm;
-    const intersects = bounds.x0 < tileX1 && bounds.x1 > tileX0 && bounds.y0 < tileY1 && bounds.y1 > tileY0;
-    if (!intersects) return false;
-    const overlapX0 = Math.max(bounds.x0, tileX0);
-    const overlapX1 = Math.min(bounds.x1, tileX1);
-    const overlapY0 = Math.max(bounds.y0, tileY0);
-    const overlapY1 = Math.min(bounds.y1, tileY1);
+  const tilesPerSide = 2 ** tileId.z;
+  const tileX0 = tileId.x / tilesPerSide;
+  const tileX1 = (tileId.x + 1) / tilesPerSide;
+  const tileY0 = tileId.y / tilesPerSide;
+  const tileY1 = (tileId.y + 1) / tilesPerSide;
+  const overlapX0 = Math.max(bounds.x0, tileX0);
+  const overlapX1 = Math.min(bounds.x1, tileX1);
+  const overlapY0 = Math.max(bounds.y0, tileY0);
+  const overlapY1 = Math.min(bounds.y1, tileY1);
+  const tileMatrix = createTileMatrix(tileX0, tileY0, tileX1, tileY1);
+  const shaderProgram = renderer.getProgram(
+    context.shaderData,
+    customShaderConfig,
+    true
+  );
+  renderer.gl.useProgram(shaderProgram.program);
+  renderer.applyCommonUniforms(
+    shaderProgram,
+    colormapTexture,
+    uniforms,
+    customShaderConfig,
+    context.projectionData,
+    {
+      projection: { name: "globe" },
+      globeToMercatorMatrix: IDENTITY_MATRIX,
+      transition: 0
+    },
+    tileMatrix,
+    true
+  );
+  const baseTexScale = singleImage.texScale ?? [1, 1];
+  const baseTexOffset = singleImage.texOffset ?? [0, 0];
+  const isEquirectangular = bounds.latMin !== void 0 && bounds.latMax !== void 0;
+  if (isEquirectangular) {
+    const cropLatNorth = mercatorNormToLat(overlapY0);
+    const cropLatSouth = mercatorNormToLat(overlapY1);
+    const scaleX = (overlapX1 - overlapX0) / 2;
+    const scaleY = (overlapY1 - overlapY0) / 2;
+    const shiftX = (overlapX0 + overlapX1) / 2;
+    const shiftY = (overlapY0 + overlapY1) / 2;
+    if (shaderProgram.isEquirectangularLoc) {
+      renderer.gl.uniform1i(shaderProgram.isEquirectangularLoc, 1);
+    }
+    if (shaderProgram.latMinLoc) {
+      renderer.gl.uniform1f(shaderProgram.latMinLoc, cropLatSouth);
+    }
+    if (shaderProgram.latMaxLoc) {
+      renderer.gl.uniform1f(shaderProgram.latMaxLoc, cropLatNorth);
+    }
+    const fullLatRange = bounds.latMax - bounds.latMin;
+    const vNorth = (bounds.latMax - cropLatNorth) / fullLatRange;
+    const vSouth = (bounds.latMax - cropLatSouth) / fullLatRange;
+    const imgWidth = bounds.x1 - bounds.x0;
+    const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1;
+    const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0;
+    const texOverride = computeTexOverride(
+      [texScaleX, vSouth - vNorth],
+      [texOffsetX, vNorth],
+      baseTexScale,
+      baseTexOffset
+    );
+    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
+      scaleX,
+      scaleY,
+      shiftX,
+      shiftY,
+      ...texOverride
+    });
+  } else {
+    const tileSizeNorm = 1 / tilesPerSide;
     const localX0 = (overlapX0 - tileX0) / tileSizeNorm;
     const localX1 = (overlapX1 - tileX0) / tileSizeNorm;
     const localY0 = (overlapY0 - tileY0) / tileSizeNorm;
@@ -7314,34 +7412,48 @@ function renderMapboxTile({
     const texScaleY = imgHeight > 0 ? (overlapY1 - overlapY0) / imgHeight : 1;
     const texOffsetX = imgWidth > 0 ? (overlapX0 - bounds.x0) / imgWidth : 0;
     const texOffsetY = imgHeight > 0 ? (overlapY0 - bounds.y0) / imgHeight : 0;
-    const shaderProgram2 = renderer.getProgram(
-      context.shaderData,
-      customShaderConfig,
-      true
+    const texOverride = computeTexOverride(
+      [texScaleX, texScaleY],
+      [texOffsetX, texOffsetY],
+      baseTexScale,
+      baseTexOffset
     );
-    renderer.gl.useProgram(shaderProgram2.program);
-    renderer.applyCommonUniforms(
-      shaderProgram2,
-      colormapTexture,
-      uniforms,
-      customShaderConfig,
-      context.projectionData,
-      {
-        projection: { name: "globe" },
-        globeToMercatorMatrix: IDENTITY_MATRIX,
-        transition: 0
-      },
-      IDENTITY_MATRIX,
-      true
-    );
-    renderer.renderSingleImage(shaderProgram2, [0], singleImage, vertexArr2, {
+    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
       scaleX,
       scaleY,
       shiftX,
       shiftY,
-      texScale: [texScaleX, texScaleY],
-      texOffset: [texOffsetX, texOffsetY]
+      ...texOverride
     });
+  }
+}
+function renderMapboxTile({
+  renderer,
+  mode,
+  tileId,
+  context
+}) {
+  const { colormapTexture, uniforms, customShaderConfig } = context;
+  const singleImageState = mode.getSingleImageState?.();
+  if (!mode.isMultiscale && singleImageState) {
+    const { singleImage, vertexArr: vertexArr2 } = singleImageState;
+    const bounds = singleImage.bounds;
+    if (!bounds) return false;
+    const tilesPerSide2 = 2 ** tileId.z;
+    const tileX0 = tileId.x / tilesPerSide2;
+    const tileX1 = (tileId.x + 1) / tilesPerSide2;
+    const tileY0 = tileId.y / tilesPerSide2;
+    const tileY1 = (tileId.y + 1) / tilesPerSide2;
+    const intersects = bounds.x0 < tileX1 && bounds.x1 > tileX0 && bounds.y0 < tileY1 && bounds.y1 > tileY0;
+    if (!intersects) return false;
+    renderSingleImageToTile(
+      renderer,
+      context,
+      tileId,
+      singleImage,
+      vertexArr2,
+      bounds
+    );
     return false;
   }
   const tiledState = mode.getTiledState?.();
@@ -7354,31 +7466,7 @@ function renderMapboxTile({
   const mapboxMercX1 = (tileId.x + 1) / tilesPerSide;
   const mapboxMercY0 = tileId.y / tilesPerSide;
   const mapboxMercY1 = (tileId.y + 1) / tilesPerSide;
-  const EPS = 1e-7;
-  const x0 = Math.max(0, mapboxMercX0 + EPS);
-  const x1 = Math.min(1, mapboxMercX1 - EPS);
-  const y0 = Math.max(0, mapboxMercY0 + EPS);
-  const y1 = Math.min(1, mapboxMercY1 - EPS);
-  const width = x1 - x0;
-  const height = y1 - y0;
-  const tileMatrix = new Float32Array([
-    2 / width,
-    0,
-    0,
-    0,
-    0,
-    2 / height,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    -(x0 + x1) / width,
-    -(y0 + y1) / height,
-    0,
-    1
-  ]);
+  const tileMatrix = createTileMatrix(mapboxMercX0, mapboxMercY0, mapboxMercX1, mapboxMercY1);
   const crs = mode.getCRS();
   const xyLimits = mode.getXYLimits();
   const maxZoom = mode.getMaxZoom();
