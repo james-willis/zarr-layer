@@ -58,8 +58,15 @@ export async function queryRegionTiled(
 
   // Calculate result dimension based on selector
   // resultDim = total dims - (number of single-valued dims)
+  const isMultiValSelector = (value: QuerySelector[string]) => {
+    if (Array.isArray(value)) return true
+    if (value && typeof value === 'object' && 'selected' in value) {
+      return Array.isArray((value as any).selected)
+    }
+    return false
+  }
   const singleValuedDims = Object.keys(selector).filter(
-    (k) => !Array.isArray(selector[k])
+    (k) => !isMultiValSelector(selector[k])
   ).length
   const resultDim = dimensions.length - singleValuedDims
 
@@ -293,8 +300,15 @@ export async function queryRegionSingleImage(
   }
 
   // Calculate result dimension
+  const isMultiValSelector = (value: QuerySelector[string]) => {
+    if (Array.isArray(value)) return true
+    if (value && typeof value === 'object' && 'selected' in value) {
+      return Array.isArray((value as any).selected)
+    }
+    return false
+  }
   const singleValuedDims = Object.keys(selector).filter(
-    (k) => !Array.isArray(selector[k])
+    (k) => !isMultiValSelector(selector[k])
   ).length
   const resultDim = dimensions.length - singleValuedDims
 

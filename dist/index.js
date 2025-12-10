@@ -6413,8 +6413,15 @@ async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xy
   const coordinates = desc.coordinates;
   const shape = desc.shape || [];
   const chunks = desc.chunks || [];
+  const isMultiValSelector = (value) => {
+    if (Array.isArray(value)) return true;
+    if (value && typeof value === "object" && "selected" in value) {
+      return Array.isArray(value.selected);
+    }
+    return false;
+  };
   const singleValuedDims = Object.keys(selector).filter(
-    (k) => !Array.isArray(selector[k])
+    (k) => !isMultiValSelector(selector[k])
   ).length;
   const resultDim = dimensions.length - singleValuedDims;
   const useNestedResults = resultDim > 2;
@@ -6582,8 +6589,15 @@ async function queryRegionSingleImage(variable, geometry, selector, data, width,
       "queryRegion with multi-valued selectors is not fully supported in single-image mode. Results may not match the requested selector. Consider using tiled mode for complex queries."
     );
   }
+  const isMultiValSelector = (value) => {
+    if (Array.isArray(value)) return true;
+    if (value && typeof value === "object" && "selected" in value) {
+      return Array.isArray(value.selected);
+    }
+    return false;
+  };
   const singleValuedDims = Object.keys(selector).filter(
-    (k) => !Array.isArray(selector[k])
+    (k) => !isMultiValSelector(selector[k])
   ).length;
   const resultDim = dimensions.length - singleValuedDims;
   const useNestedResults = resultDim > 2;
