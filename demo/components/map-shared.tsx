@@ -5,8 +5,8 @@ import { useThemedColormap } from '@carbonplan/colormaps'
 import {
   ZarrLayer,
   ZarrLayerOptions,
-  QueryDataResult,
   QueryDataGeometry,
+  QueryDataResult,
 } from '@carbonplan/zarr-layer'
 import maplibregl from 'maplibre-gl'
 import mapboxgl from 'mapbox-gl'
@@ -218,6 +218,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       minRenderZoom: datasetModule.minRenderZoom ?? 0,
       fillValue: datasetModule.fillValue,
       dimensionNames: datasetModule.dimensionNames,
+      latIsAscending: datasetModule.latIsAscending,
       onLoadingStateChange: setLoadingState,
     }
 

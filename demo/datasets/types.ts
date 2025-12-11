@@ -1,4 +1,5 @@
 import React from 'react'
+import type { Selector } from '@carbonplan/zarr-layer'
 
 export type DatasetCommonConfig = {
   id: string
@@ -10,6 +11,7 @@ export type DatasetCommonConfig = {
   info: string
   sourceInfo: string
   fillValue?: number
+  latIsAscending?: boolean
   center?: [number, number]
   zoom?: number
   minRenderZoom?: number
@@ -25,28 +27,27 @@ export type DatasetControlsProps<State> = {
 }
 
 export type BuildLayerResult = {
-  selector: Record<string, number | number[] | string | string[]>
+  selector: Selector
   customFrag?: string
   uniforms?: Record<string, number>
 }
 
 export type DatasetModule<
-  State extends Record<string, unknown> = Record<string, unknown>
-> =
-  DatasetCommonConfig & {
-    defaultState: State
-    Controls: React.FC<DatasetControlsProps<State>>
-    buildLayerProps: (args: { state: State }) => BuildLayerResult
-  }
+  State extends Record<string, unknown> = Record<string, unknown>,
+> = DatasetCommonConfig & {
+  defaultState: State
+  Controls: React.FC<DatasetControlsProps<State>>
+  buildLayerProps: (args: { state: State }) => BuildLayerResult
+}
 
 export type TimeDatasetState = { time: number }
 
-export const defineDatasetModule = <
-  State extends Record<string, unknown>
->(module: DatasetModule<State>) => module
+export const defineDatasetModule = <State extends Record<string, unknown>>(
+  module: DatasetModule<State>,
+) => module
 
 export const createDatasetList = <
-  const Modules extends readonly DatasetModule<any>[]
+  const Modules extends readonly DatasetModule<any>[],
 >(
   ...modules: Modules
 ) => modules
@@ -54,13 +55,16 @@ export const createDatasetList = <
 export const defineModules = <
   Modules extends readonly DatasetModule<any>[],
   Ids extends Modules[number]['id'],
-  ModuleMap extends { [K in Ids]: Extract<Modules[number], { id: K }> }
+  ModuleMap extends { [K in Ids]: Extract<Modules[number], { id: K }> },
 >(
-  modules: Modules
+  modules: Modules,
 ) => {
-  const map = modules.reduce((acc, module) => {
-    acc[module.id as Ids] = module as Modules[number]
-    return acc
-  }, {} as Record<Ids, Modules[number]>)
+  const map = modules.reduce(
+    (acc, module) => {
+      acc[module.id as Ids] = module as Modules[number]
+      return acc
+    },
+    {} as Record<Ids, Modules[number]>,
+  )
   return map as ModuleMap
 }

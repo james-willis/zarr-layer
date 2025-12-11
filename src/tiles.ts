@@ -1,6 +1,11 @@
 import * as zarr from 'zarrita'
 import { tileToKey, type TileTuple } from './map-utils'
-import type { DimIndicesProps, SelectorMap, ZarrSelectorsProps } from './types'
+import type {
+  DimIndicesProps,
+  NormalizedSelector,
+  SelectorSpec,
+  SelectorValue,
+} from './types'
 import { ZarrStore } from './zarr-store'
 
 export interface TileDataCache {
@@ -17,7 +22,7 @@ export interface TileDataCache {
 
 interface TilesOptions {
   store: ZarrStore
-  selectors: SelectorMap
+  selector: NormalizedSelector
   fillValue: number
   dimIndices: DimIndicesProps
   coordinates: Record<string, (string | number)[]>
@@ -27,7 +32,7 @@ interface TilesOptions {
 
 export class Tiles {
   private store: ZarrStore
-  private selectors: SelectorMap
+  private selector: NormalizedSelector
   private fillValue: number
   private dimIndices: DimIndicesProps
   private coordinates: Record<string, (string | number)[]>
@@ -38,7 +43,7 @@ export class Tiles {
 
   constructor({
     store,
-    selectors,
+    selector,
     fillValue,
     dimIndices,
     coordinates,
@@ -46,7 +51,7 @@ export class Tiles {
     bandNames = [],
   }: TilesOptions) {
     this.store = store
-    this.selectors = selectors
+    this.selector = selector
     this.fillValue = fillValue
     this.dimIndices = dimIndices
     this.coordinates = coordinates
@@ -58,8 +63,8 @@ export class Tiles {
     this.bandNames = bandNames
   }
 
-  updateSelector(selectors: SelectorMap) {
-    this.selectors = selectors
+  updateSelector(selector: NormalizedSelector) {
+    this.selector = selector
   }
 
   private getDimKeyForName(dimName: string): string {
@@ -82,32 +87,34 @@ export class Tiles {
   }
 
   private normalizeSelection(
-    dimSelection:
-      | number
-      | string
-      | number[]
-      | string[]
-      | ZarrSelectorsProps
-      | undefined,
+    dimSelection: SelectorSpec | SelectorValue | undefined,
     dimName?: string
   ): number[] {
     if (dimSelection === undefined) return [0]
 
     const coords = dimName ? this.coordinates[dimName] : undefined
 
-    const toIndices = (
-      value: number | string | [number, number],
-      type?: 'index' | 'value'
-    ): number => {
+    const toIndices = (value: SelectorSpec | SelectorValue): number => {
+      const isSpec =
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        'selected' in value
+      const selected = isSpec ? (value as SelectorSpec).selected : value
+      const mode =
+        isSpec && (value as SelectorSpec).type
+          ? (value as SelectorSpec).type
+          : 'value'
+
       if (
-        type !== 'index' &&
+        mode !== 'index' &&
         coords &&
-        (typeof value === 'number' || typeof value === 'string')
+        (typeof selected === 'number' || typeof selected === 'string')
       ) {
-        const idx = coords.indexOf(value)
+        const idx = coords.indexOf(selected)
         if (idx >= 0) return idx
       }
-      return typeof value === 'number' ? value : 0
+      return typeof selected === 'number' ? selected : 0
     }
 
     if (
@@ -120,22 +127,22 @@ export class Tiles {
         ? dimSelection.selected
         : [dimSelection.selected]
       return values.map((v) =>
-        toIndices(v as number | string | [number, number], dimSelection.type)
+        toIndices({ selected: v, type: dimSelection.type })
       )
     }
 
     if (Array.isArray(dimSelection)) {
-      return dimSelection.map((v) => toIndices(v, undefined))
+      return dimSelection.map((v) => toIndices(v))
     }
 
-    return [toIndices(dimSelection, undefined)]
+    return [toIndices(dimSelection)]
   }
 
   /**
    * Compute which chunk indices to fetch for a given tile.
    *
    * Selector shapes we accept:
-   *   - Direct number/string: `this.selectors['band'] = 0` or `'t0'`
+   *   - Direct number/string: `this.selector['band'] = 0` or `'t0'`
    *   - Wrapped: `{ selected: 0 | 't0', type?: 'index' | 'value' }`
    *   - Arrays (multi-band): `[0, 1]` or `{ selected: [0, 1], type: 'index' }`
    *
@@ -164,9 +171,9 @@ export class Tiles {
         chunkIndices[i] = y
       } else {
         const dimSelection =
-          this.selectors[dimKey] ??
-          this.selectors[dimName] ??
-          this.selectors[this.dimIndices[dimKey]?.name]
+          this.selector[dimKey] ??
+          this.selector[dimName] ??
+          this.selector[this.dimIndices[dimKey]?.name]
 
         const selectionValues = this.normalizeSelection(dimSelection, dimName)
 
@@ -249,9 +256,9 @@ export class Tiles {
         selectorIndices.push(-1)
       } else {
         const dimSelection =
-          this.selectors[dimKey] ??
-          this.selectors[dimName] ??
-          this.selectors[this.dimIndices[dimKey]?.name]
+          this.selector[dimKey] ??
+          this.selector[dimName] ??
+          this.selector[this.dimIndices[dimKey]?.name]
 
         const selectedValues = this.normalizeSelection(dimSelection, dimName)
 

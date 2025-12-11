@@ -5,7 +5,7 @@ import type {
   CRS,
   LoadingStateCallback,
   MapLike,
-  ZarrSelectorsProps,
+  NormalizedSelector,
 } from './types'
 import type {
   CustomShaderConfig,
@@ -63,12 +63,7 @@ export interface ZarrMode {
     context: RenderContext
   ): boolean
   dispose(gl: WebGL2RenderingContext): void
-  setSelector(
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >
-  ): Promise<void>
+  setSelector(selector: NormalizedSelector): Promise<void>
   onProjectionChange(isGlobe: boolean): void
   setLoadingCallback(callback: LoadingStateCallback | undefined): void
   getCRS(): CRS

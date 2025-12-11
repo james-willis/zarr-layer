@@ -5,11 +5,7 @@ import type {
   TileId,
   SingleImageRenderState,
 } from './zarr-mode'
-import type {
-  QuerySelector,
-  QueryDataGeometry,
-  QueryDataResult,
-} from './query/types'
+import type { QueryDataGeometry, QueryDataResult } from './query/types'
 import { queryRegionSingleImage } from './query/region-query'
 import { mercatorBoundsToPixel } from './query/query-utils'
 import { setObjectValues } from './query/selector-utils'
@@ -29,11 +25,16 @@ import type {
   DimIndicesProps,
   LoadingStateCallback,
   MapLike,
+  NormalizedSelector,
+  Selector,
   XYLimits,
-  ZarrSelectorsProps,
 } from './types'
-import { calculateNearestIndex, loadDimensionValues } from './zarr-utils'
-import { TILE_SUBDIVISIONS } from './constants'
+import {
+  calculateNearestIndex,
+  loadDimensionValues,
+  normalizeSelector,
+} from './zarr-utils'
+import { SINGLE_IMAGE_TILE_SUBDIVISIONS } from './constants'
 import type { ZarrRenderer } from './zarr-renderer'
 import { renderMapboxTile } from './mapbox-globe-tile-renderer'
 
@@ -58,10 +59,7 @@ export class SingleImageMode implements ZarrMode {
   private mercatorBounds: MercatorBounds | null = null
   private zarrStore: ZarrStore
   private variable: string
-  private selector: Record<
-    string,
-    number | number[] | string | string[] | ZarrSelectorsProps
-  >
+  private selector: NormalizedSelector
   private invalidate: () => void
   private dimIndices: DimIndicesProps = {}
   private xyLimits: XYLimits | null = null
@@ -80,10 +78,7 @@ export class SingleImageMode implements ZarrMode {
   constructor(
     store: ZarrStore,
     variable: string,
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >,
+    selector: NormalizedSelector,
     invalidate: () => void
   ) {
     this.zarrStore = store
@@ -274,19 +269,14 @@ export class SingleImageMode implements ZarrMode {
     })
   }
 
-  async setSelector(
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >
-  ): Promise<void> {
+  async setSelector(selector: NormalizedSelector): Promise<void> {
     this.selector = selector
     await this.fetchData()
     this.invalidate()
   }
 
   private updateGeometryForProjection(isGlobe: boolean) {
-    const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1
+    const targetSubdivisions = isGlobe ? SINGLE_IMAGE_TILE_SUBDIVISIONS : 1
     if (this.currentSubdivisions === targetSubdivisions) return
 
     const subdivided = createSubdividedQuad(targetSubdivisions)
@@ -301,7 +291,6 @@ export class SingleImageMode implements ZarrMode {
     if (!this.zarrArray || this.isRemoved) return
 
     const requestId = ++this.fetchRequestId
-    const selectorSnapshot = { ...this.selector }
     this.isLoadingData = true
     this.emitLoadingState()
 
@@ -317,32 +306,35 @@ export class SingleImageMode implements ZarrMode {
         labels: (number | string)[]
       }> = []
 
-      for (const dimName of Object.keys(this.dimIndices)) {
+      const dimNames = Object.keys(this.dimIndices)
+
+      for (const dimName of dimNames) {
         const dimInfo = this.dimIndices[dimName]
-        if (dimName === 'lon') {
+        const dimKey = dimName.toLowerCase()
+
+        const isLon =
+          dimKey === 'lon' ||
+          dimKey === 'x' ||
+          dimKey === 'lng' ||
+          dimKey.includes('lon')
+        const isLat =
+          dimKey === 'lat' || dimKey === 'y' || dimKey.includes('lat')
+
+        if (isLon) {
           baseSliceArgs[dimInfo.index] = zarr.slice(0, this.width)
-        } else if (dimName === 'lat') {
+        } else if (isLat) {
           baseSliceArgs[dimInfo.index] = zarr.slice(0, this.height)
         } else {
-          const dimSelection = selectorSnapshot[dimName] as
-            | number
-            | number[]
-            | string
-            | string[]
-            | ZarrSelectorsProps
-            | undefined
-          if (dimSelection !== undefined) {
-            const isObj =
-              typeof dimSelection === 'object' &&
-              dimSelection !== null &&
-              !Array.isArray(dimSelection) &&
-              'selected' in dimSelection
-            const selectionValue = isObj
-              ? (dimSelection as ZarrSelectorsProps).selected
-              : dimSelection
-            const selectionType = isObj
-              ? (dimSelection as ZarrSelectorsProps).type
-              : undefined
+          const selectionSpec =
+            this.selector[dimName] ||
+            (dimKey.includes('time') ? this.selector['time'] : undefined) ||
+            (dimKey.includes('lat') ? this.selector['lat'] : undefined) ||
+            (dimKey.includes('lon') || dimKey.includes('lng')
+              ? this.selector['lon']
+              : undefined)
+          if (selectionSpec !== undefined) {
+            const selectionValue = selectionSpec.selected
+            const selectionType = selectionSpec.type
 
             if (Array.isArray(selectionValue) && selectionValue.length > 1) {
               const resolvedIndices: number[] = []
@@ -351,11 +343,11 @@ export class SingleImageMode implements ZarrMode {
                 const idx = await this.resolveSelectionIndex(
                   dimName,
                   dimInfo,
-                  val as number | string,
+                  val,
                   selectionType
                 )
                 resolvedIndices.push(idx)
-                labelValues.push(val as number | string)
+                labelValues.push(val)
               }
               multiValueDims.push({
                 dimIndex: dimInfo.index,
@@ -372,7 +364,7 @@ export class SingleImageMode implements ZarrMode {
               baseSliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
                 dimName,
                 dimInfo,
-                primaryValue as number | string,
+                primaryValue,
                 selectionType
               )
             }
@@ -499,7 +491,7 @@ export class SingleImageMode implements ZarrMode {
    */
   async queryData(
     geometry: QueryDataGeometry,
-    selector?: QuerySelector
+    selector?: Selector
   ): Promise<QueryDataResult> {
     if (!this.mercatorBounds) {
       return {
@@ -510,6 +502,10 @@ export class SingleImageMode implements ZarrMode {
     }
 
     // Point geometries: sample single pixel and return region-shaped result
+    const normalizedSelector = selector
+      ? normalizeSelector(selector)
+      : this.selector
+
     if (geometry.type === 'Point') {
       const [lon, lat] = geometry.coordinates
       const coords = { lat: [lat], lon: [lon] }
@@ -589,7 +585,7 @@ export class SingleImageMode implements ZarrMode {
       }
 
       if (valuesNested) {
-        const querySelector = selector || (this.selector as QuerySelector)
+        const querySelector = normalizedSelector
         for (const dim of dimensions) {
           const dimLower = dim.toLowerCase()
           if (
@@ -597,17 +593,9 @@ export class SingleImageMode implements ZarrMode {
           ) {
             continue
           }
-          const selVal = querySelector[dim]
-          if (Array.isArray(selVal)) {
-            resultCoordinates[dim] = selVal as (number | string)[]
-          } else if (selVal !== undefined && typeof selVal !== 'object') {
-            resultCoordinates[dim] = [selVal]
-          } else if (
-            selVal &&
-            typeof selVal === 'object' &&
-            'selected' in selVal
-          ) {
-            const selected = selVal.selected
+          const selSpec = querySelector[dim]
+          if (selSpec && 'selected' in selSpec) {
+            const selected = selSpec.selected
             const vals = Array.isArray(selected) ? selected : [selected]
             resultCoordinates[dim] = vals as (number | string)[]
           } else if (desc.coordinates[dim]) {
@@ -624,7 +612,7 @@ export class SingleImageMode implements ZarrMode {
     }
 
     const desc = this.zarrStore.describe()
-    const querySelector = selector || (this.selector as QuerySelector)
+    const querySelector = normalizedSelector
 
     return queryRegionSingleImage(
       this.variable,

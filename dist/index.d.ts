@@ -1,9 +1,10 @@
 type ColormapArray = number[][] | string[];
-type SelectorValue = number | number[] | string | string[] | [number, number];
-interface ZarrSelectorsProps {
+type SelectorValue = number | number[] | string | string[];
+interface SelectorSpec {
     selected: SelectorValue;
     type?: 'index' | 'value';
 }
+type Selector = Record<string, SelectorValue | SelectorSpec>;
 interface DimensionNamesProps {
     time?: string;
     elevation?: string;
@@ -21,13 +22,14 @@ interface ZarrLayerOptions {
     id: string;
     source: string;
     variable: string;
-    selector?: Record<string, number | number[] | string | string[] | ZarrSelectorsProps>;
+    selector?: Selector;
     colormap: ColormapArray;
     clim: [number, number];
     opacity?: number;
     minRenderZoom?: number;
     zarrVersion?: 2 | 3;
     dimensionNames?: DimensionNamesProps;
+    latIsAscending?: boolean | null;
     fillValue?: number;
     customFrag?: string;
     uniforms?: Record<string, number>;
@@ -93,10 +95,10 @@ interface QueryDataResult {
     };
 }
 /**
- * Selector for region queries - controls which tiles/slices to load.
- * Can override the layer's render selector.
+ * Selector for region queries - can override the layer's render selector.
+ * Mirrors the public Selector type to keep query inputs consistent.
  */
-type QuerySelector = Record<string, number | number[] | string | string[] | ZarrSelectorsProps>;
+type QuerySelector = Selector;
 /**
  * Bounding box for a geographic region.
  */
@@ -151,6 +153,7 @@ declare class ZarrLayer {
     private variable;
     private zarrVersion;
     private dimensionNames;
+    private latIsAscending;
     private selector;
     private invalidate;
     private colormap;
@@ -173,7 +176,7 @@ declare class ZarrLayer {
     private levelInfos;
     private dimIndices;
     private dimensionValues;
-    private selectors;
+    private normalizedSelector;
     private isRemoved;
     private fragmentShaderSource;
     private customFrag;
@@ -185,7 +188,7 @@ declare class ZarrLayer {
     private chunksLoading;
     get fillValue(): number | null;
     private isGlobeProjection;
-    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, fillValue, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
+    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, latIsAscending, fillValue, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
     private emitLoadingState;
     private handleChunkLoadingChange;
     setOpacity(opacity: number): void;
@@ -193,7 +196,7 @@ declare class ZarrLayer {
     setColormap(colormap: ColormapArray): void;
     setUniforms(uniforms: Record<string, number>): void;
     setVariable(variable: string): Promise<void>;
-    setSelector(selector: Record<string, number | number[] | string | string[] | ZarrSelectorsProps>): Promise<void>;
+    setSelector(selector: Selector): Promise<void>;
     onAdd(map: MapLike, gl: WebGL2RenderingContext | null): Promise<void>;
     private computeSelectorHash;
     private initializeMode;
@@ -234,4 +237,4 @@ declare class ZarrLayer {
  */
 declare function mercatorYFromLat(lat: number): number;
 
-export { type BoundingBox, type ColormapArray, type DimensionNamesProps, type GeoJSONMultiPolygon, type GeoJSONPoint, type GeoJSONPolygon, type LoadingState, type LoadingStateCallback, type QueryDataGeometry, type QueryDataResult, type QueryDataValues, type QueryGeometry, type QuerySelector, ZarrLayer, type ZarrLayerOptions, mercatorYFromLat };
+export { type BoundingBox, type ColormapArray, type DimensionNamesProps, type GeoJSONMultiPolygon, type GeoJSONPoint, type GeoJSONPolygon, type LoadingState, type LoadingStateCallback, type QueryDataGeometry, type QueryDataResult, type QueryDataValues, type QueryGeometry, type QuerySelector, type Selector, ZarrLayer, type ZarrLayerOptions, mercatorYFromLat };

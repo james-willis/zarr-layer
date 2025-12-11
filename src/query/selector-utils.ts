@@ -5,7 +5,7 @@
  * Follows patterns from carbonplan/maps.
  */
 
-import type { ZarrSelectorsProps } from '../types'
+import type { SelectorSpec } from '../types'
 import type { QuerySelector, PointValueEntry, QueryDataValues } from './types'
 
 /**
@@ -20,7 +20,7 @@ export function hasArraySelector(selector: QuerySelector): boolean {
       typeof value === 'object' &&
       value !== null &&
       'selected' in value &&
-      Array.isArray((value as ZarrSelectorsProps).selected)
+      Array.isArray((value as SelectorSpec).selected)
     ) {
       return true
     }
@@ -32,20 +32,20 @@ export function hasArraySelector(selector: QuerySelector): boolean {
  * Normalizes a selector value to an array of indices or values.
  */
 export function normalizeSelectorValue(
-  value: number | number[] | string | string[] | ZarrSelectorsProps | undefined,
+  value: number | number[] | string | string[] | SelectorSpec | undefined,
   coordinates?: (string | number)[]
 ): (number | string)[] {
   if (value === undefined) return []
 
-  // Handle ZarrSelectorsProps format
+  // Handle SelectorSpec format
   if (
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
     'selected' in value
   ) {
-    const selected = (value as ZarrSelectorsProps).selected
-    const type = (value as ZarrSelectorsProps).type
+    const selected = (value as SelectorSpec).selected
+    const type = (value as SelectorSpec).type
     const values = Array.isArray(selected) ? selected : [selected]
 
     if (type === 'index') {
@@ -132,7 +132,7 @@ export function getChunksForSelector(
       typeof selectorValue === 'object' &&
       'selected' in selectorValue
     ) {
-      // ZarrSelectorsProps format
+      // SelectorSpec format
       const selected = selectorValue.selected
       const type = selectorValue.type
       const values = Array.isArray(selected) ? selected : [selected]
@@ -396,13 +396,6 @@ export function setObjectValues(
 }
 
 /**
- * Computes a hash string for a selector to use as cache key.
- */
-export function getSelectorHash(selector: QuerySelector): string {
-  return JSON.stringify(selector, Object.keys(selector).sort())
-}
-
-/**
  * Get all chunk indices for a selector (cartesian product).
  * Directly ported from carbonplan/maps getChunks().
  *
@@ -455,7 +448,7 @@ export function getChunks(
       typeof selectorValue === 'object' &&
       'selected' in selectorValue
     ) {
-      // ZarrSelectorsProps format
+      // SelectorSpec format
       const selected = selectorValue.selected
       const type = selectorValue.type
       const values = Array.isArray(selected) ? selected : [selected]

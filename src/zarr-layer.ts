@@ -5,7 +5,12 @@
  * Implements CustomLayerInterface for direct WebGL rendering.
  */
 
-import { loadDimensionValues, getBands, toSelectorProps } from './zarr-utils'
+import {
+  loadDimensionValues,
+  getBands,
+  toSelectorProps,
+  normalizeSelector,
+} from './zarr-utils'
 import { ZarrStore } from './zarr-store'
 import { maplibreFragmentShaderSource, type ShaderData } from './shaders'
 import { ColormapState } from './colormap'
@@ -17,8 +22,9 @@ import type {
   DimIndicesProps,
   LoadingStateCallback,
   MapLike,
+  Selector,
+  NormalizedSelector,
   ZarrLayerOptions,
-  ZarrSelectorsProps,
 } from './types'
 import type { ZarrMode, RenderContext } from './zarr-mode'
 import { TiledMode } from './tiled-mode'
@@ -39,10 +45,8 @@ export class ZarrLayer {
   private variable: string
   private zarrVersion: 2 | 3 | null = null
   private dimensionNames: DimensionNamesProps
-  private selector: Record<
-    string,
-    number | number[] | string | string[] | ZarrSelectorsProps
-  >
+  private latIsAscending: boolean | null = null
+  private selector: Selector
   private invalidate: () => void
 
   private colormap: ColormapState
@@ -94,7 +98,7 @@ export class ZarrLayer {
   private levelInfos: string[] = []
   private dimIndices: DimIndicesProps = {}
   private dimensionValues: { [key: string]: Float64Array | number[] } = {}
-  private selectors: { [key: string]: ZarrSelectorsProps } = {}
+  private normalizedSelector: NormalizedSelector = {}
   private isRemoved: boolean = false
   private fragmentShaderSource: string = maplibreFragmentShaderSource
   private customFrag: string | undefined
@@ -126,6 +130,7 @@ export class ZarrLayer {
     minRenderZoom = 0,
     zarrVersion,
     dimensionNames = {},
+    latIsAscending = null,
     fillValue,
     customFrag,
     uniforms,
@@ -137,12 +142,12 @@ export class ZarrLayer {
     this.variable = variable
     this.zarrVersion = zarrVersion ?? null
     this.dimensionNames = dimensionNames
+    this.latIsAscending = latIsAscending ?? null
     this.selector = selector
-    this.selectorHash = this.computeSelectorHash(selector)
+    this.normalizedSelector = normalizeSelector(selector)
+    this.selectorHash = this.computeSelectorHash(this.normalizedSelector)
+    this.normalizedSelector = normalizeSelector(selector)
     this.renderingMode = renderingMode
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value)
-    }
     this.invalidate = () => {}
 
     if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
@@ -158,7 +163,7 @@ export class ZarrLayer {
     this.customFrag = customFrag
     this.customUniforms = uniforms || {}
 
-    this.bandNames = getBands(variable, selector)
+    this.bandNames = getBands(variable, this.normalizedSelector)
     if (this.bandNames.length > 1 || customFrag) {
       this.customShaderConfig = {
         bands: this.bandNames,
@@ -242,23 +247,17 @@ export class ZarrLayer {
     }
   }
 
-  async setSelector(
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >
-  ) {
-    const nextHash = this.computeSelectorHash(selector)
+  async setSelector(selector: Selector) {
+    const normalized = normalizeSelector(selector)
+    const nextHash = this.computeSelectorHash(normalized)
     if (nextHash === this.selectorHash) {
       return
     }
     this.selectorHash = nextHash
     this.selector = selector
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value)
-    }
+    this.normalizedSelector = normalized
 
-    this.bandNames = getBands(this.variable, selector)
+    this.bandNames = getBands(this.variable, this.normalizedSelector)
     if (this.bandNames.length > 1 || this.customFrag) {
       this.customShaderConfig = {
         bands: this.bandNames,
@@ -270,7 +269,7 @@ export class ZarrLayer {
     }
 
     if (this.mode) {
-      await this.mode.setSelector(selector)
+      await this.mode.setSelector(this.normalizedSelector)
     }
     this.invalidate()
   }
@@ -319,13 +318,22 @@ export class ZarrLayer {
     this.invalidate()
   }
 
-  private computeSelectorHash(
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >
-  ): string {
-    return JSON.stringify(selector, Object.keys(selector).sort())
+  private computeSelectorHash(selector: NormalizedSelector): string {
+    const sortKeys = (value: unknown): unknown => {
+      if (Array.isArray(value) || value === null) return value
+      if (typeof value !== 'object') return value
+
+      const obj = value as Record<string, unknown>
+      const sorted: Record<string, unknown> = {}
+      Object.keys(obj)
+        .sort()
+        .forEach((k) => {
+          sorted[k] = sortKeys(obj[k])
+        })
+      return sorted
+    }
+
+    return JSON.stringify(sortKeys(selector))
   }
 
   private async initializeMode() {
@@ -339,7 +347,7 @@ export class ZarrLayer {
       this.mode = new TiledMode(
         this.zarrStore,
         this.variable,
-        this.selector,
+        this.normalizedSelector,
         this.minRenderZoom,
         this.invalidate
       )
@@ -347,7 +355,7 @@ export class ZarrLayer {
       this.mode = new SingleImageMode(
         this.zarrStore,
         this.variable,
-        this.selector,
+        this.normalizedSelector,
         this.invalidate
       )
     }
@@ -367,6 +375,7 @@ export class ZarrLayer {
         version: this.zarrVersion,
         variable: this.variable,
         dimensionNames: this.dimensionNames,
+        latIsAscending: this.latIsAscending,
         coordinateKeys: Object.keys(this.selector),
       })
 
@@ -389,9 +398,10 @@ export class ZarrLayer {
 
       this.isMultiscale = this.levelInfos.length > 0
 
+      this.normalizedSelector = normalizeSelector(this.selector)
       await this.loadInitialDimensionValues()
 
-      this.bandNames = getBands(this.variable, this.selector)
+      this.bandNames = getBands(this.variable, this.normalizedSelector)
       if (this.bandNames.length > 1 || this.customFrag) {
         this.customShaderConfig = {
           bands: this.bandNames,
@@ -414,9 +424,8 @@ export class ZarrLayer {
       this.levelInfos.length > 0 ? this.levelInfos[0] : null
 
     for (const [dimName, value] of Object.entries(this.selector)) {
-      this.selectors[dimName] = toSelectorProps(value)
+      this.normalizedSelector[dimName] = toSelectorProps(value)
     }
-
     for (const dimName of Object.keys(this.dimIndices)) {
       if (dimName !== 'lon' && dimName !== 'lat') {
         try {
@@ -428,8 +437,8 @@ export class ZarrLayer {
             this.zarrStore.version
           )
 
-          if (!this.selectors[dimName]) {
-            this.selectors[dimName] = { selected: 0 }
+          if (!this.normalizedSelector[dimName]) {
+            this.normalizedSelector[dimName] = { selected: 0 }
           }
         } catch (err) {
           console.warn(`Failed to load dimension values for ${dimName}:`, err)

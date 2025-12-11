@@ -2,19 +2,18 @@ import * as zarr from 'zarrita'
 
 export type ColormapArray = number[][] | string[]
 
-export type SelectorValue =
-  | number
-  | number[]
-  | string
-  | string[]
-  | [number, number]
+export type SelectorValue = number | number[] | string | string[]
 
-export interface ZarrSelectorsProps {
+export interface SelectorSpec {
   selected: SelectorValue
   type?: 'index' | 'value'
 }
 
-export type SelectorMap = Record<string, ZarrSelectorsProps>
+// Public shape for callers: full selector object (per-dimension value or spec).
+export type Selector = Record<string, SelectorValue | SelectorSpec>
+
+// Internal normalized form (object per dimension).
+export type NormalizedSelector = Record<string, SelectorSpec>
 
 export interface XYLimits {
   xMin: number
@@ -53,16 +52,14 @@ export interface ZarrLayerOptions {
   id: string
   source: string
   variable: string
-  selector?: Record<
-    string,
-    number | number[] | string | string[] | ZarrSelectorsProps
-  >
+  selector?: Selector
   colormap: ColormapArray
   clim: [number, number]
   opacity?: number
   minRenderZoom?: number
   zarrVersion?: 2 | 3
   dimensionNames?: DimensionNamesProps
+  latIsAscending?: boolean | null
   fillValue?: number
   customFrag?: string
   uniforms?: Record<string, number>

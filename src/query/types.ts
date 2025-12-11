@@ -1,4 +1,4 @@
-import type { ZarrSelectorsProps } from '../types'
+import type { Selector } from '../types'
 
 /**
  * Nested values structure for multi-dimensional data queries.
@@ -37,13 +37,10 @@ export interface QueryDataResult {
 }
 
 /**
- * Selector for region queries - controls which tiles/slices to load.
- * Can override the layer's render selector.
+ * Selector for region queries - can override the layer's render selector.
+ * Mirrors the public Selector type to keep query inputs consistent.
  */
-export type QuerySelector = Record<
-  string,
-  number | number[] | string | string[] | ZarrSelectorsProps
->
+export type QuerySelector = Selector
 
 /**
  * Internal structure for point values during region iteration.

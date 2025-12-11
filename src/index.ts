@@ -5,6 +5,7 @@ export type {
   DimensionNamesProps,
   LoadingState,
   LoadingStateCallback,
+  Selector,
 } from './types'
 
 // Query interface exports

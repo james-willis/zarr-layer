@@ -4,19 +4,15 @@ import type {
   TileId,
   TiledRenderState,
 } from './zarr-mode'
-import type {
-  QuerySelector,
-  QueryDataGeometry,
-  QueryDataResult,
-} from './query/types'
+import type { QueryDataGeometry, QueryDataResult } from './query/types'
 import { queryRegionTiled } from './query/region-query'
 import type {
   LoadingStateCallback,
   MapLike,
-  SelectorMap,
+  NormalizedSelector,
+  Selector,
   XYLimitsProps,
   CRS,
-  ZarrSelectorsProps,
 } from './types'
 import { ZarrStore } from './zarr-store'
 import { TileRenderCache } from './zarr-tile-cache'
@@ -33,7 +29,7 @@ import {
   zoomToLevel,
   type XYLimits,
 } from './map-utils'
-import { getBands, toSelectorProps } from './zarr-utils'
+import { getBands, normalizeSelector } from './zarr-utils'
 import { createSubdividedQuad } from './webgl-utils'
 import {
   DEFAULT_TILE_SIZE,
@@ -54,13 +50,9 @@ export class TiledMode implements ZarrMode {
   private minRenderZoom: number = 3
   private tileSize: number = DEFAULT_TILE_SIZE
   private variable: string
-  private selector: Record<
-    string,
-    number | number[] | string | string[] | ZarrSelectorsProps
-  >
+  private selector: NormalizedSelector
   private invalidate: () => void
   private zarrStore: ZarrStore
-  private selectors: SelectorMap = {}
   private visibleTiles: TileTuple[] = []
   private crs: CRS = 'EPSG:4326'
   private xyLimits: XYLimitsProps | null = null
@@ -73,10 +65,7 @@ export class TiledMode implements ZarrMode {
   constructor(
     store: ZarrStore,
     variable: string,
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >,
+    selector: NormalizedSelector,
     minRenderZoom: number,
     invalidate: () => void
   ) {
@@ -85,10 +74,6 @@ export class TiledMode implements ZarrMode {
     this.selector = selector
     this.minRenderZoom = minRenderZoom
     this.invalidate = invalidate
-
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value)
-    }
   }
 
   async initialize(): Promise<void> {
@@ -106,7 +91,7 @@ export class TiledMode implements ZarrMode {
 
       this.tilesManager = new Tiles({
         store: this.zarrStore,
-        selectors: this.selectors,
+        selector: this.selector,
         fillValue: desc.fill_value ?? 0,
         dimIndices: desc.dimIndices,
         coordinates: desc.coordinates,
@@ -275,19 +260,11 @@ export class TiledMode implements ZarrMode {
     })
   }
 
-  async setSelector(
-    selector: Record<
-      string,
-      number | number[] | string | string[] | ZarrSelectorsProps
-    >
-  ): Promise<void> {
+  async setSelector(selector: NormalizedSelector): Promise<void> {
     this.selector = selector
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value)
-    }
     const bandNames = getBands(this.variable, selector)
 
-    this.tilesManager?.updateSelector(this.selectors)
+    this.tilesManager?.updateSelector(this.selector)
     this.tilesManager?.updateBandNames(bandNames)
 
     if (this.tilesManager && this.visibleTiles.length > 0) {
@@ -453,7 +430,7 @@ export class TiledMode implements ZarrMode {
    */
   async queryData(
     geometry: QueryDataGeometry,
-    selector?: QuerySelector
+    selector?: Selector
   ): Promise<QueryDataResult> {
     if (!this.tilesManager || !this.xyLimits) {
       return {
@@ -463,8 +440,8 @@ export class TiledMode implements ZarrMode {
       }
     }
 
-    // Use provided selector or fall back to layer's selector
-    const querySelector = selector || (this.selector as QuerySelector)
+    // Use provided selector or fall back to layer's normalized selector map
+    const querySelector = selector ? normalizeSelector(selector) : this.selector
     const level = this.currentLevel ?? this.maxZoom
 
     return queryRegionTiled(

@@ -102,6 +102,7 @@ interface ZarrStoreOptions {
   variable: string
   dimensionNames?: DimensionNamesProps
   coordinateKeys?: string[]
+  latIsAscending?: boolean | null
 }
 
 interface StoreDescription {
@@ -169,6 +170,7 @@ export class ZarrStore {
     variable,
     dimensionNames = {},
     coordinateKeys = [],
+    latIsAscending = null,
   }: ZarrStoreOptions) {
     if (!source) {
       throw new Error('source is a required parameter')
@@ -181,6 +183,7 @@ export class ZarrStore {
     this.variable = variable
     this.dimensionNames = dimensionNames
     this.coordinateKeys = coordinateKeys
+    this.latIsAscending = latIsAscending
 
     this.initialized = this._initialize()
   }
@@ -553,12 +556,15 @@ export class ZarrStore {
         return zarr.open(loc, { kind: 'array' })
       }
 
+      const lonName = this.dimensionNames.lon ?? this.dimIndices.lon.name
+      const latName = this.dimensionNames.lat ?? this.dimIndices.lat.name
+
       const xarr =
         this.dimIndices.lon.array ||
-        (await openArray(levelRoot.resolve(this.dimIndices.lon.name)))
+        (await openArray(levelRoot.resolve(lonName)))
       const yarr =
         this.dimIndices.lat.array ||
-        (await openArray(levelRoot.resolve(this.dimIndices.lat.name)))
+        (await openArray(levelRoot.resolve(latName)))
 
       const xdata = await zarr.get(xarr)
       const ydata = await zarr.get(yarr)
@@ -566,7 +572,10 @@ export class ZarrStore {
       const xValues = Array.from(xdata.data as ArrayLike<number>)
       const yValues = Array.from(ydata.data as ArrayLike<number>)
 
-      this.latIsAscending = this._detectAscending(yValues)
+      const detected = this._detectAscending(yValues)
+      if (this.latIsAscending === null) {
+        this.latIsAscending = detected
+      }
 
       this.xyLimits = {
         xMin: Math.min(...xValues),
@@ -595,7 +604,9 @@ export class ZarrStore {
           yMax: 90,
         }
       }
-      this.latIsAscending = null
+      if (this.latIsAscending === null) {
+        this.latIsAscending = null
+      }
     }
   }
 

@@ -1,4 +1,5 @@
 import React from 'react'
+import type { Selector } from '@carbonplan/zarr-layer'
 // @ts-expect-error - carbonplan components types not available
 import { Slider, Row, Column } from '@carbonplan/components'
 import { Box, Flex } from 'theme-ui'
@@ -20,22 +21,16 @@ const subheadingSx = {
   color: 'secondary',
 }
 
-type TimeDatasetConfig = DatasetCommonConfig & { maxTime?: number }
+type TimeDatasetConfig = DatasetCommonConfig & {
+  maxTime?: number
+  timeSelectorType?: Selector['type']
+}
 
 const TimeControls = ({
   state,
   setState,
   max,
 }: DatasetControlsProps<TimeDatasetState> & { max: number }) => {
-  const labelSx = {
-    fontFamily: 'mono',
-    letterSpacing: 'smallcaps',
-    textTransform: 'uppercase' as const,
-    fontSize: [1, 1, 1, 2],
-    color: 'secondary',
-    mb: 2,
-  }
-
   return (
     <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline', mt: 2 }}>
       <Column start={1} width={1}>
@@ -56,26 +51,12 @@ const TimeControls = ({
         </Flex>
       </Column>
     </Row>
-
-    // <Box>
-    //   <Box sx={labelSx}>Time index</Box>
-    //   <Flex>
-    //     <Slider
-    //       min={0}
-    //       max={max}
-    //       step={1}
-    //       value={state.time}
-    //       onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-    //         setState({ time: parseInt(e.target.value) })
-    //       }
-    //     />
-    //   </Flex>
-    // </Box>
   )
 }
 
 export const createTimeDatasetModule = ({
   maxTime = 10,
+  timeSelectorType = 'value',
   ...config
 }: TimeDatasetConfig): DatasetModule<TimeDatasetState> => {
   const Controls = (props: DatasetControlsProps<TimeDatasetState>) => (
@@ -87,7 +68,10 @@ export const createTimeDatasetModule = ({
     defaultState: { time: 0 },
     Controls,
     buildLayerProps: ({ state }) => ({
-      selector: { time: state.time },
+      selector:
+        timeSelectorType === 'index'
+          ? { time: { selected: state.time, type: 'index' } }
+          : { time: state.time },
     }),
   })
 }

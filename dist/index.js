@@ -4336,9 +4336,11 @@ async function loadDimensionValues(dimensionValues, levelInfo, dimIndices, root2
 function getBandInformation(selector) {
   const result = {};
   for (const [key, value] of Object.entries(selector)) {
-    if (Array.isArray(value)) {
-      value.forEach((v, idx) => {
-        const bandValue = typeof v === "object" && v !== null && "selected" in v && v.selected !== void 0 ? v.selected : v;
+    const selected = value?.selected;
+    const normalized = Array.isArray(selected) ? selected : null;
+    if (normalized && Array.isArray(normalized)) {
+      normalized.forEach((v, idx) => {
+        const bandValue = v;
         const bandName = typeof bandValue === "string" ? bandValue : `${key}_${bandValue}`;
         result[bandName] = { band: bandValue, index: idx };
       });
@@ -4356,9 +4358,19 @@ function getBands(variable, selector) {
 }
 function toSelectorProps(value) {
   if (value && typeof value === "object" && !Array.isArray(value) && "selected" in value) {
-    return value;
+    const normalized = value;
+    return {
+      selected: normalized.selected,
+      type: normalized.type ?? "value"
+    };
   }
-  return { selected: value };
+  return { selected: value, type: "value" };
+}
+function normalizeSelector(selector) {
+  return Object.entries(selector).reduce((acc, [dimName, value]) => {
+    acc[dimName] = toSelectorProps(value);
+    return acc;
+  }, {});
 }
 
 // src/zarr-store.ts
@@ -4373,7 +4385,8 @@ var _ZarrStore = class _ZarrStore {
     version = null,
     variable,
     dimensionNames = {},
-    coordinateKeys = []
+    coordinateKeys = [],
+    latIsAscending = null
   }) {
     this.metadata = null;
     this.arrayMetadata = null;
@@ -4406,6 +4419,7 @@ var _ZarrStore = class _ZarrStore {
     this.variable = variable;
     this.dimensionNames = dimensionNames;
     this.coordinateKeys = coordinateKeys;
+    this.latIsAscending = latIsAscending;
     this.initialized = this._initialize();
   }
   async _initialize() {
@@ -4683,13 +4697,18 @@ var _ZarrStore = class _ZarrStore {
         }
         return open(loc, { kind: "array" });
       };
-      const xarr = this.dimIndices.lon.array || await openArray(levelRoot.resolve(this.dimIndices.lon.name));
-      const yarr = this.dimIndices.lat.array || await openArray(levelRoot.resolve(this.dimIndices.lat.name));
+      const lonName = this.dimensionNames.lon ?? this.dimIndices.lon.name;
+      const latName = this.dimensionNames.lat ?? this.dimIndices.lat.name;
+      const xarr = this.dimIndices.lon.array || await openArray(levelRoot.resolve(lonName));
+      const yarr = this.dimIndices.lat.array || await openArray(levelRoot.resolve(latName));
       const xdata = await get2(xarr);
       const ydata = await get2(yarr);
       const xValues = Array.from(xdata.data);
       const yValues = Array.from(ydata.data);
-      this.latIsAscending = this._detectAscending(yValues);
+      const detected = this._detectAscending(yValues);
+      if (this.latIsAscending === null) {
+        this.latIsAscending = detected;
+      }
       this.xyLimits = {
         xMin: Math.min(...xValues),
         xMax: Math.max(...xValues),
@@ -4717,7 +4736,9 @@ var _ZarrStore = class _ZarrStore {
           yMax: 90
         };
       }
-      this.latIsAscending = null;
+      if (this.latIsAscending === null) {
+        this.latIsAscending = null;
+      }
     }
   }
   _getPyramidMetadata(multiscales) {
@@ -5450,6 +5471,7 @@ function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, s
 var DEFAULT_TILE_SIZE = 128;
 var MAX_CACHED_TILES = 64;
 var TILE_SUBDIVISIONS = 32;
+var SINGLE_IMAGE_TILE_SUBDIVISIONS = 256;
 var MERCATOR_LAT_LIMIT = 85.05112878;
 
 // src/map-utils.ts
@@ -6916,7 +6938,7 @@ var TileRenderCache = class {
 var Tiles = class {
   constructor({
     store,
-    selectors,
+    selector,
     fillValue,
     dimIndices,
     coordinates,
@@ -6926,7 +6948,7 @@ var Tiles = class {
     this.tiles = /* @__PURE__ */ new Map();
     this.accessOrder = [];
     this.store = store;
-    this.selectors = selectors;
+    this.selector = selector;
     this.fillValue = fillValue;
     this.dimIndices = dimIndices;
     this.coordinates = coordinates;
@@ -6936,8 +6958,8 @@ var Tiles = class {
   updateBandNames(bandNames) {
     this.bandNames = bandNames;
   }
-  updateSelector(selectors) {
-    this.selectors = selectors;
+  updateSelector(selector) {
+    this.selector = selector;
   }
   getDimKeyForName(dimName) {
     const lower = dimName.toLowerCase();
@@ -6959,29 +6981,32 @@ var Tiles = class {
   normalizeSelection(dimSelection, dimName) {
     if (dimSelection === void 0) return [0];
     const coords = dimName ? this.coordinates[dimName] : void 0;
-    const toIndices = (value, type) => {
-      if (type !== "index" && coords && (typeof value === "number" || typeof value === "string")) {
-        const idx = coords.indexOf(value);
+    const toIndices = (value) => {
+      const isSpec = typeof value === "object" && value !== null && !Array.isArray(value) && "selected" in value;
+      const selected = isSpec ? value.selected : value;
+      const mode = isSpec && value.type ? value.type : "value";
+      if (mode !== "index" && coords && (typeof selected === "number" || typeof selected === "string")) {
+        const idx = coords.indexOf(selected);
         if (idx >= 0) return idx;
       }
-      return typeof value === "number" ? value : 0;
+      return typeof selected === "number" ? selected : 0;
     };
     if (typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection) {
       const values = Array.isArray(dimSelection.selected) ? dimSelection.selected : [dimSelection.selected];
       return values.map(
-        (v) => toIndices(v, dimSelection.type)
+        (v) => toIndices({ selected: v, type: dimSelection.type })
       );
     }
     if (Array.isArray(dimSelection)) {
-      return dimSelection.map((v) => toIndices(v, void 0));
+      return dimSelection.map((v) => toIndices(v));
     }
-    return [toIndices(dimSelection, void 0)];
+    return [toIndices(dimSelection)];
   }
   /**
    * Compute which chunk indices to fetch for a given tile.
    *
    * Selector shapes we accept:
-   *   - Direct number/string: `this.selectors['band'] = 0` or `'t0'`
+   *   - Direct number/string: `this.selector['band'] = 0` or `'t0'`
    *   - Wrapped: `{ selected: 0 | 't0', type?: 'index' | 'value' }`
    *   - Arrays (multi-band): `[0, 1]` or `{ selected: [0, 1], type: 'index' }`
    *
@@ -7004,7 +7029,7 @@ var Tiles = class {
       } else if (dimKey === "lat") {
         chunkIndices[i] = y;
       } else {
-        const dimSelection = this.selectors[dimKey] ?? this.selectors[dimName] ?? this.selectors[this.dimIndices[dimKey]?.name];
+        const dimSelection = this.selector[dimKey] ?? this.selector[dimName] ?? this.selector[this.dimIndices[dimKey]?.name];
         const selectionValues = this.normalizeSelection(dimSelection, dimName);
         const normalized = selectionValues.map(
           (v) => Math.max(0, Math.min(v, levelArray.shape[i] - 1))
@@ -7067,7 +7092,7 @@ var Tiles = class {
         lonSize = Math.min(chunkShape[i], tileWidth);
         selectorIndices.push(-1);
       } else {
-        const dimSelection = this.selectors[dimKey] ?? this.selectors[dimName] ?? this.selectors[this.dimIndices[dimKey]?.name];
+        const dimSelection = this.selector[dimKey] ?? this.selector[dimName] ?? this.selector[this.dimIndices[dimKey]?.name];
         const selectedValues = this.normalizeSelection(dimSelection, dimName);
         const chunkOffset = chunkIndices[i] * chunkSizes[i];
         const withinChunk = selectedValues.map((v) => {
@@ -7636,7 +7661,6 @@ var TiledMode = class {
     this.maxZoom = 4;
     this.minRenderZoom = 3;
     this.tileSize = DEFAULT_TILE_SIZE;
-    this.selectors = {};
     this.visibleTiles = [];
     this.crs = "EPSG:4326";
     this.xyLimits = null;
@@ -7649,9 +7673,6 @@ var TiledMode = class {
     this.selector = selector;
     this.minRenderZoom = minRenderZoom;
     this.invalidate = invalidate;
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value);
-    }
   }
   async initialize() {
     this.metadataLoading = true;
@@ -7665,7 +7686,7 @@ var TiledMode = class {
       const bandNames = getBands(this.variable, this.selector);
       this.tilesManager = new Tiles({
         store: this.zarrStore,
-        selectors: this.selectors,
+        selector: this.selector,
         fillValue: desc.fill_value ?? 0,
         dimIndices: desc.dimIndices,
         coordinates: desc.coordinates,
@@ -7808,11 +7829,8 @@ var TiledMode = class {
   }
   async setSelector(selector) {
     this.selector = selector;
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value);
-    }
     const bandNames = getBands(this.variable, selector);
-    this.tilesManager?.updateSelector(this.selectors);
+    this.tilesManager?.updateSelector(this.selector);
     this.tilesManager?.updateBandNames(bandNames);
     if (this.tilesManager && this.visibleTiles.length > 0) {
       const currentHash = JSON.stringify(this.selector);
@@ -7950,7 +7968,7 @@ var TiledMode = class {
         coordinates: { lat: [], lon: [] }
       };
     }
-    const querySelector = selector || this.selector;
+    const querySelector = selector ? normalizeSelector(selector) : this.selector;
     const level = this.currentLevel ?? this.maxZoom;
     return queryRegionTiled(
       this.variable,
@@ -8161,7 +8179,7 @@ var SingleImageMode = class {
     this.invalidate();
   }
   updateGeometryForProjection(isGlobe) {
-    const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1;
+    const targetSubdivisions = isGlobe ? SINGLE_IMAGE_TILE_SUBDIVISIONS : 1;
     if (this.currentSubdivisions === targetSubdivisions) return;
     const subdivided = createSubdividedQuad(targetSubdivisions);
     this.vertexArr = subdivided.vertexArr;
@@ -8173,7 +8191,6 @@ var SingleImageMode = class {
   async fetchData() {
     if (!this.zarrArray || this.isRemoved) return;
     const requestId = ++this.fetchRequestId;
-    const selectorSnapshot = { ...this.selector };
     this.isLoadingData = true;
     this.emitLoadingState();
     try {
@@ -8181,18 +8198,21 @@ var SingleImageMode = class {
         this.zarrArray.shape.length
       ).fill(0);
       const multiValueDims = [];
-      for (const dimName of Object.keys(this.dimIndices)) {
+      const dimNames = Object.keys(this.dimIndices);
+      for (const dimName of dimNames) {
         const dimInfo = this.dimIndices[dimName];
-        if (dimName === "lon") {
+        const dimKey = dimName.toLowerCase();
+        const isLon = dimKey === "lon" || dimKey === "x" || dimKey === "lng" || dimKey.includes("lon");
+        const isLat = dimKey === "lat" || dimKey === "y" || dimKey.includes("lat");
+        if (isLon) {
           baseSliceArgs[dimInfo.index] = slice(0, this.width);
-        } else if (dimName === "lat") {
+        } else if (isLat) {
           baseSliceArgs[dimInfo.index] = slice(0, this.height);
         } else {
-          const dimSelection = selectorSnapshot[dimName];
-          if (dimSelection !== void 0) {
-            const isObj = typeof dimSelection === "object" && dimSelection !== null && !Array.isArray(dimSelection) && "selected" in dimSelection;
-            const selectionValue = isObj ? dimSelection.selected : dimSelection;
-            const selectionType = isObj ? dimSelection.type : void 0;
+          const selectionSpec = this.selector[dimName] || (dimKey.includes("time") ? this.selector["time"] : void 0) || (dimKey.includes("lat") ? this.selector["lat"] : void 0) || (dimKey.includes("lon") || dimKey.includes("lng") ? this.selector["lon"] : void 0);
+          if (selectionSpec !== void 0) {
+            const selectionValue = selectionSpec.selected;
+            const selectionType = selectionSpec.type;
             if (Array.isArray(selectionValue) && selectionValue.length > 1) {
               const resolvedIndices = [];
               const labelValues = [];
@@ -8322,6 +8342,7 @@ var SingleImageMode = class {
         coordinates: { lat: [], lon: [] }
       };
     }
+    const normalizedSelector = selector ? normalizeSelector(selector) : this.selector;
     if (geometry.type === "Point") {
       const [lon, lat] = geometry.coordinates;
       const coords = { lat: [lat], lon: [lon] };
@@ -8382,19 +8403,15 @@ var SingleImageMode = class {
         lon: coords.lon
       };
       if (valuesNested) {
-        const querySelector2 = selector || this.selector;
+        const querySelector2 = normalizedSelector;
         for (const dim of dimensions) {
           const dimLower = dim.toLowerCase();
           if (["x", "lon", "longitude", "y", "lat", "latitude"].includes(dimLower)) {
             continue;
           }
-          const selVal = querySelector2[dim];
-          if (Array.isArray(selVal)) {
-            resultCoordinates[dim] = selVal;
-          } else if (selVal !== void 0 && typeof selVal !== "object") {
-            resultCoordinates[dim] = [selVal];
-          } else if (selVal && typeof selVal === "object" && "selected" in selVal) {
-            const selected = selVal.selected;
+          const selSpec = querySelector2[dim];
+          if (selSpec && "selected" in selSpec) {
+            const selected = selSpec.selected;
             const vals = Array.isArray(selected) ? selected : [selected];
             resultCoordinates[dim] = vals;
           } else if (desc2.coordinates[dim]) {
@@ -8409,7 +8426,7 @@ var SingleImageMode = class {
       };
     }
     const desc = this.zarrStore.describe();
-    const querySelector = selector || this.selector;
+    const querySelector = normalizedSelector;
     return queryRegionSingleImage(
       this.variable,
       geometry,
@@ -8505,6 +8522,7 @@ var ZarrLayer = class {
     minRenderZoom = 0,
     zarrVersion,
     dimensionNames = {},
+    latIsAscending = null,
     fillValue,
     customFrag,
     uniforms,
@@ -8513,6 +8531,7 @@ var ZarrLayer = class {
   }) {
     this.type = "custom";
     this.zarrVersion = null;
+    this.latIsAscending = null;
     this.selectorHash = "";
     this.isMultiscale = true;
     this._fillValue = null;
@@ -8527,7 +8546,7 @@ var ZarrLayer = class {
     this.levelInfos = [];
     this.dimIndices = {};
     this.dimensionValues = {};
-    this.selectors = {};
+    this.normalizedSelector = {};
     this.isRemoved = false;
     this.fragmentShaderSource = maplibreFragmentShaderSource;
     this.customUniforms = {};
@@ -8544,12 +8563,12 @@ var ZarrLayer = class {
     this.variable = variable;
     this.zarrVersion = zarrVersion ?? null;
     this.dimensionNames = dimensionNames;
+    this.latIsAscending = latIsAscending ?? null;
     this.selector = selector;
-    this.selectorHash = this.computeSelectorHash(selector);
+    this.normalizedSelector = normalizeSelector(selector);
+    this.selectorHash = this.computeSelectorHash(this.normalizedSelector);
+    this.normalizedSelector = normalizeSelector(selector);
     this.renderingMode = renderingMode;
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value);
-    }
     this.invalidate = () => {
     };
     if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
@@ -8563,7 +8582,7 @@ var ZarrLayer = class {
     this.minRenderZoom = minRenderZoom;
     this.customFrag = customFrag;
     this.customUniforms = uniforms || {};
-    this.bandNames = getBands(variable, selector);
+    this.bandNames = getBands(variable, this.normalizedSelector);
     if (this.bandNames.length > 1 || customFrag) {
       this.customShaderConfig = {
         bands: this.bandNames,
@@ -8653,16 +8672,15 @@ var ZarrLayer = class {
     }
   }
   async setSelector(selector) {
-    const nextHash = this.computeSelectorHash(selector);
+    const normalized = normalizeSelector(selector);
+    const nextHash = this.computeSelectorHash(normalized);
     if (nextHash === this.selectorHash) {
       return;
     }
     this.selectorHash = nextHash;
     this.selector = selector;
-    for (const [dimName, value] of Object.entries(selector)) {
-      this.selectors[dimName] = toSelectorProps(value);
-    }
-    this.bandNames = getBands(this.variable, selector);
+    this.normalizedSelector = normalized;
+    this.bandNames = getBands(this.variable, this.normalizedSelector);
     if (this.bandNames.length > 1 || this.customFrag) {
       this.customShaderConfig = {
         bands: this.bandNames,
@@ -8673,7 +8691,7 @@ var ZarrLayer = class {
       this.customShaderConfig = null;
     }
     if (this.mode) {
-      await this.mode.setSelector(selector);
+      await this.mode.setSelector(this.normalizedSelector);
     }
     this.invalidate();
   }
@@ -8714,7 +8732,17 @@ var ZarrLayer = class {
     this.invalidate();
   }
   computeSelectorHash(selector) {
-    return JSON.stringify(selector, Object.keys(selector).sort());
+    const sortKeys = (value) => {
+      if (Array.isArray(value) || value === null) return value;
+      if (typeof value !== "object") return value;
+      const obj = value;
+      const sorted = {};
+      Object.keys(obj).sort().forEach((k) => {
+        sorted[k] = sortKeys(obj[k]);
+      });
+      return sorted;
+    };
+    return JSON.stringify(sortKeys(selector));
   }
   async initializeMode() {
     if (!this.zarrStore || !this.gl) return;
@@ -8725,7 +8753,7 @@ var ZarrLayer = class {
       this.mode = new TiledMode(
         this.zarrStore,
         this.variable,
-        this.selector,
+        this.normalizedSelector,
         this.minRenderZoom,
         this.invalidate
       );
@@ -8733,7 +8761,7 @@ var ZarrLayer = class {
       this.mode = new SingleImageMode(
         this.zarrStore,
         this.variable,
-        this.selector,
+        this.normalizedSelector,
         this.invalidate
       );
     }
@@ -8750,6 +8778,7 @@ var ZarrLayer = class {
         version: this.zarrVersion,
         variable: this.variable,
         dimensionNames: this.dimensionNames,
+        latIsAscending: this.latIsAscending,
         coordinateKeys: Object.keys(this.selector)
       });
       await this.zarrStore.initialized;
@@ -8762,8 +8791,9 @@ var ZarrLayer = class {
         this._fillValue = desc.fill_value;
       }
       this.isMultiscale = this.levelInfos.length > 0;
+      this.normalizedSelector = normalizeSelector(this.selector);
       await this.loadInitialDimensionValues();
-      this.bandNames = getBands(this.variable, this.selector);
+      this.bandNames = getBands(this.variable, this.normalizedSelector);
       if (this.bandNames.length > 1 || this.customFrag) {
         this.customShaderConfig = {
           bands: this.bandNames,
@@ -8782,7 +8812,7 @@ var ZarrLayer = class {
     if (!this.zarrStore?.root) return;
     const multiscaleLevel = this.levelInfos.length > 0 ? this.levelInfos[0] : null;
     for (const [dimName, value] of Object.entries(this.selector)) {
-      this.selectors[dimName] = toSelectorProps(value);
+      this.normalizedSelector[dimName] = toSelectorProps(value);
     }
     for (const dimName of Object.keys(this.dimIndices)) {
       if (dimName !== "lon" && dimName !== "lat") {
@@ -8794,8 +8824,8 @@ var ZarrLayer = class {
             this.zarrStore.root,
             this.zarrStore.version
           );
-          if (!this.selectors[dimName]) {
-            this.selectors[dimName] = { selected: 0 };
+          if (!this.normalizedSelector[dimName]) {
+            this.normalizedSelector[dimName] = { selected: 0 };
           }
         } catch (err) {
           console.warn(`Failed to load dimension values for ${dimName}:`, err);

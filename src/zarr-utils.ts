@@ -7,7 +7,10 @@
 
 import * as zarr from 'zarrita'
 import {
-  type ZarrSelectorsProps,
+  type SelectorSpec,
+  type SelectorValue,
+  type NormalizedSelector,
+  type Selector,
   type DimensionNamesProps,
   type DimIndicesProps,
 } from './types'
@@ -205,23 +208,17 @@ interface BandInfo {
 }
 
 function getBandInformation(
-  selector: Record<
-    string,
-    number | number[] | string | string[] | ZarrSelectorsProps
-  >
+  selector: NormalizedSelector
 ): Record<string, BandInfo> {
   const result: Record<string, BandInfo> = {}
 
   for (const [key, value] of Object.entries(selector)) {
-    if (Array.isArray(value)) {
-      value.forEach((v, idx) => {
-        const bandValue =
-          typeof v === 'object' &&
-          v !== null &&
-          'selected' in v &&
-          (v as { selected?: string | number }).selected !== undefined
-            ? (v as { selected?: string | number }).selected!
-            : v
+    const selected = value?.selected
+    const normalized = Array.isArray(selected) ? selected : null
+
+    if (normalized && Array.isArray(normalized)) {
+      normalized.forEach((v, idx) => {
+        const bandValue = v as string | number
         const bandName =
           typeof bandValue === 'string' ? bandValue : `${key}_${bandValue}`
         result[bandName] = { band: bandValue, index: idx }
@@ -234,10 +231,7 @@ function getBandInformation(
 
 export function getBands(
   variable: string,
-  selector: Record<
-    string,
-    number | number[] | string | string[] | ZarrSelectorsProps
-  >
+  selector: NormalizedSelector
 ): string[] {
   const bandInfo = getBandInformation(selector)
   const bandNames = Object.keys(bandInfo)
@@ -250,15 +244,29 @@ export function getBands(
 }
 
 export function toSelectorProps(
-  value: number | number[] | string | string[] | ZarrSelectorsProps
-): ZarrSelectorsProps {
+  value: SelectorValue | SelectorSpec
+): SelectorSpec {
   if (
     value &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
     'selected' in value
   ) {
-    return value as ZarrSelectorsProps
+    const normalized = value as SelectorSpec
+    return {
+      selected: normalized.selected,
+      type: normalized.type ?? 'value',
+    }
   }
-  return { selected: value as ZarrSelectorsProps['selected'] }
+
+  return { selected: value as SelectorValue, type: 'value' }
+}
+
+export function normalizeSelector(selector: Selector): NormalizedSelector {
+  return (
+    Object.entries(selector) as [string, SelectorValue | SelectorSpec][]
+  ).reduce((acc, [dimName, value]) => {
+    acc[dimName] = toSelectorProps(value)
+    return acc
+  }, {} as NormalizedSelector)
 }

@@ -402,7 +402,7 @@ const Controls = () => {
       <Box sx={headingSx}>Dataset</Box>
 
       <Box sx={{ width: '100%', my: 2 }}>
-        <Select value={datasetId} onChange={handleDatasetChange}>
+        <Select value={datasetId} onChange={handleDatasetChange} size='xs'>
           {Object.entries(DATASET_MODULES).map(([key, config]) => (
             <option key={key} value={key}>
               {config.info}

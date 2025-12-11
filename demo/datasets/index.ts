@@ -72,6 +72,21 @@ const DATASET_MODULE_LIST = createDatasetList(
     info: 'Precipitation (single image, global)',
     sourceInfo: 'v3 single image (global)',
   }),
+  createTimeDatasetModule({
+    id: 'delta_FG_CO2',
+    source:
+      'https://carbonplan-oae-efficiency.s3.us-west-2.amazonaws.com/fgco2-2021-180x360.zarr',
+    variable: 'FG_CO2_2',
+    clim: [-5, 5],
+    colormap: 'orangeblue',
+    zarrVersion: 2,
+    maxTime: 365,
+    timeSelectorType: 'index',
+    dimensionNames: { lat: 'nlat', lon: 'nlon' },
+    latIsAscending: true,
+    info: 'Delta FG CO2 (single image, global)',
+    sourceInfo: 'v2 single image (global)',
+  }),
 )
 
 export { DATASET_MODULE_LIST }
