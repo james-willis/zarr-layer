@@ -5,8 +5,8 @@ import { useThemedColormap } from '@carbonplan/colormaps'
 import {
   ZarrLayer,
   ZarrLayerOptions,
-  QueryDataGeometry,
-  QueryDataResult,
+  QueryGeometry,
+  QueryResult,
 } from '@carbonplan/zarr-layer'
 import maplibregl from 'maplibre-gl'
 import mapboxgl from 'mapbox-gl'
@@ -241,7 +241,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       clickHandler = (event: any) => {
         const lng = event.lngLat.lng
         const lat = event.lngLat.lat
-        const geometry: QueryDataGeometry = {
+        const geometry: QueryGeometry = {
           type: 'Point',
           coordinates: [lng, lat],
         }
@@ -265,7 +265,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
 
         layer.queryData(geometry, querySelector).then((result) => {
           console.log('queryData result', result)
-          setPointResult(result as QueryDataResult)
+          setPointResult(result as QueryResult)
         })
       }
       map.on('click', clickHandler)

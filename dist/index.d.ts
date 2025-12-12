@@ -5,12 +5,14 @@ interface SelectorSpec {
     type?: 'index' | 'value';
 }
 type Selector = Record<string, SelectorValue | SelectorSpec>;
-interface DimensionNamesProps {
-    time?: string;
-    elevation?: string;
+/**
+ * Override the names used to identify spatial dimensions (lat/lon).
+ * Only needed if your dataset uses non-standard names that aren't auto-detected.
+ * Standard names (lat, latitude, y, lon, longitude, x) are detected automatically.
+ */
+interface SpatialDimensions {
     lat?: string;
     lon?: string;
-    others?: string[];
 }
 interface LoadingState {
     loading: boolean;
@@ -28,7 +30,13 @@ interface ZarrLayerOptions {
     opacity?: number;
     minRenderZoom?: number;
     zarrVersion?: 2 | 3;
-    dimensionNames?: DimensionNamesProps;
+    spatialDimensions?: SpatialDimensions;
+    /**
+     * Explicit spatial bounds [west, south, east, north] in degrees.
+     * Used when coordinate arrays aren't available in the zarr store.
+     * If not provided, bounds are read from coordinate arrays or default to global.
+     */
+    bounds?: [number, number, number, number];
     latIsAscending?: boolean | null;
     fillValue?: number;
     customFrag?: string;
@@ -77,10 +85,10 @@ interface NestedValues {
  */
 type QueryDataValues = number[] | NestedValues;
 /**
- * Result from a data query (point or region).
+ * Result from a query (point or region).
  * Matches carbonplan/maps structure: { [variable]: values, dimensions, coordinates }
  */
-interface QueryDataResult {
+interface QueryResult {
     /** Variable name mapped to its values (flat array or nested based on selector) */
     [variable: string]: QueryDataValues | string[] | {
         [key: string]: (number | string)[];
@@ -116,9 +124,9 @@ interface GeoJSONMultiPolygon {
     coordinates: number[][][][];
 }
 /**
- * Supported GeoJSON geometry types for data queries.
+ * Supported GeoJSON geometry types for queries.
  */
-type QueryDataGeometry = GeoJSONPoint | GeoJSONPolygon | GeoJSONMultiPolygon;
+type QueryGeometry = GeoJSONPoint | GeoJSONPolygon | GeoJSONMultiPolygon;
 
 /**
  * @module zarr-layer
@@ -134,7 +142,8 @@ declare class ZarrLayer {
     private url;
     private variable;
     private zarrVersion;
-    private dimensionNames;
+    private spatialDimensions;
+    private bounds;
     private latIsAscending;
     private selector;
     private invalidate;
@@ -170,7 +179,7 @@ declare class ZarrLayer {
     private chunksLoading;
     get fillValue(): number | null;
     private isGlobeProjection;
-    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, dimensionNames, latIsAscending, fillValue, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
+    constructor({ id, source, variable, selector, colormap, clim, opacity, minRenderZoom, zarrVersion, spatialDimensions, bounds, latIsAscending, fillValue, customFrag, uniforms, renderingMode, onLoadingStateChange, }: ZarrLayerOptions);
     private emitLoadingState;
     private handleChunkLoadingChange;
     setOpacity(opacity: number): void;
@@ -201,7 +210,7 @@ declare class ZarrLayer {
      * @param selector - Optional selector to override the layer's selector.
      * @returns Promise resolving to the query result matching carbonplan/maps structure.
      */
-    queryData(geometry: QueryDataGeometry, selector?: Selector): Promise<QueryDataResult>;
+    queryData(geometry: QueryGeometry, selector?: Selector): Promise<QueryResult>;
 }
 
-export { type ColormapArray, type DimensionNamesProps, type LoadingState, type LoadingStateCallback, type QueryDataGeometry, type QueryDataResult, type Selector, ZarrLayer, type ZarrLayerOptions };
+export { type ColormapArray, type LoadingState, type LoadingStateCallback, type QueryDataValues, type QueryGeometry, type QueryResult, type Selector, type SpatialDimensions, ZarrLayer, type ZarrLayerOptions };

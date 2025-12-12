@@ -8,7 +8,7 @@ import {
 } from './constants'
 import { MapProvider } from '../components/map-shared'
 import type { MapInstance } from '../components/map-shared'
-import type { ZarrLayer, QueryDataResult } from '@carbonplan/zarr-layer'
+import type { ZarrLayer, QueryResult } from '@carbonplan/zarr-layer'
 import type { LoadingState } from '@carbonplan/zarr-layer'
 
 type DatasetStateStore = {
@@ -25,8 +25,8 @@ interface AppState {
   mapProvider: MapProvider
   datasetState: DatasetStateStore
   loadingState: LoadingState
-  pointResult: QueryDataResult | null
-  regionResult: QueryDataResult | null
+  pointResult: QueryResult | null
+  regionResult: QueryResult | null
   mapInstance: MapInstance | null
   zarrLayer: InstanceType<typeof ZarrLayer> | null
   setSidebarWidth: (width: number) => void
@@ -42,8 +42,8 @@ interface AppState {
   ) => void
   setActiveDatasetState: (updates: Partial<DatasetStateMap[DatasetId]>) => void
   setLoadingState: (state: LoadingState) => void
-  setPointResult: (result: QueryDataResult | null) => void
-  setRegionResult: (result: QueryDataResult | null) => void
+  setPointResult: (result: QueryResult | null) => void
+  setRegionResult: (result: QueryResult | null) => void
   setMapInstance: (map: MapInstance | null) => void
   setZarrLayer: (layer: InstanceType<typeof ZarrLayer> | null) => void
   getDatasetModule: () => DatasetModuleMap[DatasetId]

@@ -17,7 +17,7 @@ import {
   latToTileMercator,
 } from '../map-utils'
 import type { CRS } from '../types'
-import type { BoundingBox, QueryDataGeometry } from './types'
+import type { BoundingBox, QueryGeometry } from './types'
 
 /**
  * Converts latitude to tile Y coordinate at a given zoom level (Equirectangular/EPSG:4326).
@@ -143,7 +143,7 @@ export function tilePixelToLatLon(
 /**
  * Computes bounding box from GeoJSON geometry.
  */
-export function computeBoundingBox(geometry: QueryDataGeometry): BoundingBox {
+export function computeBoundingBox(geometry: QueryGeometry): BoundingBox {
   let west = Infinity
   let east = -Infinity
   let south = Infinity
@@ -203,7 +203,7 @@ export function pointInPolygon(
  */
 export function pointInGeoJSON(
   point: [number, number],
-  geometry: QueryDataGeometry
+  geometry: QueryGeometry
 ): boolean {
   if (geometry.type === 'Point') {
     return (
@@ -246,7 +246,7 @@ export function pointInGeoJSON(
  */
 function rectIntersectsGeometry(
   rect: [number, number][],
-  geometry: QueryDataGeometry
+  geometry: QueryGeometry
 ): boolean {
   const rectMinX = Math.min(...rect.map((p) => p[0]))
   const rectMaxX = Math.max(...rect.map((p) => p[0]))
@@ -415,7 +415,7 @@ export function pixelIntersectsGeometryTiled(
   tileSize: number,
   crs: CRS,
   xyLimits: XYLimits,
-  geometry: QueryDataGeometry
+  geometry: QueryGeometry
 ): boolean {
   const rect = pixelRectLonLat(tile, pixelX, pixelY, tileSize, crs, xyLimits)
   return rectIntersectsGeometry(rect, geometry)
@@ -428,7 +428,7 @@ export function pixelIntersectsGeometrySingle(
   x: number,
   y: number,
   crs: CRS,
-  geometry: QueryDataGeometry,
+  geometry: QueryGeometry,
   latIsAscending?: boolean
 ): boolean {
   const rect = pixelRectLonLatSingle(
@@ -468,7 +468,7 @@ export function getTilesForBoundingBox(
  * Gets tiles that intersect a GeoJSON geometry at a given zoom level.
  */
 export function getTilesForPolygon(
-  geometry: QueryDataGeometry,
+  geometry: QueryGeometry,
   zoom: number,
   crs: CRS,
   xyLimits: XYLimits

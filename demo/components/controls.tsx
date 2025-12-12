@@ -20,8 +20,8 @@ import { useAppStore } from '../lib/store'
 import { DatasetControlsProps } from '../datasets/types'
 import { SELECTOR_SECTIONS } from '../datasets/sections'
 import type {
-  QueryDataGeometry,
-  QueryDataResult,
+  QueryGeometry,
+  QueryResult,
   QueryDataValues,
 } from '@carbonplan/zarr-layer'
 
@@ -94,7 +94,7 @@ type BoundsLike =
       getNorth?: () => number
     }
   | [number, number, number, number]
-export const boundsToGeometry = (bounds: BoundsLike): QueryDataGeometry => {
+export const boundsToGeometry = (bounds: BoundsLike): QueryGeometry => {
   let west: number
   let east: number
   let south: number
@@ -202,7 +202,7 @@ const collectNumbers = (
 }
 
 const getRegionMean = (
-  result: QueryDataResult | null,
+  result: QueryResult | null,
   fillValue: number,
 ): number | null => {
   if (!result) return null
@@ -396,7 +396,7 @@ const Controls = () => {
       const result = (await zarrLayer.queryData(
         geometry,
         querySelector,
-      )) as QueryDataResult
+      )) as QueryResult
       console.log('Query result:', result)
       setRegionResult(result)
     } catch (error) {

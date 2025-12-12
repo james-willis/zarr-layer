@@ -2,7 +2,7 @@ export { ZarrLayer } from './zarr-layer'
 export type {
   ZarrLayerOptions,
   ColormapArray,
-  DimensionNamesProps,
+  SpatialDimensions,
   LoadingState,
   LoadingStateCallback,
   Selector,
@@ -10,13 +10,7 @@ export type {
 
 // Query interface exports
 export type {
-  QueryDataResult,
+  QueryResult,
   QueryDataValues,
-  QuerySelector,
   QueryGeometry,
-  QueryDataGeometry,
-  GeoJSONPolygon,
-  GeoJSONMultiPolygon,
-  GeoJSONPoint,
-  BoundingBox,
 } from './query/types'

@@ -16,12 +16,14 @@ export type Selector = Record<string, SelectorValue | SelectorSpec>
 export type NormalizedSelector = Record<string, SelectorSpec>
 
 
-export interface DimensionNamesProps {
-  time?: string
-  elevation?: string
+/**
+ * Override the names used to identify spatial dimensions (lat/lon).
+ * Only needed if your dataset uses non-standard names that aren't auto-detected.
+ * Standard names (lat, latitude, y, lon, longitude, x) are detected automatically.
+ */
+export interface SpatialDimensions {
   lat?: string
   lon?: string
-  others?: string[]
 }
 
 export interface DimIndicesProps {
@@ -50,7 +52,13 @@ export interface ZarrLayerOptions {
   opacity?: number
   minRenderZoom?: number
   zarrVersion?: 2 | 3
-  dimensionNames?: DimensionNamesProps
+  spatialDimensions?: SpatialDimensions
+  /**
+   * Explicit spatial bounds [west, south, east, north] in degrees.
+   * Used when coordinate arrays aren't available in the zarr store.
+   * If not provided, bounds are read from coordinate arrays or default to global.
+   */
+  bounds?: [number, number, number, number]
   latIsAscending?: boolean | null
   fillValue?: number
   customFrag?: string

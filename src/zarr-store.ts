@@ -1,6 +1,6 @@
 import * as zarr from 'zarrita'
 import type { Readable } from '@zarrita/storage'
-import type { DimensionNamesProps, DimIndicesProps, CRS } from './types'
+import type { SpatialDimensions, DimIndicesProps, CRS } from './types'
 import type { XYLimits } from './map-utils'
 import { identifyDimensionIndices } from './zarr-utils'
 
@@ -96,7 +96,8 @@ interface ZarrStoreOptions {
   source: string
   version?: 2 | 3 | null
   variable: string
-  dimensionNames?: DimensionNamesProps
+  spatialDimensions?: SpatialDimensions
+  bounds?: [number, number, number, number]
   coordinateKeys?: string[]
   latIsAscending?: boolean | null
 }
@@ -130,7 +131,8 @@ export class ZarrStore {
   source: string
   version: 2 | 3 | null
   variable: string
-  dimensionNames: DimensionNamesProps
+  spatialDimensions: SpatialDimensions
+  private explicitBounds: [number, number, number, number] | null
   coordinateKeys: string[]
 
   metadata: ZarrV2ConsolidatedMetadata | ZarrV3GroupMetadata | null = null
@@ -164,7 +166,8 @@ export class ZarrStore {
     source,
     version = null,
     variable,
-    dimensionNames = {},
+    spatialDimensions = {},
+    bounds,
     coordinateKeys = [],
     latIsAscending = null,
   }: ZarrStoreOptions) {
@@ -177,7 +180,8 @@ export class ZarrStore {
     this.source = source
     this.version = version
     this.variable = variable
-    this.dimensionNames = dimensionNames
+    this.spatialDimensions = spatialDimensions
+    this.explicitBounds = bounds ?? null
     this.coordinateKeys = coordinateKeys
     this.latIsAscending = latIsAscending
 
@@ -499,31 +503,49 @@ export class ZarrStore {
     if (this.dimensions.length === 0) return
 
     const coordinates: Record<string, zarr.Array<zarr.DataType, Readable>> = {}
+
+    // Load coordinate arrays for spatial dimensions (used for bounds calculation)
     for (const dimName of this.dimensions) {
       if (
-        !['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(
+        ['x', 'lon', 'longitude', 'y', 'lat', 'latitude'].includes(
           dimName.toLowerCase()
         )
       ) {
-        continue
-      }
-      try {
-        const coordKey =
-          this.levels.length > 0 ? `${this.levels[0]}/${dimName}` : dimName
-        const coordArray = await this._getArray(coordKey)
-        coordinates[dimName] = coordArray
-      } catch (err) {
-        // Coordinate array not found or failed to load - this is common for
-        // datasets without explicit coordinate arrays
-        console.debug(`Could not load coordinate array for '${dimName}':`, err)
+        try {
+          const coordKey =
+            this.levels.length > 0 ? `${this.levels[0]}/${dimName}` : dimName
+          const coordArray = await this._getArray(coordKey)
+          coordinates[dimName] = coordArray
+        } catch (err) {
+          console.debug(
+            `Could not load coordinate array for '${dimName}':`,
+            err
+          )
+        }
       }
     }
 
+    // Use identifyDimensionIndices for spatial dimensions (lat, lon)
     this.dimIndices = identifyDimensionIndices(
       this.dimensions,
-      this.dimensionNames,
+      this.spatialDimensions,
       coordinates
     )
+
+    // Add ALL dimensions to dimIndices so selectors can reference them by name
+    // (e.g., 'time', 'level', etc. - not just lat/lon)
+    for (let i = 0; i < this.dimensions.length; i++) {
+      const dimName = this.dimensions[i]
+      // Skip if already added (e.g., 'lat' was already mapped with its coordinate array)
+      if (this.dimIndices[dimName] || this.dimIndices[dimName.toLowerCase()]) {
+        continue
+      }
+      this.dimIndices[dimName] = {
+        name: dimName,
+        index: i,
+        array: null,
+      }
+    }
   }
 
   private normalizeFillValue(value: unknown): number | null {
@@ -556,8 +578,8 @@ export class ZarrStore {
         return zarr.open(loc, { kind: 'array' })
       }
 
-      const lonName = this.dimensionNames.lon ?? this.dimIndices.lon.name
-      const latName = this.dimensionNames.lat ?? this.dimIndices.lat.name
+      const lonName = this.spatialDimensions.lon ?? this.dimIndices.lon.name
+      const latName = this.spatialDimensions.lat ?? this.dimIndices.lat.name
 
       const xarr =
         this.dimIndices.lon.array ||
@@ -584,24 +606,39 @@ export class ZarrStore {
         yMax: Math.max(...yValues),
       }
     } catch (err) {
-      console.warn(
-        'Failed to load XY limits from coordinate arrays, using defaults:',
-        err
-      )
-      if (this.crs === 'EPSG:3857') {
-        const worldExtent = 20037508.342789244
+      // Use explicit bounds if provided, otherwise fall back to defaults
+      if (this.explicitBounds) {
+        const [west, south, east, north] = this.explicitBounds
         this.xyLimits = {
-          xMin: -worldExtent,
-          xMax: worldExtent,
-          yMin: -worldExtent,
-          yMax: worldExtent,
+          xMin: west,
+          xMax: east,
+          yMin: south,
+          yMax: north,
         }
+        console.debug(
+          'Using explicit bounds for XY limits:',
+          this.explicitBounds
+        )
       } else {
-        this.xyLimits = {
-          xMin: -180,
-          xMax: 180,
-          yMin: -90,
-          yMax: 90,
+        console.warn(
+          'Failed to load XY limits from coordinate arrays, using defaults:',
+          err
+        )
+        if (this.crs === 'EPSG:3857') {
+          const worldExtent = 20037508.342789244
+          this.xyLimits = {
+            xMin: -worldExtent,
+            xMax: worldExtent,
+            yMin: -worldExtent,
+            yMax: worldExtent,
+          }
+        } else {
+          this.xyLimits = {
+            xMin: -180,
+            xMax: 180,
+            yMin: -90,
+            yMax: 90,
+          }
         }
       }
       if (this.latIsAscending === null) {

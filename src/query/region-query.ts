@@ -15,11 +15,10 @@ import {
   tileToKey,
 } from '../map-utils'
 import type { ZarrStore } from '../zarr-store'
-import type { CRS } from '../types'
+import type { CRS, Selector } from '../types'
 import type {
-  QueryDataGeometry,
-  QuerySelector,
-  QueryDataResult,
+  QueryGeometry,
+  QueryResult,
   QueryDataValues,
 } from './types'
 import {
@@ -42,14 +41,14 @@ import {
  */
 export async function queryRegionTiled(
   variable: string,
-  geometry: QueryDataGeometry,
-  selector: QuerySelector,
+  geometry: QueryGeometry,
+  selector: Selector,
   zarrStore: ZarrStore,
   crs: CRS,
   xyLimits: XYLimits,
   maxZoom: number,
   tileSize: number
-): Promise<QueryDataResult> {
+): Promise<QueryResult> {
   const desc = zarrStore.describe()
   const dimensions = desc.dimensions
   const coordinates = desc.coordinates
@@ -58,7 +57,7 @@ export async function queryRegionTiled(
 
   // Calculate result dimension based on selector
   // resultDim = total dims - (number of single-valued dims)
-  const isMultiValSelector = (value: QuerySelector[string]) => {
+  const isMultiValSelector = (value: Selector[string]) => {
     if (Array.isArray(value)) return true
     if (value && typeof value === 'object' && 'selected' in value) {
       return Array.isArray((value as any).selected)
@@ -134,7 +133,7 @@ export async function queryRegionTiled(
       [variable]: results,
       dimensions: resultDimensions,
       coordinates: buildResultCoordinates(),
-    } as QueryDataResult
+    } as QueryResult
     return result
   }
 
@@ -266,7 +265,7 @@ export async function queryRegionTiled(
     [variable]: results,
     dimensions: resultDimensions,
     coordinates: buildResultCoordinates(),
-  } as QueryDataResult
+  } as QueryResult
 
   return result
 }
@@ -277,8 +276,8 @@ export async function queryRegionTiled(
  */
 export async function queryRegionSingleImage(
   variable: string,
-  geometry: QueryDataGeometry,
-  selector: QuerySelector,
+  geometry: QueryGeometry,
+  selector: Selector,
   data: Float32Array | null,
   width: number,
   height: number,
@@ -290,7 +289,7 @@ export async function queryRegionSingleImage(
   channelLabels?: (string | number)[][],
   multiValueDimNames?: string[],
   latIsAscending?: boolean
-): Promise<QueryDataResult> {
+): Promise<QueryResult> {
   // Warn if selector has multi-valued dimensions
   const hasMultiValue = hasArraySelector(selector)
   if (hasMultiValue) {
@@ -301,7 +300,7 @@ export async function queryRegionSingleImage(
   }
 
   // Calculate result dimension
-  const isMultiValSelector = (value: QuerySelector[string]) => {
+  const isMultiValSelector = (value: Selector[string]) => {
     if (Array.isArray(value)) return true
     if (value && typeof value === 'object' && 'selected' in value) {
       return Array.isArray((value as any).selected)
@@ -374,7 +373,7 @@ export async function queryRegionSingleImage(
       [variable]: results,
       dimensions: resultDimensions,
       coordinates: buildResultCoordinates(),
-    } as QueryDataResult
+    } as QueryResult
     return result
   }
 
@@ -411,7 +410,7 @@ export async function queryRegionSingleImage(
         [variable]: results,
         dimensions: resultDimensions,
         coordinates: buildResultCoordinates(),
-      } as QueryDataResult
+      } as QueryResult
       return result
     }
     const toFrac = (latVal: number) =>
@@ -428,7 +427,7 @@ export async function queryRegionSingleImage(
         [variable]: results,
         dimensions: resultDimensions,
         coordinates: buildResultCoordinates(),
-      } as QueryDataResult
+      } as QueryResult
       return result
     }
 
@@ -448,7 +447,7 @@ export async function queryRegionSingleImage(
         [variable]: results,
         dimensions: resultDimensions,
         coordinates: buildResultCoordinates(),
-      } as QueryDataResult
+      } as QueryResult
       return result
     }
 
@@ -468,7 +467,7 @@ export async function queryRegionSingleImage(
       [variable]: results,
       dimensions: resultDimensions,
       coordinates: buildResultCoordinates(),
-    } as QueryDataResult
+    } as QueryResult
     return result
   }
 
@@ -536,7 +535,7 @@ export async function queryRegionSingleImage(
     [variable]: results,
     dimensions: resultDimensions,
     coordinates: buildResultCoordinates(),
-  } as QueryDataResult
+  } as QueryResult
 
   return result
 }

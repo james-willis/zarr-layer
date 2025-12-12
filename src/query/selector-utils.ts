@@ -5,14 +5,14 @@
  * Follows patterns from carbonplan/maps.
  */
 
-import type { SelectorSpec } from '../types'
-import type { QuerySelector, PointValueEntry, QueryDataValues } from './types'
+import type { Selector, SelectorSpec } from '../types'
+import type { PointValueEntry, QueryDataValues } from './types'
 
 /**
  * Checks if a selector contains any array values.
  * Array values mean results should be nested.
  */
-export function hasArraySelector(selector: QuerySelector): boolean {
+export function hasArraySelector(selector: Selector): boolean {
   for (const key of Object.keys(selector)) {
     const value = selector[key]
     if (Array.isArray(value)) return true
@@ -92,7 +92,7 @@ export function getPointValues(
   data: Float32Array,
   pixelX: number,
   pixelY: number,
-  selector: QuerySelector,
+  selector: Selector,
   dimensions: string[],
   coordinates: Record<string, (string | number)[]>,
   shape: number[],
@@ -308,7 +308,7 @@ export function setObjectValues(
  * @returns Array of chunk index arrays (cartesian product)
  */
 export function getChunks(
-  selector: QuerySelector,
+  selector: Selector,
   dimensions: string[],
   coordinates: Record<string, (string | number)[]>,
   shape: number[],

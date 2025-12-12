@@ -11,7 +11,7 @@ import {
   type SelectorValue,
   type NormalizedSelector,
   type Selector,
-  type DimensionNamesProps,
+  type SpatialDimensions,
   type DimIndicesProps,
 } from './types'
 
@@ -26,95 +26,49 @@ const resolveOpenFunc = (zarrVersion: 2 | 3 | null): typeof zarr.open => {
   return zarr.open
 }
 
-const DIMENSION_ALIASES_DEFAULT: {
-  [key in keyof DimensionNamesProps]: string[]
-} = {
-  lat: ['lat', 'latitude', 'y', 'Latitude', 'Y'],
-  lon: ['lon', 'longitude', 'x', 'Longitude', 'X', 'lng'],
-  time: ['time', 't', 'Time', 'time_counter'],
-  elevation: [
-    'depth',
-    'z',
-    'Depth',
-    'level',
-    'lev',
-    'deptht',
-    'elevation',
-    'depthu',
-    'depthv',
-  ],
+/** Common names for spatial dimensions. These are matched case-insensitively. */
+const SPATIAL_DIMENSION_ALIASES: Record<'lat' | 'lon', string[]> = {
+  lat: ['lat', 'latitude', 'y'],
+  lon: ['lon', 'longitude', 'x', 'lng'],
 }
 
-const CF_MAPPINGS: { [key in keyof DimensionNamesProps]: string[] } = {
-  lat: ['latitude'],
-  lon: ['longitude'],
-  time: ['time'],
-  elevation: [
-    'height',
-    'depth',
-    'altitude',
-    'air_pressure',
-    'pressure',
-    'geopotential_height',
-  ],
-} as const
-
 /**
- * Identify the indices of common dimensions (lat, lon, time, elevation)
- * in a Zarr array, optionally using CF-compliant standard names or custom dimension mappings.
+ * Identify the indices of spatial dimensions (lat, lon) in a Zarr array.
+ *
+ * Auto-detects common dimension names (lat, latitude, y, lon, longitude, x, lng).
+ * Use spatialDimensions to override if your dataset uses non-standard names.
  *
  * @param dimNames - Names of the array dimensions.
- * @param dimensionNames - Optional explicit mapping of dimension names (see {@link DimensionNamesProps}).
- * @param coordinates - Optional coordinate variable dictionary.
- * @returns A {@link DimIndicesProps} object describing each dimension’s index and name.
+ * @param spatialDimensions - Optional explicit mapping for non-standard dimension names.
+ * @param coordinates - Optional coordinate variable dictionary (for attaching arrays to dimIndices).
+ * @returns A {@link DimIndicesProps} object with lat/lon indices if found.
  */
 export function identifyDimensionIndices(
   dimNames: string[],
-  dimensionNames?: DimensionNamesProps,
+  spatialDimensions?: SpatialDimensions,
   coordinates?: CoordinatesMap
 ): DimIndicesProps {
-  let DIMENSION_ALIASES = { ...DIMENSION_ALIASES_DEFAULT }
-  const names = ['lat', 'lon', 'time', 'elevation']
-
-  if (coordinates) {
-    Object.keys(coordinates).forEach((coordName) => {
-      const coordArr = coordinates[coordName]
-      const coordAttrs = (coordArr.attrs ?? {}) as Record<string, unknown>
-      const standardName =
-        typeof coordAttrs?.standard_name === 'string'
-          ? coordAttrs.standard_name
-          : undefined
-      if (standardName) {
-        for (const [dimKey, cfNames] of Object.entries(CF_MAPPINGS)) {
-          if (cfNames.includes(standardName)) {
-            DIMENSION_ALIASES[dimKey as keyof DimensionNamesProps] = [coordName]
-          }
-        }
-      }
-    })
+  const aliases: Record<'lat' | 'lon', string[]> = {
+    lat: [...SPATIAL_DIMENSION_ALIASES.lat],
+    lon: [...SPATIAL_DIMENSION_ALIASES.lon],
   }
 
-  if (dimensionNames) {
-    names.forEach((name) => {
-      const dimName = name as keyof DimensionNamesProps
-      if (dimensionNames[dimName]) {
-        DIMENSION_ALIASES[dimName] = [dimensionNames[dimName]] as string[]
-      }
-    })
-    if (dimensionNames.others) {
-      dimensionNames.others.forEach((otherName) => {
-        DIMENSION_ALIASES[otherName as keyof DimensionNamesProps] = [otherName]
-      })
-    }
+  // Apply explicit overrides from spatialDimensions
+  if (spatialDimensions?.lat) {
+    aliases.lat = [spatialDimensions.lat]
+  }
+  if (spatialDimensions?.lon) {
+    aliases.lon = [spatialDimensions.lon]
   }
 
   const indices: DimIndicesProps = {}
-  for (const [key, aliases] of Object.entries(DIMENSION_ALIASES)) {
+
+  for (const [key, aliasList] of Object.entries(aliases)) {
     for (let i = 0; i < dimNames.length; i++) {
       const name = dimNames[i].toLowerCase()
-      if (aliases.map((a) => a.toLowerCase()).includes(name)) {
+      if (aliasList.map((a) => a.toLowerCase()).includes(name)) {
         indices[key] = {
-          name,
+          name: dimNames[i],
           index: i,
           array: coordinates ? coordinates[dimNames[i]] : null,
         }
@@ -122,6 +76,7 @@ export function identifyDimensionIndices(
       }
     }
   }
+
   return indices
 }
 

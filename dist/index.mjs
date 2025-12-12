@@ -4198,72 +4198,28 @@ var resolveOpenFunc = (zarrVersion) => {
   if (zarrVersion === 3) return open.v3;
   return open;
 };
-var DIMENSION_ALIASES_DEFAULT = {
-  lat: ["lat", "latitude", "y", "Latitude", "Y"],
-  lon: ["lon", "longitude", "x", "Longitude", "X", "lng"],
-  time: ["time", "t", "Time", "time_counter"],
-  elevation: [
-    "depth",
-    "z",
-    "Depth",
-    "level",
-    "lev",
-    "deptht",
-    "elevation",
-    "depthu",
-    "depthv"
-  ]
+var SPATIAL_DIMENSION_ALIASES = {
+  lat: ["lat", "latitude", "y"],
+  lon: ["lon", "longitude", "x", "lng"]
 };
-var CF_MAPPINGS = {
-  lat: ["latitude"],
-  lon: ["longitude"],
-  time: ["time"],
-  elevation: [
-    "height",
-    "depth",
-    "altitude",
-    "air_pressure",
-    "pressure",
-    "geopotential_height"
-  ]
-};
-function identifyDimensionIndices(dimNames, dimensionNames, coordinates) {
-  let DIMENSION_ALIASES = { ...DIMENSION_ALIASES_DEFAULT };
-  const names = ["lat", "lon", "time", "elevation"];
-  if (coordinates) {
-    Object.keys(coordinates).forEach((coordName) => {
-      const coordArr = coordinates[coordName];
-      const coordAttrs = coordArr.attrs ?? {};
-      const standardName = typeof coordAttrs?.standard_name === "string" ? coordAttrs.standard_name : void 0;
-      if (standardName) {
-        for (const [dimKey, cfNames] of Object.entries(CF_MAPPINGS)) {
-          if (cfNames.includes(standardName)) {
-            DIMENSION_ALIASES[dimKey] = [coordName];
-          }
-        }
-      }
-    });
+function identifyDimensionIndices(dimNames, spatialDimensions, coordinates) {
+  const aliases = {
+    lat: [...SPATIAL_DIMENSION_ALIASES.lat],
+    lon: [...SPATIAL_DIMENSION_ALIASES.lon]
+  };
+  if (spatialDimensions?.lat) {
+    aliases.lat = [spatialDimensions.lat];
   }
-  if (dimensionNames) {
-    names.forEach((name) => {
-      const dimName = name;
-      if (dimensionNames[dimName]) {
-        DIMENSION_ALIASES[dimName] = [dimensionNames[dimName]];
-      }
-    });
-    if (dimensionNames.others) {
-      dimensionNames.others.forEach((otherName) => {
-        DIMENSION_ALIASES[otherName] = [otherName];
-      });
-    }
+  if (spatialDimensions?.lon) {
+    aliases.lon = [spatialDimensions.lon];
   }
   const indices = {};
-  for (const [key, aliases] of Object.entries(DIMENSION_ALIASES)) {
+  for (const [key, aliasList] of Object.entries(aliases)) {
     for (let i = 0; i < dimNames.length; i++) {
       const name = dimNames[i].toLowerCase();
-      if (aliases.map((a) => a.toLowerCase()).includes(name)) {
+      if (aliasList.map((a) => a.toLowerCase()).includes(name)) {
         indices[key] = {
-          name,
+          name: dimNames[i],
           index: i,
           array: coordinates ? coordinates[dimNames[i]] : null
         };
@@ -4378,7 +4334,8 @@ var _ZarrStore = class _ZarrStore {
     source,
     version = null,
     variable,
-    dimensionNames = {},
+    spatialDimensions = {},
+    bounds,
     coordinateKeys = [],
     latIsAscending = null
   }) {
@@ -4411,7 +4368,8 @@ var _ZarrStore = class _ZarrStore {
     this.source = source;
     this.version = version;
     this.variable = variable;
-    this.dimensionNames = dimensionNames;
+    this.spatialDimensions = spatialDimensions;
+    this.explicitBounds = bounds ?? null;
     this.coordinateKeys = coordinateKeys;
     this.latIsAscending = latIsAscending;
     this.initialized = this._initialize();
@@ -4648,24 +4606,37 @@ var _ZarrStore = class _ZarrStore {
     if (this.dimensions.length === 0) return;
     const coordinates = {};
     for (const dimName of this.dimensions) {
-      if (!["x", "lon", "longitude", "y", "lat", "latitude"].includes(
+      if (["x", "lon", "longitude", "y", "lat", "latitude"].includes(
         dimName.toLowerCase()
       )) {
-        continue;
-      }
-      try {
-        const coordKey = this.levels.length > 0 ? `${this.levels[0]}/${dimName}` : dimName;
-        const coordArray = await this._getArray(coordKey);
-        coordinates[dimName] = coordArray;
-      } catch (err) {
-        console.debug(`Could not load coordinate array for '${dimName}':`, err);
+        try {
+          const coordKey = this.levels.length > 0 ? `${this.levels[0]}/${dimName}` : dimName;
+          const coordArray = await this._getArray(coordKey);
+          coordinates[dimName] = coordArray;
+        } catch (err) {
+          console.debug(
+            `Could not load coordinate array for '${dimName}':`,
+            err
+          );
+        }
       }
     }
     this.dimIndices = identifyDimensionIndices(
       this.dimensions,
-      this.dimensionNames,
+      this.spatialDimensions,
       coordinates
     );
+    for (let i = 0; i < this.dimensions.length; i++) {
+      const dimName = this.dimensions[i];
+      if (this.dimIndices[dimName] || this.dimIndices[dimName.toLowerCase()]) {
+        continue;
+      }
+      this.dimIndices[dimName] = {
+        name: dimName,
+        index: i,
+        array: null
+      };
+    }
   }
   normalizeFillValue(value) {
     if (value === void 0 || value === null) return null;
@@ -4692,8 +4663,8 @@ var _ZarrStore = class _ZarrStore {
         }
         return open(loc, { kind: "array" });
       };
-      const lonName = this.dimensionNames.lon ?? this.dimIndices.lon.name;
-      const latName = this.dimensionNames.lat ?? this.dimIndices.lat.name;
+      const lonName = this.spatialDimensions.lon ?? this.dimIndices.lon.name;
+      const latName = this.spatialDimensions.lat ?? this.dimIndices.lat.name;
       const xarr = this.dimIndices.lon.array || await openArray(levelRoot.resolve(lonName));
       const yarr = this.dimIndices.lat.array || await openArray(levelRoot.resolve(latName));
       const xdata = await get2(xarr);
@@ -4711,25 +4682,39 @@ var _ZarrStore = class _ZarrStore {
         yMax: Math.max(...yValues)
       };
     } catch (err) {
-      console.warn(
-        "Failed to load XY limits from coordinate arrays, using defaults:",
-        err
-      );
-      if (this.crs === "EPSG:3857") {
-        const worldExtent = 20037508342789244e-9;
+      if (this.explicitBounds) {
+        const [west, south, east, north] = this.explicitBounds;
         this.xyLimits = {
-          xMin: -worldExtent,
-          xMax: worldExtent,
-          yMin: -worldExtent,
-          yMax: worldExtent
+          xMin: west,
+          xMax: east,
+          yMin: south,
+          yMax: north
         };
+        console.debug(
+          "Using explicit bounds for XY limits:",
+          this.explicitBounds
+        );
       } else {
-        this.xyLimits = {
-          xMin: -180,
-          xMax: 180,
-          yMin: -90,
-          yMax: 90
-        };
+        console.warn(
+          "Failed to load XY limits from coordinate arrays, using defaults:",
+          err
+        );
+        if (this.crs === "EPSG:3857") {
+          const worldExtent = 20037508342789244e-9;
+          this.xyLimits = {
+            xMin: -worldExtent,
+            xMax: worldExtent,
+            yMin: -worldExtent,
+            yMax: worldExtent
+          };
+        } else {
+          this.xyLimits = {
+            xMin: -180,
+            xMax: 180,
+            yMin: -90,
+            yMax: 90
+          };
+        }
       }
       if (this.latIsAscending === null) {
         this.latIsAscending = null;
@@ -8497,7 +8482,8 @@ var ZarrLayer = class {
     opacity = 1,
     minRenderZoom = 0,
     zarrVersion,
-    dimensionNames = {},
+    spatialDimensions = {},
+    bounds,
     latIsAscending = null,
     fillValue,
     customFrag,
@@ -8538,7 +8524,8 @@ var ZarrLayer = class {
     this.url = source;
     this.variable = variable;
     this.zarrVersion = zarrVersion ?? null;
-    this.dimensionNames = dimensionNames;
+    this.spatialDimensions = spatialDimensions;
+    this.bounds = bounds;
     this.latIsAscending = latIsAscending ?? null;
     this.selector = selector;
     this.normalizedSelector = normalizeSelector(selector);
@@ -8752,7 +8739,8 @@ var ZarrLayer = class {
         source: this.url,
         version: this.zarrVersion,
         variable: this.variable,
-        dimensionNames: this.dimensionNames,
+        spatialDimensions: this.spatialDimensions,
+        bounds: this.bounds,
         latIsAscending: this.latIsAscending,
         coordinateKeys: Object.keys(this.selector)
       });

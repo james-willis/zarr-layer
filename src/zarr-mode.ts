@@ -6,6 +6,7 @@ import type {
   LoadingStateCallback,
   MapLike,
   NormalizedSelector,
+  Selector,
 } from './types'
 import type {
   CustomShaderConfig,
@@ -14,11 +15,7 @@ import type {
   SingleImageParams,
 } from './renderer-types'
 import type { ZarrRenderer } from './zarr-renderer'
-import type {
-  QuerySelector,
-  QueryDataGeometry,
-  QueryDataResult,
-} from './query/types'
+import type { QueryGeometry, QueryResult } from './query/types'
 
 export interface RenderContext {
   gl: WebGL2RenderingContext
@@ -74,7 +71,7 @@ export interface ZarrMode {
 
   // Query methods (optional)
   queryData?(
-    geometry: QueryDataGeometry,
-    selector?: QuerySelector
-  ): Promise<QueryDataResult>
+    geometry: QueryGeometry,
+    selector?: Selector
+  ): Promise<QueryResult>
 }

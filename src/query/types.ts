@@ -1,5 +1,3 @@
-import type { Selector } from '../types'
-
 /**
  * Nested values structure for multi-dimensional data queries.
  */
@@ -17,10 +15,10 @@ export interface NestedValues {
 export type QueryDataValues = number[] | NestedValues
 
 /**
- * Result from a data query (point or region).
+ * Result from a query (point or region).
  * Matches carbonplan/maps structure: { [variable]: values, dimensions, coordinates }
  */
-export interface QueryDataResult {
+export interface QueryResult {
   /** Variable name mapped to its values (flat array or nested based on selector) */
   [variable: string]:
     | QueryDataValues
@@ -35,12 +33,6 @@ export interface QueryDataResult {
     [key: string]: (number | string)[]
   }
 }
-
-/**
- * Selector for region queries - can override the layer's render selector.
- * Mirrors the public Selector type to keep query inputs consistent.
- */
-export type QuerySelector = Selector
 
 /**
  * Internal structure for point values during region iteration.
@@ -88,14 +80,6 @@ export interface GeoJSONMultiPolygon {
 }
 
 /**
- * Supported GeoJSON geometry types for polygon-based queries.
+ * Supported GeoJSON geometry types for queries.
  */
-export type QueryGeometry = GeoJSONPolygon | GeoJSONMultiPolygon
-
-/**
- * Supported GeoJSON geometry types for data queries.
- */
-export type QueryDataGeometry =
-  | GeoJSONPoint
-  | GeoJSONPolygon
-  | GeoJSONMultiPolygon
+export type QueryGeometry = GeoJSONPoint | GeoJSONPolygon | GeoJSONMultiPolygon

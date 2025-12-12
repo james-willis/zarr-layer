@@ -18,7 +18,7 @@ import { ZarrRenderer } from './zarr-renderer'
 import type { CustomShaderConfig } from './renderer-types'
 import type {
   ColormapArray,
-  DimensionNamesProps,
+  SpatialDimensions,
   DimIndicesProps,
   LoadingStateCallback,
   MapLike,
@@ -34,11 +34,7 @@ import {
   resolveProjectionParams,
   isGlobeProjection as checkGlobeProjection,
 } from './render-utils'
-import type {
-  QuerySelector,
-  QueryDataGeometry,
-  QueryDataResult,
-} from './query/types'
+import type { QueryGeometry, QueryResult } from './query/types'
 
 export class ZarrLayer {
   readonly type: 'custom' = 'custom'
@@ -48,7 +44,8 @@ export class ZarrLayer {
   private url: string
   private variable: string
   private zarrVersion: 2 | 3 | null = null
-  private dimensionNames: DimensionNamesProps
+  private spatialDimensions: SpatialDimensions
+  private bounds: [number, number, number, number] | undefined
   private latIsAscending: boolean | null = null
   private selector: Selector
   private invalidate: () => void
@@ -133,7 +130,8 @@ export class ZarrLayer {
     opacity = 1,
     minRenderZoom = 0,
     zarrVersion,
-    dimensionNames = {},
+    spatialDimensions = {},
+    bounds,
     latIsAscending = null,
     fillValue,
     customFrag,
@@ -145,7 +143,8 @@ export class ZarrLayer {
     this.url = source
     this.variable = variable
     this.zarrVersion = zarrVersion ?? null
-    this.dimensionNames = dimensionNames
+    this.spatialDimensions = spatialDimensions
+    this.bounds = bounds
     this.latIsAscending = latIsAscending ?? null
     this.selector = selector
     this.normalizedSelector = normalizeSelector(selector)
@@ -377,7 +376,8 @@ export class ZarrLayer {
         source: this.url,
         version: this.zarrVersion,
         variable: this.variable,
-        dimensionNames: this.dimensionNames,
+        spatialDimensions: this.spatialDimensions,
+        bounds: this.bounds,
         latIsAscending: this.latIsAscending,
         coordinateKeys: Object.keys(this.selector),
       })
@@ -592,9 +592,9 @@ export class ZarrLayer {
    * @returns Promise resolving to the query result matching carbonplan/maps structure.
    */
   async queryData(
-    geometry: QueryDataGeometry,
-    selector?: QuerySelector
-  ): Promise<QueryDataResult> {
+    geometry: QueryGeometry,
+    selector?: Selector
+  ): Promise<QueryResult> {
     if (!this.mode?.queryData) {
       return {
         [this.variable]: [],

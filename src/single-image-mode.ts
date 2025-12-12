@@ -5,7 +5,7 @@ import type {
   TileId,
   SingleImageRenderState,
 } from './zarr-mode'
-import type { QueryDataGeometry, QueryDataResult } from './query/types'
+import type { QueryGeometry, QueryResult } from './query/types'
 import { queryRegionSingleImage } from './query/region-query'
 import { mercatorBoundsToPixel } from './query/query-utils'
 import { setObjectValues } from './query/selector-utils'
@@ -487,9 +487,9 @@ export class SingleImageMode implements ZarrMode {
    * Query data for point or region geometries.
    */
   async queryData(
-    geometry: QueryDataGeometry,
+    geometry: QueryGeometry,
     selector?: Selector
-  ): Promise<QueryDataResult> {
+  ): Promise<QueryResult> {
     if (!this.mercatorBounds) {
       return {
         [this.variable]: [],
