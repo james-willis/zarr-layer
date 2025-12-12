@@ -1,5 +1,6 @@
 import carbonplan4d from './carbonplan-4d'
-import { createTimeDatasetModule } from './time-series'
+import hurricane from './hurricane'
+import { createTimeDatasetModule } from './time'
 import { createDatasetList, defineModules } from './types'
 
 const DATASET_MODULE_LIST = createDatasetList(
@@ -26,17 +27,7 @@ const DATASET_MODULE_LIST = createDatasetList(
     info: 'Ocean temperature (v3 pyramid, EPSG:3857)',
     sourceInfo: 'v3 pyramid (EPSG:3857)',
   }),
-  createTimeDatasetModule({
-    id: 'pressure_v3',
-    source:
-      'https://atlantis-vis-o.s3-ext.jc.rl.ac.uk/hurricanes/era5/florence',
-    variable: 'surface_pressure',
-    clim: [75000, 104000],
-    colormap: 'cool',
-    zarrVersion: 3,
-    info: 'Hurricane pressure (single image, EPSG:4326)',
-    sourceInfo: 'v3 with no multiscales/tiling, EPSG:4326',
-  }),
+  hurricane,
   createTimeDatasetModule({
     id: 'tasmax_pyramid_4326',
     source:
@@ -82,7 +73,8 @@ const DATASET_MODULE_LIST = createDatasetList(
     zarrVersion: 2,
     maxTime: 365,
     timeSelectorType: 'index',
-    dimensionNames: { lat: 'nlat', lon: 'nlon' },
+    spatialDimensions: { lat: 'nlat', lon: 'nlon' },
+    bounds: [-180, -90, 180, 90],
     latIsAscending: true,
     info: 'Delta FG CO2 (single image, global)',
     sourceInfo: 'v2 single image (global)',

@@ -209,7 +209,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     const options: ZarrLayerOptions = {
       id: 'zarr-layer',
       source: datasetModule.source,
-      variable: datasetModule.variable,
+      variable: currentLayerConfig.variable ?? datasetModule.variable,
       clim: clim,
       colormap: colormapArray,
       opacity: opacity,
@@ -217,7 +217,8 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       zarrVersion: datasetModule.zarrVersion,
       minRenderZoom: datasetModule.minRenderZoom ?? 0,
       fillValue: datasetModule.fillValue,
-      dimensionNames: datasetModule.dimensionNames,
+      spatialDimensions: datasetModule.spatialDimensions,
+      bounds: datasetModule.bounds,
       latIsAscending: datasetModule.latIsAscending,
       onLoadingStateChange: setLoadingState,
     }
@@ -305,6 +306,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     datasetId,
     datasetModule,
     layerConfig.customFrag,
+    layerConfig.variable,
     mapProvider,
     setLoadingState,
   ])

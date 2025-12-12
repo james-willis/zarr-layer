@@ -15,10 +15,12 @@ export type DatasetCommonConfig = {
   center?: [number, number]
   zoom?: number
   minRenderZoom?: number
-  dimensionNames?: {
-    lat: string
-    lon: string
+  spatialDimensions?: {
+    lat?: string
+    lon?: string
   }
+  /** Explicit bounds [west, south, east, north] when coordinate arrays aren't available */
+  bounds?: [number, number, number, number]
 }
 
 export type DatasetControlsProps<State> = {
@@ -28,6 +30,7 @@ export type DatasetControlsProps<State> = {
 
 export type BuildLayerResult = {
   selector: Selector
+  variable?: string
   customFrag?: string
   uniforms?: Record<string, number>
 }

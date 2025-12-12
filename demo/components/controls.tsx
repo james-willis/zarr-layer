@@ -15,9 +15,10 @@ import { useThemedColormap } from '@carbonplan/colormaps'
 // @ts-expect-error - carbonplan icons types not available
 import { RotatingArrow } from '@carbonplan/icons'
 import { Box, Divider, Flex } from 'theme-ui'
-import { DATASET_MODULES } from '../lib/constants'
+import { DATASET_MODULES, DatasetId } from '../lib/constants'
 import { useAppStore } from '../lib/store'
 import { DatasetControlsProps } from '../datasets/types'
+import { SELECTOR_SECTIONS } from '../datasets/sections'
 import type {
   QueryDataGeometry,
   QueryDataResult,
@@ -314,17 +315,24 @@ const Controls = () => {
     setRegionResult(null)
   }, [datasetId, currentBand, setPointResult, setRegionResult])
 
+  const currentVariable = useMemo(() => {
+    const layerConfig = datasetModule.buildLayerProps({
+      state: datasetState as any,
+    })
+    return layerConfig.variable ?? datasetModule.variable
+  }, [datasetModule, datasetState])
+
   const pointDisplayValue = useMemo(() => {
     if (!pointResult) return null
     const values = collectNumbers(
-      pointResult[datasetModule.variable] as QueryDataValues,
+      pointResult[currentVariable] as QueryDataValues,
       fillValue,
     )
     if (values.length === 0) return null
     // For range bands or multi-values, show mean of collected values
     const mean = values.reduce((acc, value) => acc + value, 0) / values.length
     return Number.isFinite(mean) ? mean : null
-  }, [datasetModule.variable, fillValue, pointResult])
+  }, [currentVariable, fillValue, pointResult])
 
   const regionMean = useMemo(
     () => getRegionMean(regionResult, fillValue),
@@ -402,11 +410,24 @@ const Controls = () => {
       <Box sx={headingSx}>Dataset</Box>
 
       <Box sx={{ width: '100%', my: 2 }}>
-        <Select value={datasetId} onChange={handleDatasetChange} size='xs'>
-          {Object.entries(DATASET_MODULES).map(([key, config]) => (
-            <option key={key} value={key}>
-              {config.info}
-            </option>
+        <Select
+          value={datasetId}
+          onChange={handleDatasetChange}
+          size='xs'
+          sxSelect={{ width: '100%' }}
+        >
+          {SELECTOR_SECTIONS.map((section) => (
+            <optgroup key={section.label} label={section.label}>
+              {section.datasetIds.map((id) => {
+                const config = DATASET_MODULES[id as DatasetId]
+                if (!config) return null
+                return (
+                  <option key={id} value={id}>
+                    {config.info}
+                  </option>
+                )
+              })}
+            </optgroup>
           ))}
         </Select>
         <Box sx={{ color: 'secondary', mt: 1 }}>{datasetModule.sourceInfo}</Box>

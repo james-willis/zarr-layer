@@ -95,20 +95,6 @@ interface QueryDataResult {
     };
 }
 /**
- * Selector for region queries - can override the layer's render selector.
- * Mirrors the public Selector type to keep query inputs consistent.
- */
-type QuerySelector = Selector;
-/**
- * Bounding box for a geographic region.
- */
-interface BoundingBox {
-    west: number;
-    east: number;
-    south: number;
-    north: number;
-}
-/**
  * GeoJSON Point geometry.
  */
 interface GeoJSONPoint {
@@ -129,10 +115,6 @@ interface GeoJSONMultiPolygon {
     type: 'MultiPolygon';
     coordinates: number[][][][];
 }
-/**
- * Supported GeoJSON geometry types for polygon-based queries.
- */
-type QueryGeometry = GeoJSONPolygon | GeoJSONMultiPolygon;
 /**
  * Supported GeoJSON geometry types for data queries.
  */
@@ -219,7 +201,7 @@ declare class ZarrLayer {
      * @param selector - Optional selector to override the layer's selector.
      * @returns Promise resolving to the query result matching carbonplan/maps structure.
      */
-    queryData(geometry: QueryDataGeometry, selector?: QuerySelector): Promise<QueryDataResult>;
+    queryData(geometry: QueryDataGeometry, selector?: Selector): Promise<QueryDataResult>;
 }
 
-export { type BoundingBox, type ColormapArray, type DimensionNamesProps, type GeoJSONMultiPolygon, type GeoJSONPoint, type GeoJSONPolygon, type LoadingState, type LoadingStateCallback, type QueryDataGeometry, type QueryDataResult, type QueryDataValues, type QueryGeometry, type QuerySelector, type Selector, ZarrLayer, type ZarrLayerOptions };
+export { type ColormapArray, type DimensionNamesProps, type LoadingState, type LoadingStateCallback, type QueryDataGeometry, type QueryDataResult, type Selector, ZarrLayer, type ZarrLayerOptions };
