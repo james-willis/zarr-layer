@@ -427,9 +427,9 @@ export class TiledMode implements ZarrMode {
       }
     }
 
-    // Use provided selector or fall back to layer's normalized selector map
     const querySelector = selector ? normalizeSelector(selector) : this.selector
     const level = this.currentLevel ?? this.maxZoom
+    const desc = this.zarrStore.describe()
 
     return queryRegionTiled(
       this.variable,
@@ -439,7 +439,12 @@ export class TiledMode implements ZarrMode {
       this.crs,
       this.xyLimits,
       level,
-      this.tileSize
+      this.tileSize,
+      {
+        scaleFactor: desc.scaleFactor,
+        addOffset: desc.addOffset,
+        fillValue: desc.fill_value,
+      }
     )
   }
 }

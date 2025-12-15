@@ -83,3 +83,15 @@ export interface GeoJSONMultiPolygon {
  * Supported GeoJSON geometry types for queries.
  */
 export type QueryGeometry = GeoJSONPoint | GeoJSONPolygon | GeoJSONMultiPolygon
+
+/**
+ * Transform options for query results to match rendered values.
+ */
+export interface QueryTransformOptions {
+  /** Scale factor to apply: value * scaleFactor */
+  scaleFactor?: number
+  /** Offset to add: value + addOffset (applied after scaleFactor) */
+  addOffset?: number
+  /** Fill value to filter out (along with NaN/Infinity) */
+  fillValue?: number | null
+}

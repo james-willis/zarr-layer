@@ -6310,16 +6310,6 @@ function mercatorBoundsToPixel(lng, lat, bounds, width, height, crs, latIsAscend
 }
 
 // src/query/selector-utils.ts
-function hasArraySelector(selector) {
-  for (const key of Object.keys(selector)) {
-    const value = selector[key];
-    if (Array.isArray(value)) return true;
-    if (typeof value === "object" && value !== null && "selected" in value && Array.isArray(value.selected)) {
-      return true;
-    }
-  }
-  return false;
-}
 function getPointValues(data, pixelX, pixelY, selector, dimensions, coordinates, shape, chunks, chunkIndices) {
   const result = [];
   let combinedIndices = [[]];
@@ -6528,7 +6518,21 @@ function getChunks(selector, dimensions, coordinates, shape, chunks, x, y) {
 }
 
 // src/query/region-query.ts
-async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xyLimits, maxZoom, tileSize) {
+function transformValue(value, transforms) {
+  if (!Number.isFinite(value)) return null;
+  if (transforms?.fillValue !== void 0 && transforms.fillValue !== null) {
+    if (value === transforms.fillValue) return null;
+  }
+  let result = value;
+  if (transforms?.scaleFactor !== void 0 && transforms.scaleFactor !== 1) {
+    result *= transforms.scaleFactor;
+  }
+  if (transforms?.addOffset !== void 0 && transforms.addOffset !== 0) {
+    result += transforms.addOffset;
+  }
+  return result;
+}
+async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xyLimits, maxZoom, tileSize, transforms) {
   const desc = zarrStore.describe();
   const dimensions = desc.dimensions;
   const coordinates = desc.coordinates;
@@ -6658,16 +6662,7 @@ async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xy
         )) {
           continue;
         }
-        const geo = tilePixelToLatLon(
-          tileTuple,
-          pixelX + 0.5,
-          pixelY + 0.5,
-          tileSize,
-          crs,
-          xyLimits
-        );
-        latCoords.push(geo.lat);
-        lonCoords.push(geo.lon);
+        const pixelValues = [];
         for (const chunkIndices of chunksForTile) {
           const chunkKey = chunkIndices.join(",");
           const chunkData = chunkDataMap.get(chunkKey);
@@ -6683,15 +6678,30 @@ async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xy
             chunks,
             chunkIndices
           );
-          valuesToSet.forEach(({ keys, value }) => {
-            if (keys.length > 0) {
-              setObjectValues(results, keys, value);
-            } else {
-              if (Array.isArray(results)) {
-                results.push(value);
-              }
+          for (const { keys, value } of valuesToSet) {
+            const transformed = transformValue(value, transforms);
+            if (transformed !== null) {
+              pixelValues.push({ keys, value: transformed });
             }
-          });
+          }
+        }
+        if (pixelValues.length === 0) continue;
+        const geo = tilePixelToLatLon(
+          tileTuple,
+          pixelX + 0.5,
+          pixelY + 0.5,
+          tileSize,
+          crs,
+          xyLimits
+        );
+        latCoords.push(geo.lat);
+        lonCoords.push(geo.lon);
+        for (const { keys, value } of pixelValues) {
+          if (keys.length > 0) {
+            setObjectValues(results, keys, value);
+          } else if (Array.isArray(results)) {
+            results.push(value);
+          }
         }
       }
     }
@@ -6703,13 +6713,7 @@ async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xy
   };
   return result;
 }
-async function queryRegionSingleImage(variable, geometry, selector, data, width, height, bounds, _crs, dimensions, coordinates, channels = 1, channelLabels, multiValueDimNames, latIsAscending) {
-  const hasMultiValue = hasArraySelector(selector);
-  if (hasMultiValue) {
-    console.warn(
-      "queryRegion with multi-valued selectors is not fully supported in single-image mode. Results may not match the requested selector. Consider using tiled mode for complex queries."
-    );
-  }
+async function queryRegionSingleImage(variable, geometry, selector, data, width, height, bounds, _crs, dimensions, coordinates, channels = 1, channelLabels, multiValueDimNames, latIsAscending, transforms) {
   const isMultiValSelector = (value) => {
     if (Array.isArray(value)) return true;
     if (value && typeof value === "object" && "selected" in value) {
@@ -6862,18 +6866,24 @@ async function queryRegionSingleImage(variable, geometry, selector, data, width,
       const lon = mercatorNormToLon(mercX);
       const lat = _crs === "EPSG:4326" && bounds.latMin !== void 0 && bounds.latMax !== void 0 ? latIsAscending ? bounds.latMin + (mercY - bounds.y0) / (bounds.y1 - bounds.y0) * (bounds.latMax - bounds.latMin) : bounds.latMax - (mercY - bounds.y0) / (bounds.y1 - bounds.y0) * (bounds.latMax - bounds.latMin) : mercatorNormToLat(mercY);
       const baseIndex = (y * width + x) * channels;
-      let coordPushed = false;
+      const pixelValues = [];
       for (let c = 0; c < channels; c++) {
-        const value = data[baseIndex + c];
-        if (value === void 0 || value === null || isNaN(value)) continue;
-        if (!coordPushed) {
-          latCoords.push(lat);
-          lonCoords.push(lon);
-          coordPushed = true;
-        }
+        const rawValue = data[baseIndex + c];
+        const transformed = transformValue(rawValue, transforms);
+        if (transformed === null) continue;
         if (useNestedResults && multiValueDimNames) {
           const labels = channelLabels?.[c];
           const keys = labels && labels.length === multiValueDimNames.length ? labels : [c];
+          pixelValues.push({ keys, value: transformed });
+        } else {
+          pixelValues.push({ keys: [], value: transformed });
+        }
+      }
+      if (pixelValues.length === 0) continue;
+      latCoords.push(lat);
+      lonCoords.push(lon);
+      for (const { keys, value } of pixelValues) {
+        if (keys.length > 0) {
           setObjectValues(results, keys, value);
         } else if (Array.isArray(results)) {
           results.push(value);
@@ -8055,6 +8065,7 @@ var TiledMode = class {
     }
     const querySelector = selector ? normalizeSelector(selector) : this.selector;
     const level = this.currentLevel ?? this.maxZoom;
+    const desc = this.zarrStore.describe();
     return queryRegionTiled(
       this.variable,
       geometry,
@@ -8063,7 +8074,12 @@ var TiledMode = class {
       this.crs,
       this.xyLimits,
       level,
-      this.tileSize
+      this.tileSize,
+      {
+        scaleFactor: desc.scaleFactor,
+        addOffset: desc.addOffset,
+        fillValue: desc.fill_value
+      }
     );
   }
 };
@@ -8423,6 +8439,137 @@ var SingleImageMode = class {
     return typeof value === "number" ? value : 0;
   }
   /**
+   * Fetch data for a specific selector (used for queries with selector overrides).
+   * Returns the data array along with channel metadata.
+   */
+  async fetchDataForSelector(selector) {
+    if (!this.zarrArray) return null;
+    try {
+      const baseSliceArgs = new Array(
+        this.zarrArray.shape.length
+      ).fill(0);
+      const multiValueDims = [];
+      const dimNames = Object.keys(this.dimIndices);
+      for (const dimName of dimNames) {
+        const dimInfo = this.dimIndices[dimName];
+        const dimKey = dimName.toLowerCase();
+        const isLon = dimKey === "lon" || dimKey === "x" || dimKey === "lng" || dimKey.includes("lon");
+        const isLat = dimKey === "lat" || dimKey === "y" || dimKey.includes("lat");
+        if (isLon) {
+          baseSliceArgs[dimInfo.index] = slice(0, this.width);
+        } else if (isLat) {
+          baseSliceArgs[dimInfo.index] = slice(0, this.height);
+        } else {
+          const selectionSpec = selector[dimName] || (dimKey.includes("time") ? selector["time"] : void 0) || (dimKey.includes("lat") ? selector["lat"] : void 0) || (dimKey.includes("lon") || dimKey.includes("lng") ? selector["lon"] : void 0);
+          if (selectionSpec !== void 0) {
+            const selectionValue = selectionSpec.selected;
+            const selectionType = selectionSpec.type;
+            if (Array.isArray(selectionValue) && selectionValue.length > 1) {
+              const resolvedIndices = [];
+              const labelValues = [];
+              for (const val of selectionValue) {
+                const idx = await this.resolveSelectionIndex(
+                  dimName,
+                  dimInfo,
+                  val,
+                  selectionType
+                );
+                resolvedIndices.push(idx);
+                labelValues.push(val);
+              }
+              multiValueDims.push({
+                dimIndex: dimInfo.index,
+                dimName,
+                values: resolvedIndices,
+                labels: labelValues
+              });
+              baseSliceArgs[dimInfo.index] = resolvedIndices[0];
+            } else {
+              const primaryValue = Array.isArray(selectionValue) ? selectionValue[0] : selectionValue;
+              baseSliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
+                dimName,
+                dimInfo,
+                primaryValue,
+                selectionType
+              );
+            }
+          } else {
+            baseSliceArgs[dimInfo.index] = 0;
+          }
+        }
+      }
+      let channelCombinations = [[]];
+      let channelLabelCombinations = [[]];
+      for (const { values, labels } of multiValueDims) {
+        const next = [];
+        const nextLabels = [];
+        for (let idx = 0; idx < values.length; idx++) {
+          const val = values[idx];
+          const label = labels[idx];
+          for (let c = 0; c < channelCombinations.length; c++) {
+            next.push([...channelCombinations[c], val]);
+            nextLabels.push([...channelLabelCombinations[c], label]);
+          }
+        }
+        channelCombinations = next;
+        channelLabelCombinations = nextLabels;
+      }
+      const numChannels = channelCombinations.length || 1;
+      const multiValueDimNames = multiValueDims.map((d) => d.dimName);
+      if (numChannels === 1) {
+        const result = await get2(this.zarrArray, baseSliceArgs);
+        return {
+          data: new Float32Array(result.data.buffer),
+          channels: 1,
+          channelLabels: channelLabelCombinations,
+          multiValueDimNames
+        };
+      } else {
+        const packedData = new Float32Array(
+          this.width * this.height * numChannels
+        );
+        for (let c = 0; c < numChannels; c++) {
+          const sliceArgs = [...baseSliceArgs];
+          const combo = channelCombinations[c];
+          for (let i = 0; i < multiValueDims.length; i++) {
+            sliceArgs[multiValueDims[i].dimIndex] = combo[i];
+          }
+          const bandData = await get2(this.zarrArray, sliceArgs);
+          const bandArray = new Float32Array(
+            bandData.data.buffer
+          );
+          for (let pixIdx = 0; pixIdx < this.width * this.height; pixIdx++) {
+            packedData[pixIdx * numChannels + c] = bandArray[pixIdx];
+          }
+        }
+        return {
+          data: packedData,
+          channels: numChannels,
+          channelLabels: channelLabelCombinations,
+          multiValueDimNames
+        };
+      }
+    } catch (err) {
+      console.error("Error fetching data for query selector:", err);
+      return null;
+    }
+  }
+  /**
+   * Check if a query selector matches the layer's current selector.
+   * Only compares keys present in the query selector - missing keys use layer defaults anyway.
+   */
+  queryMatchesLayerSelector(querySelector) {
+    for (const key of Object.keys(querySelector)) {
+      const querySpec = querySelector[key];
+      const layerSpec = this.selector[key];
+      if (!layerSpec) return false;
+      if (JSON.stringify(querySpec.selected) !== JSON.stringify(layerSpec.selected)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  /**
    * Query data for point or region geometries.
    */
   async queryData(geometry, selector) {
@@ -8434,10 +8581,34 @@ var SingleImageMode = class {
       };
     }
     const normalizedSelector = selector ? normalizeSelector(selector) : this.selector;
+    const needsFetch = selector ? !this.queryMatchesLayerSelector(normalizedSelector) : false;
+    let queryData;
+    let queryChannels;
+    let queryChannelLabels;
+    let queryMultiValueDimNames;
+    if (needsFetch) {
+      const fetched = await this.fetchDataForSelector(normalizedSelector);
+      if (!fetched) {
+        return {
+          [this.variable]: [],
+          dimensions: [],
+          coordinates: { lat: [], lon: [] }
+        };
+      }
+      queryData = fetched.data;
+      queryChannels = fetched.channels;
+      queryChannelLabels = fetched.channelLabels;
+      queryMultiValueDimNames = fetched.multiValueDimNames;
+    } else {
+      queryData = this.data;
+      queryChannels = this.channels;
+      queryChannelLabels = this.channelLabels;
+      queryMultiValueDimNames = this.multiValueDimNames;
+    }
     if (geometry.type === "Point") {
       const [lon, lat] = geometry.coordinates;
       const coords = { lat: [lat], lon: [lon] };
-      if (!this.data) {
+      if (!queryData) {
         return {
           [this.variable]: [],
           dimensions: ["lat", "lon"],
@@ -8461,17 +8632,24 @@ var SingleImageMode = class {
         };
       }
       const { x, y } = pixel;
-      const baseIndex = (y * this.width + x) * this.channels;
-      const valuesNested = this.multiValueDimNames.length > 0;
+      const baseIndex = (y * this.width + x) * queryChannels;
+      const valuesNested = queryMultiValueDimNames.length > 0;
       let values = valuesNested ? {} : [];
-      for (let c = 0; c < this.channels; c++) {
-        const value = this.data[baseIndex + c];
+      const desc2 = this.zarrStore.describe();
+      const { scaleFactor, addOffset, fill_value } = desc2;
+      for (let c = 0; c < queryChannels; c++) {
+        let value = queryData[baseIndex + c];
         if (value === void 0 || value === null || !Number.isFinite(value)) {
           continue;
         }
+        if (fill_value !== null && value === fill_value) {
+          continue;
+        }
+        if (scaleFactor !== 1) value *= scaleFactor;
+        if (addOffset !== 0) value += addOffset;
         if (valuesNested) {
-          const labels = this.channelLabels?.[c];
-          if (labels && this.multiValueDimNames.length > 0 && labels.length === this.multiValueDimNames.length) {
+          const labels = queryChannelLabels?.[c];
+          if (labels && queryMultiValueDimNames.length > 0 && labels.length === queryMultiValueDimNames.length) {
             values = setObjectValues(values, labels, value);
           } else if (Array.isArray(values)) {
             values.push(value);
@@ -8480,7 +8658,6 @@ var SingleImageMode = class {
           values.push(value);
         }
       }
-      const desc2 = this.zarrStore.describe();
       const dimensions = desc2.dimensions;
       const mappedDimensions = dimensions.map((d) => {
         const dimLower = d.toLowerCase();
@@ -8494,13 +8671,13 @@ var SingleImageMode = class {
         lon: coords.lon
       };
       if (valuesNested) {
-        const querySelector2 = normalizedSelector;
+        const querySelector = normalizedSelector;
         for (const dim of dimensions) {
           const dimLower = dim.toLowerCase();
           if (["x", "lon", "longitude", "y", "lat", "latitude"].includes(dimLower)) {
             continue;
           }
-          const selSpec = querySelector2[dim];
+          const selSpec = querySelector[dim];
           if (selSpec && "selected" in selSpec) {
             const selected = selSpec.selected;
             const vals = Array.isArray(selected) ? selected : [selected];
@@ -8517,22 +8694,26 @@ var SingleImageMode = class {
       };
     }
     const desc = this.zarrStore.describe();
-    const querySelector = normalizedSelector;
     return queryRegionSingleImage(
       this.variable,
       geometry,
-      querySelector,
-      this.data,
+      normalizedSelector,
+      queryData,
       this.width,
       this.height,
       this.mercatorBounds,
       this.crs ?? "EPSG:4326",
       desc.dimensions,
       desc.coordinates,
-      this.channels,
-      this.channelLabels,
-      this.multiValueDimNames,
-      this.latIsAscending ?? void 0
+      queryChannels,
+      queryChannelLabels,
+      queryMultiValueDimNames,
+      this.latIsAscending ?? void 0,
+      {
+        scaleFactor: desc.scaleFactor,
+        addOffset: desc.addOffset,
+        fillValue: desc.fill_value
+      }
     );
   }
   updateTexTransform() {

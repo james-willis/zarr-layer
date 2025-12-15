@@ -20,6 +20,7 @@ import type {
   QueryGeometry,
   QueryResult,
   QueryDataValues,
+  QueryTransformOptions,
 } from './types'
 import {
   computeBoundingBox,
@@ -29,11 +30,35 @@ import {
   tilePixelToLatLon,
 } from './query-utils'
 import {
-  hasArraySelector,
   setObjectValues,
   getChunks,
   getPointValues,
 } from './selector-utils'
+
+/**
+ * Apply scale_factor/add_offset transforms and filter invalid values.
+ * Returns null if value should be filtered out.
+ */
+function transformValue(
+  value: number,
+  transforms?: QueryTransformOptions
+): number | null {
+  if (!Number.isFinite(value)) return null
+
+  if (transforms?.fillValue !== undefined && transforms.fillValue !== null) {
+    if (value === transforms.fillValue) return null
+  }
+
+  let result = value
+  if (transforms?.scaleFactor !== undefined && transforms.scaleFactor !== 1) {
+    result *= transforms.scaleFactor
+  }
+  if (transforms?.addOffset !== undefined && transforms.addOffset !== 0) {
+    result += transforms.addOffset
+  }
+
+  return result
+}
 
 /**
  * Query a region in tiled mode.
@@ -47,7 +72,8 @@ export async function queryRegionTiled(
   crs: CRS,
   xyLimits: XYLimits,
   maxZoom: number,
-  tileSize: number
+  tileSize: number,
+  transforms?: QueryTransformOptions
 ): Promise<QueryResult> {
   const desc = zarrStore.describe()
   const dimensions = desc.dimensions
@@ -218,17 +244,8 @@ export async function queryRegionTiled(
           continue
         }
 
-        const geo = tilePixelToLatLon(
-          tileTuple,
-          pixelX + 0.5,
-          pixelY + 0.5,
-          tileSize,
-          crs,
-          xyLimits
-        )
-
-        latCoords.push(geo.lat)
-        lonCoords.push(geo.lon)
+        // Collect all values for this pixel first
+        const pixelValues: { keys: (string | number)[]; value: number }[] = []
 
         for (const chunkIndices of chunksForTile) {
           const chunkKey = chunkIndices.join(',')
@@ -247,15 +264,35 @@ export async function queryRegionTiled(
             chunkIndices
           )
 
-          valuesToSet.forEach(({ keys, value }) => {
-            if (keys.length > 0) {
-              setObjectValues(results, keys, value)
-            } else {
-              if (Array.isArray(results)) {
-                results.push(value)
-              }
+          for (const { keys, value } of valuesToSet) {
+            const transformed = transformValue(value, transforms)
+            if (transformed !== null) {
+              pixelValues.push({ keys, value: transformed })
             }
-          })
+          }
+        }
+
+        // Only add coordinates and values if we have valid data
+        if (pixelValues.length === 0) continue
+
+        const geo = tilePixelToLatLon(
+          tileTuple,
+          pixelX + 0.5,
+          pixelY + 0.5,
+          tileSize,
+          crs,
+          xyLimits
+        )
+
+        latCoords.push(geo.lat)
+        lonCoords.push(geo.lon)
+
+        for (const { keys, value } of pixelValues) {
+          if (keys.length > 0) {
+            setObjectValues(results, keys, value)
+          } else if (Array.isArray(results)) {
+            results.push(value)
+          }
         }
       }
     }
@@ -288,17 +325,9 @@ export async function queryRegionSingleImage(
   channels: number = 1,
   channelLabels?: (string | number)[][],
   multiValueDimNames?: string[],
-  latIsAscending?: boolean
+  latIsAscending?: boolean,
+  transforms?: QueryTransformOptions
 ): Promise<QueryResult> {
-  // Warn if selector has multi-valued dimensions
-  const hasMultiValue = hasArraySelector(selector)
-  if (hasMultiValue) {
-    console.warn(
-      'queryRegion with multi-valued selectors is not fully supported in single-image mode. ' +
-        'Results may not match the requested selector. Consider using tiled mode for complex queries.'
-    )
-  }
-
   // Calculate result dimension
   const isMultiValSelector = (value: Selector[string]) => {
     if (Array.isArray(value)) return true
@@ -507,22 +536,33 @@ export async function queryRegionSingleImage(
           : mercatorNormToLat(mercY)
 
       const baseIndex = (y * width + x) * channels
-      let coordPushed = false
+
+      // Collect valid values for this pixel first
+      const pixelValues: { keys: (string | number)[]; value: number }[] = []
 
       for (let c = 0; c < channels; c++) {
-        const value = data[baseIndex + c]
-        if (value === undefined || value === null || isNaN(value)) continue
-
-        if (!coordPushed) {
-          latCoords.push(lat)
-          lonCoords.push(lon)
-          coordPushed = true
-        }
+        const rawValue = data[baseIndex + c]
+        const transformed = transformValue(rawValue, transforms)
+        if (transformed === null) continue
 
         if (useNestedResults && multiValueDimNames) {
           const labels = channelLabels?.[c]
           const keys =
             labels && labels.length === multiValueDimNames.length ? labels : [c]
+          pixelValues.push({ keys, value: transformed })
+        } else {
+          pixelValues.push({ keys: [], value: transformed })
+        }
+      }
+
+      // Only add coordinates and values if we have valid data
+      if (pixelValues.length === 0) continue
+
+      latCoords.push(lat)
+      lonCoords.push(lon)
+
+      for (const { keys, value } of pixelValues) {
+        if (keys.length > 0) {
           setObjectValues(results, keys, value)
         } else if (Array.isArray(results)) {
           results.push(value)
