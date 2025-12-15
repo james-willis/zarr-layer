@@ -20,6 +20,6 @@ export const SELECTOR_SECTIONS: SelectorSection[] = [
   },
   {
     label: 'Single Image',
-    datasetIds: ['pr single image', 'delta_FG_CO2', 'hurricane_florence'],
+    datasetIds: ['hurricane_florence', 'pr single image', 'delta_FG_CO2'],
   },
 ]

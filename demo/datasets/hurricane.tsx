@@ -93,7 +93,7 @@ const hurricaneDataset: DatasetModule<HurricaneState> = {
   clim: [100000, 102500],
   colormap: 'cool',
   zarrVersion: 3,
-  info: 'Hurricane Florence (4D)',
+  info: 'Hurricane Florence (Single image, 4D)',
   sourceInfo:
     'Zarr v3 with time and level dimensions. Switch between surface pressure and wind velocity.',
   defaultState: {
