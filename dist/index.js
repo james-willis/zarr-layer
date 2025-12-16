@@ -5619,6 +5619,13 @@ function zoomToLevel(zoom, maxLevelIndex) {
   if (maxLevelIndex) return Math.min(Math.max(0, Math.floor(zoom)), maxLevelIndex);
   return Math.max(0, Math.floor(zoom));
 }
+function parseLevelZoom(levelPath, fallback = 0) {
+  const parsed = parseInt(levelPath, 10);
+  if (!isNaN(parsed)) return parsed;
+  const match = levelPath.match(/(\d+)$/);
+  if (match) return parseInt(match[1], 10);
+  return fallback;
+}
 function lonToMercatorNorm(lon) {
   let normalizedLon = lon;
   if (lon > 180) {
@@ -6532,7 +6539,7 @@ function transformValue(value, transforms) {
   }
   return result;
 }
-async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xyLimits, maxLevelIndex, tileSize, transforms) {
+async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xyLimits, levelIndex, tileSize, transforms) {
   const desc = zarrStore.describe();
   const dimensions = desc.dimensions;
   const coordinates = desc.coordinates;
@@ -6591,7 +6598,12 @@ async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xy
     }
     return coords;
   };
-  const tiles = getTilesForPolygon(geometry, maxLevelIndex, crs, xyLimits);
+  const levelPath = zarrStore.levels[levelIndex];
+  if (!levelPath) {
+    throw new Error(`No level path found for level index ${levelIndex}`);
+  }
+  const actualZoom = parseLevelZoom(levelPath, levelIndex);
+  const tiles = getTilesForPolygon(geometry, actualZoom, crs, xyLimits);
   if (tiles.length === 0) {
     const result2 = {
       [variable]: results,
@@ -6599,10 +6611,6 @@ async function queryRegionTiled(variable, geometry, selector, zarrStore, crs, xy
       coordinates: buildResultCoordinates()
     };
     return result2;
-  }
-  const levelPath = zarrStore.levels[maxLevelIndex];
-  if (!levelPath) {
-    throw new Error(`No level path found for level index ${maxLevelIndex}`);
   }
   const tileChunkData = /* @__PURE__ */ new Map();
   for (const tileTuple of tiles) {
@@ -7550,17 +7558,19 @@ function renderMapboxTile({
   const crs = mode.getCRS();
   const xyLimits = mode.getXYLimits();
   const maxLevelIndex = mode.getMaxLevelIndex();
+  const levels = mode.getLevels();
   if (crs === "EPSG:4326" && xyLimits) {
     const mapboxGeoBounds = mercatorTileToGeoBounds(
       tileId.z,
       tileId.x,
       tileId.y
     );
-    const pyramidLevel = zoomToLevel(tileId.z, maxLevelIndex);
+    const levelIndex = zoomToLevel(tileId.z, maxLevelIndex);
+    const actualZoom = parseLevelZoom(levels[levelIndex] ?? "", levelIndex);
     const overlappingZarrTiles = getOverlapping4326Tiles(
       mapboxGeoBounds,
       xyLimits,
-      pyramidLevel
+      actualZoom
     );
     if (overlappingZarrTiles.length === 0) {
       return false;
@@ -7927,6 +7937,9 @@ var TiledMode = class {
   getMaxLevelIndex() {
     return this.maxLevelIndex;
   }
+  getLevels() {
+    return this.zarrStore.levels;
+  }
   updateClim(clim) {
     this.tileCache?.updateClim(clim);
   }
@@ -7967,22 +7980,24 @@ var TiledMode = class {
       return { tiles: [], pyramidLevel: null, mapZoom: null, bounds: null };
     }
     const mapZoom = map.getZoom();
-    const pyramidLevel = zoomToLevel(mapZoom, this.maxLevelIndex);
+    const levelIndex = zoomToLevel(mapZoom, this.maxLevelIndex);
     const bounds = map.getBounds()?.toArray();
     if (!bounds) {
-      return { tiles: [], pyramidLevel, mapZoom, bounds: null };
+      return { tiles: [], pyramidLevel: levelIndex, mapZoom, bounds: null };
     }
+    const levelPath = this.zarrStore.levels[levelIndex];
+    const actualZoom = parseLevelZoom(levelPath, levelIndex);
     if (this.crs === "EPSG:4326" && this.xyLimits) {
       return {
-        tiles: getTilesAtZoomEquirect(pyramidLevel, bounds, this.xyLimits),
-        pyramidLevel,
+        tiles: getTilesAtZoomEquirect(actualZoom, bounds, this.xyLimits),
+        pyramidLevel: levelIndex,
         mapZoom,
         bounds
       };
     }
     return {
-      tiles: getTilesAtZoom(pyramidLevel, bounds),
-      pyramidLevel,
+      tiles: getTilesAtZoom(actualZoom, bounds),
+      pyramidLevel: levelIndex,
       mapZoom,
       bounds
     };
@@ -8262,6 +8277,9 @@ var SingleImageMode = class {
   }
   getMaxLevelIndex() {
     return 0;
+  }
+  getLevels() {
+    return [];
   }
   updateClim(clim) {
     this.clim = clim;

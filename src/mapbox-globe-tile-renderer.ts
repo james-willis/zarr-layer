@@ -8,6 +8,7 @@ import {
   lonToMercatorNorm,
   mercatorNormToLat,
   mercatorNormToLon,
+  parseLevelZoom,
   zoomToLevel,
   type MercatorBounds,
   type TileTuple,
@@ -305,6 +306,7 @@ export function renderMapboxTile({
   const crs = mode.getCRS()
   const xyLimits = mode.getXYLimits()
   const maxLevelIndex = mode.getMaxLevelIndex()
+  const levels = mode.getLevels()
 
   if (crs === 'EPSG:4326' && xyLimits) {
     const mapboxGeoBounds = mercatorTileToGeoBounds(
@@ -312,11 +314,13 @@ export function renderMapboxTile({
       tileId.x,
       tileId.y
     )
-    const pyramidLevel = zoomToLevel(tileId.z, maxLevelIndex)
+    const levelIndex = zoomToLevel(tileId.z, maxLevelIndex)
+    // Parse actual zoom from level path to handle pyramids that don't start at 0
+    const actualZoom = parseLevelZoom(levels[levelIndex] ?? '', levelIndex)
     const overlappingZarrTiles = getOverlapping4326Tiles(
       mapboxGeoBounds,
       xyLimits,
-      pyramidLevel
+      actualZoom
     )
 
     if (overlappingZarrTiles.length === 0) {

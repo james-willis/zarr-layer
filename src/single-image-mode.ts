@@ -258,6 +258,10 @@ export class SingleImageMode implements ZarrMode {
     return 0
   }
 
+  getLevels(): string[] {
+    return []
+  }
+
   updateClim(clim: [number, number]): void {
     this.clim = clim
   }

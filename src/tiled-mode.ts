@@ -21,6 +21,7 @@ import {
   latToMercatorNorm,
   lonToMercatorNorm,
   normalizeGlobalExtent,
+  parseLevelZoom,
   type MercatorBounds,
   tileToKey,
   TileTuple,
@@ -249,6 +250,10 @@ export class TiledMode implements ZarrMode {
     return this.maxLevelIndex
   }
 
+  getLevels(): string[] {
+    return this.zarrStore.levels
+  }
+
   updateClim(clim: [number, number]): void {
     this.tileCache?.updateClim(clim)
   }
@@ -304,22 +309,27 @@ export class TiledMode implements ZarrMode {
     }
 
     const mapZoom = map.getZoom()
-    const pyramidLevel = zoomToLevel(mapZoom, this.maxLevelIndex)
+    const levelIndex = zoomToLevel(mapZoom, this.maxLevelIndex)
     const bounds = map.getBounds()?.toArray()
     if (!bounds) {
-      return { tiles: [], pyramidLevel, mapZoom, bounds: null }
+      return { tiles: [], pyramidLevel: levelIndex, mapZoom, bounds: null }
     }
+
+    // Parse actual zoom from level path to handle pyramids that don't start at 0
+    const levelPath = this.zarrStore.levels[levelIndex]
+    const actualZoom = parseLevelZoom(levelPath, levelIndex)
+
     if (this.crs === 'EPSG:4326' && this.xyLimits) {
       return {
-        tiles: getTilesAtZoomEquirect(pyramidLevel, bounds, this.xyLimits),
-        pyramidLevel,
+        tiles: getTilesAtZoomEquirect(actualZoom, bounds, this.xyLimits),
+        pyramidLevel: levelIndex,
         mapZoom,
         bounds,
       }
     }
     return {
-      tiles: getTilesAtZoom(pyramidLevel, bounds),
-      pyramidLevel,
+      tiles: getTilesAtZoom(actualZoom, bounds),
+      pyramidLevel: levelIndex,
       mapZoom,
       bounds,
     }

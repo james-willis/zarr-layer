@@ -12,6 +12,7 @@ import {
   lonToMercatorNorm,
   mercatorNormToLat,
   mercatorNormToLon,
+  parseLevelZoom,
   tileToKey,
 } from '../map-utils'
 import type { ZarrStore } from '../zarr-store'
@@ -71,7 +72,7 @@ export async function queryRegionTiled(
   zarrStore: ZarrStore,
   crs: CRS,
   xyLimits: XYLimits,
-  maxLevelIndex: number,
+  levelIndex: number,
   tileSize: number,
   transforms?: QueryTransformOptions
 ): Promise<QueryResult> {
@@ -151,8 +152,17 @@ export async function queryRegionTiled(
     return coords
   }
 
+  // Get level path for chunk fetching
+  const levelPath = zarrStore.levels[levelIndex]
+  if (!levelPath) {
+    throw new Error(`No level path found for level index ${levelIndex}`)
+  }
+
+  // Parse actual zoom from level path to handle pyramids that don't start at 0
+  const actualZoom = parseLevelZoom(levelPath, levelIndex)
+
   // Get tiles that intersect the polygon
-  const tiles = getTilesForPolygon(geometry, maxLevelIndex, crs, xyLimits)
+  const tiles = getTilesForPolygon(geometry, actualZoom, crs, xyLimits)
   if (tiles.length === 0) {
     // Return empty result in carbonplan/maps format
     const result = {
@@ -161,12 +171,6 @@ export async function queryRegionTiled(
       coordinates: buildResultCoordinates(),
     } as QueryResult
     return result
-  }
-
-  // Get level path for chunk fetching
-  const levelPath = zarrStore.levels[maxLevelIndex]
-  if (!levelPath) {
-    throw new Error(`No level path found for level index ${maxLevelIndex}`)
   }
 
   // For each tile, determine which chunks we need based on selector and fetch them

@@ -217,6 +217,25 @@ export function zoomToLevel(zoom: number, maxLevelIndex: number): number {
 }
 
 /**
+ * Parses the actual zoom number from a pyramid level path.
+ * Handles pyramids that don't start at level 0 (e.g., levels ["2", "3", "4"]).
+ * @param levelPath - The path string for the level (e.g., "0", "2", "data/level_3").
+ * @param fallback - Fallback value if path can't be parsed as a number.
+ * @returns The parsed zoom number.
+ */
+export function parseLevelZoom(levelPath: string, fallback: number = 0): number {
+  // Try to parse the path directly as a number
+  const parsed = parseInt(levelPath, 10)
+  if (!isNaN(parsed)) return parsed
+
+  // Try to extract a number from the end of the path (e.g., "data/level_3" -> 3)
+  const match = levelPath.match(/(\d+)$/)
+  if (match) return parseInt(match[1], 10)
+
+  return fallback
+}
+
+/**
  * Converts longitude in degrees to normalized Web Mercator X coordinate [0, 1].
  * Handles wraparound for longitudes outside -180 to 180 range.
  * @param lon - Longitude in degrees.

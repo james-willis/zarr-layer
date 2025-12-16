@@ -66,6 +66,7 @@ export interface ZarrMode {
   getCRS(): CRS
   getXYLimits(): XYLimits | null
   getMaxLevelIndex(): number
+  getLevels(): string[]
   getTiledState?(): TiledRenderState | null
   getSingleImageState?(): SingleImageRenderState | null
   updateClim(clim: [number, number]): void
