@@ -15,10 +15,11 @@ import { useThemedColormap } from '@carbonplan/colormaps'
 // @ts-expect-error - carbonplan icons types not available
 import { RotatingArrow } from '@carbonplan/icons'
 import { Box, Divider, Flex } from 'theme-ui'
-import { DATASET_MODULES, DatasetId } from '../lib/constants'
+import { DATASET_MAP } from '../datasets'
 import { useAppStore } from '../lib/store'
-import { DatasetControlsProps } from '../datasets/types'
+import type { ControlsProps } from '../datasets/types'
 import { SELECTOR_SECTIONS } from '../datasets/sections'
+import { subheadingSx } from './shared-controls'
 import type {
   QueryGeometry,
   QueryResult,
@@ -65,16 +66,6 @@ const headingSx = {
   letterSpacing: 'smallcaps',
   textTransform: 'uppercase',
   fontSize: [2, 2, 3, 3],
-}
-
-const subheadingSx = {
-  mt: 3,
-  mb: 1,
-  fontFamily: 'mono',
-  letterSpacing: 'smallcaps',
-  textTransform: 'uppercase',
-  fontSize: [1, 1, 1, 2],
-  color: 'secondary',
 }
 
 const clampLat = (lat: number) => Math.max(-90, Math.min(90, lat))
@@ -297,7 +288,7 @@ const Controls = () => {
   const themedColormap = useThemedColormap(colormap)
 
   const layerConfig = useMemo(
-    () => datasetModule.buildLayerProps({ state: datasetState as any }),
+    () => datasetModule.buildLayerProps(datasetState as any),
     [datasetModule, datasetState],
   )
 
@@ -316,9 +307,7 @@ const Controls = () => {
   }, [datasetId, currentBand, setPointResult, setRegionResult])
 
   const currentVariable = useMemo(() => {
-    const layerConfig = datasetModule.buildLayerProps({
-      state: datasetState as any,
-    })
+    const layerConfig = datasetModule.buildLayerProps(datasetState as any)
     return layerConfig.variable ?? datasetModule.variable
   }, [datasetModule, datasetState])
 
@@ -365,7 +354,7 @@ const Controls = () => {
   }
 
   const ActiveDatasetControls = datasetModule.Controls as React.FC<
-    DatasetControlsProps<any>
+    ControlsProps<any>
   >
 
   const handleViewportQuery = async () => {
@@ -419,7 +408,7 @@ const Controls = () => {
           {SELECTOR_SECTIONS.map((section) => (
             <optgroup key={section.label} label={section.label}>
               {section.datasetIds.map((id) => {
-                const config = DATASET_MODULES[id as DatasetId]
+                const config = DATASET_MAP[id]
                 if (!config) return null
                 return (
                   <option key={id} value={id}>

@@ -1,11 +1,11 @@
 import carbonplan4d from './carbonplan-4d'
 import hurricane from './hurricane'
-import { createTimeDatasetModule } from './time'
-import { createDatasetList, defineModules } from './types'
+import { createTimeDataset } from './time'
+import type { Dataset } from './types'
 
-const DATASET_MODULE_LIST = createDatasetList(
+export const DATASETS: Dataset<any>[] = [
   carbonplan4d,
-  createTimeDatasetModule({
+  createTimeDataset({
     id: 'salinity_v2',
     source:
       'https://atlantis-vis-o.s3-ext.jc.rl.ac.uk/nemotest101/pyramid2/T1d/sos_abs.zarr',
@@ -16,7 +16,7 @@ const DATASET_MODULE_LIST = createDatasetList(
     info: 'Ocean salinity (v2 pyramid, EPSG:3857)',
     sourceInfo: 'v2 pyramid format (EPSG:3857)',
   }),
-  createTimeDatasetModule({
+  createTimeDataset({
     id: 'temperature_v3',
     source:
       'https://atlantis-vis-o.s3-ext.jc.rl.ac.uk/noc-npd-era5-demo/npd-eorca1-era5v1/gn/T1y/tos_con',
@@ -28,7 +28,7 @@ const DATASET_MODULE_LIST = createDatasetList(
     sourceInfo: 'v3 pyramid (EPSG:3857)',
   }),
   hurricane,
-  createTimeDatasetModule({
+  createTimeDataset({
     id: 'tasmax_pyramid_4326',
     source:
       'https://carbonplan-benchmarks.s3.us-west-2.amazonaws.com/data/NEX-GDDP-CMIP6/ACCESS-CM2/historical/r1i1p1f1/tasmax/tasmax_day_ACCESS-CM2_historical_r1i1p1f1_gn/pyramids-v2-4326-True-128-1-0-0-f4-0-0-0-gzipL1-100',
@@ -40,7 +40,7 @@ const DATASET_MODULE_LIST = createDatasetList(
     sourceInfo: 'v2 pyramid (EPSG:4326)',
     maxTime: 729,
   }),
-  createTimeDatasetModule({
+  createTimeDataset({
     id: 'tasmax_pyramid_v3_4326',
     source:
       'https://carbonplan-benchmarks.s3.us-west-2.amazonaws.com/data/NEX-GDDP-CMIP6/ACCESS-CM2/historical/r1i1p1f1/tasmax/tasmax_day_ACCESS-CM2_historical_r1i1p1f1_gn/pyramids-v3-4326-True-128-1-0-0-f4-0-0-gzipL1-100',
@@ -52,7 +52,7 @@ const DATASET_MODULE_LIST = createDatasetList(
     sourceInfo: 'v3 pyramid (EPSG:4326)',
     maxTime: 729,
   }),
-  createTimeDatasetModule({
+  createTimeDataset({
     id: 'pr single image',
     source:
       'https://carbonplan-scratch.s3.us-west-2.amazonaws.com/zarr-pyramids/zarr-v3-single-layer-default.zarr',
@@ -63,7 +63,7 @@ const DATASET_MODULE_LIST = createDatasetList(
     info: 'Precipitation (single image, global)',
     sourceInfo: 'v3 single image (global)',
   }),
-  createTimeDatasetModule({
+  createTimeDataset({
     id: 'delta_FG_CO2',
     source:
       'https://carbonplan-oae-efficiency.s3.us-west-2.amazonaws.com/fgco2-2021-180x360.zarr',
@@ -79,16 +79,12 @@ const DATASET_MODULE_LIST = createDatasetList(
     info: 'Delta FG CO2 (single image, global)',
     sourceInfo: 'v2 single image (global)',
   }),
-)
+]
 
-export { DATASET_MODULE_LIST }
-export const DATASET_MODULES = defineModules(DATASET_MODULE_LIST)
-export const DEFAULT_DATASET_ID = DATASET_MODULE_LIST[0].id
+export const DATASET_MAP = Object.fromEntries(
+  DATASETS.map((d) => [d.id, d])
+) as Record<string, Dataset<any>>
 
-export type DatasetModuleMap = typeof DATASET_MODULES
-export type DatasetId = keyof DatasetModuleMap
-export type DatasetStateMap = {
-  [K in DatasetId]: DatasetModuleMap[K]['defaultState']
-}
-export type AnyDatasetModule = DatasetModuleMap[keyof DatasetModuleMap]
-export type { DatasetModule } from './types'
+export const DEFAULT_DATASET_ID = DATASETS[0].id
+
+export type { Dataset } from './types'

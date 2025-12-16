@@ -1,45 +1,33 @@
 import React from 'react'
-import type { Selector } from '@carbonplan/zarr-layer'
-import {
-  DatasetModule,
-  DatasetCommonConfig,
-  DatasetControlsProps,
-  TimeDatasetState,
-  defineDatasetModule,
-} from './types'
+import type { Dataset, DatasetConfig, ControlsProps } from './types'
 import { Slider } from '../components/shared-controls'
 
-type TimeDatasetConfig = DatasetCommonConfig & {
+type TimeState = { time: number }
+
+type TimeDatasetConfig = DatasetConfig & {
   maxTime?: number
-  timeSelectorType?: Selector['type']
+  timeSelectorType?: 'index' | 'value'
 }
 
-export const createTimeDatasetModule = ({
+export const createTimeDataset = ({
   maxTime = 10,
   timeSelectorType = 'value',
   ...config
-}: TimeDatasetConfig): DatasetModule<TimeDatasetState> => {
-  const Controls = ({
-    state,
-    setState,
-  }: DatasetControlsProps<TimeDatasetState>) => (
+}: TimeDatasetConfig): Dataset<TimeState> => ({
+  ...config,
+  defaultState: { time: 0 },
+  Controls: ({ state, setState }: ControlsProps<TimeState>) => (
     <Slider
       value={state.time}
       onChange={(v) => setState({ time: v })}
       max={maxTime}
       label='Time'
     />
-  )
-
-  return defineDatasetModule<TimeDatasetState>({
-    ...config,
-    defaultState: { time: 0 },
-    Controls,
-    buildLayerProps: ({ state }) => ({
-      selector:
-        timeSelectorType === 'index'
-          ? { time: { selected: state.time, type: 'index' } }
-          : { time: state.time },
-    }),
-  })
-}
+  ),
+  buildLayerProps: (state) => ({
+    selector:
+      timeSelectorType === 'index'
+        ? { time: { selected: state.time, type: 'index' } }
+        : { time: state.time },
+  }),
+})

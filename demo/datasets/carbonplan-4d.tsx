@@ -1,16 +1,12 @@
 import React from 'react'
 import { Box } from 'theme-ui'
-import { BuildLayerResult, DatasetControlsProps, DatasetModule } from './types'
+import type { Dataset, ControlsProps, LayerProps } from './types'
 import { useAppStore } from '../lib/store'
-import {
-  Slider,
-  RangeSlider,
-  BandSelector,
-} from '../components/shared-controls'
+import { Slider, RangeSlider, BandSelector } from '../components/shared-controls'
 
 const ALL_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
-export const combinedBandsCustomFrag = `
+const combinedBandsCustomFrag = `
   // custom fragment shader w/ uniform example
   uniform float u_precipWeight;
   float combined = prec * u_precipWeight;
@@ -20,7 +16,7 @@ export const combinedBandsCustomFrag = `
   fragColor = vec4(c.r, c.g, c.b, opacity);
 `
 
-export const monthRangeAverageFrag = `
+const monthRangeAverageFrag = `
   uniform float u_monthStart;
   uniform float u_monthEnd;
   float sum = 0.0;
@@ -37,67 +33,22 @@ export const monthRangeAverageFrag = `
   fragColor = vec4(c.r, c.g, c.b, opacity);
 `
 
-const BAND_OPTIONS = [
-  'prec',
-  'tavg',
-  'tavg_range',
-  'prec_range',
-  'weighted',
-] as const
+const BANDS = ['prec', 'tavg', 'tavg_range', 'prec_range', 'weighted'] as const
+type Band = (typeof BANDS)[number]
 
-type Carbonplan4dState = {
-  band: 'prec' | 'tavg' | 'tavg_range' | 'prec_range' | 'weighted'
+type State = {
+  band: Band
   month: number
   monthStart: number
   monthEnd: number
   precipWeight: number
 }
-const buildLayerProps = ({ state }: { state: Carbonplan4dState }) => {
-  const isCombined = state.band === 'weighted'
-  const isRangeAverage =
-    state.band === 'tavg_range' || state.band === 'prec_range'
-  let baseRangeBand: 'prec' | 'tavg' | null = null
-  if (isRangeAverage) {
-    baseRangeBand = state.band.startsWith('prec') ? 'prec' : 'tavg'
-  } else {
-    baseRangeBand = null
-  }
 
-  let selector: BuildLayerResult['selector']
-  if (isCombined) {
-    selector = { band: ['tavg', 'prec'], month: state.month }
-  } else if (isRangeAverage && baseRangeBand) {
-    selector = { band: baseRangeBand, month: ALL_MONTHS }
-  } else {
-    selector = { band: state.band, month: state.month }
-  }
+const Controls = ({ state, setState }: ControlsProps<State>) => {
+  const setColormap = useAppStore((s) => s.setColormap)
+  const setClim = useAppStore((s) => s.setClim)
 
-  const result: BuildLayerResult = {
-    selector,
-  }
-
-  if (isCombined) {
-    result.customFrag = combinedBandsCustomFrag
-    result.uniforms = { u_precipWeight: state.precipWeight }
-  } else if (isRangeAverage) {
-    result.customFrag = monthRangeAverageFrag
-    result.uniforms = {
-      u_monthStart: state.monthStart,
-      u_monthEnd: state.monthEnd,
-    }
-  }
-
-  return result
-}
-
-const Carbonplan4dControls = ({
-  state,
-  setState,
-}: DatasetControlsProps<Carbonplan4dState>) => {
-  const setColormap = useAppStore((state) => state.setColormap)
-  const setClim = useAppStore((state) => state.setClim)
-
-  const handleBandChange = (band: Carbonplan4dState['band']) => {
+  const handleBandChange = (band: Band) => {
     setState({ band })
     if (band === 'prec' || band === 'prec_range' || band === 'weighted') {
       setColormap('cool')
@@ -108,14 +59,13 @@ const Carbonplan4dControls = ({
     }
   }
 
-  const isRangeAverage =
-    state.band === 'tavg_range' || state.band === 'prec_range'
+  const isRange = state.band === 'tavg_range' || state.band === 'prec_range'
 
   return (
     <>
       <BandSelector
         value={state.band}
-        options={BAND_OPTIONS}
+        options={BANDS}
         onChange={handleBandChange}
         label='Selector'
       />
@@ -135,7 +85,7 @@ const Carbonplan4dControls = ({
         </Box>
       )}
 
-      {isRangeAverage && (
+      {isRange && (
         <Box
           as='code'
           sx={{
@@ -150,7 +100,7 @@ const Carbonplan4dControls = ({
         </Box>
       )}
 
-      {isRangeAverage ? (
+      {isRange ? (
         <RangeSlider
           startValue={state.monthStart}
           endValue={state.monthEnd}
@@ -184,7 +134,33 @@ const Carbonplan4dControls = ({
   )
 }
 
-const carbonplan4dDataset: DatasetModule<Carbonplan4dState> = {
+const buildLayerProps = (state: State): LayerProps => {
+  const isWeighted = state.band === 'weighted'
+  const isRange = state.band === 'tavg_range' || state.band === 'prec_range'
+
+  if (isWeighted) {
+    return {
+      selector: { band: ['tavg', 'prec'], month: state.month },
+      customFrag: combinedBandsCustomFrag,
+      uniforms: { u_precipWeight: state.precipWeight },
+    }
+  }
+
+  if (isRange) {
+    const baseBand = state.band.startsWith('prec') ? 'prec' : 'tavg'
+    return {
+      selector: { band: baseBand, month: ALL_MONTHS },
+      customFrag: monthRangeAverageFrag,
+      uniforms: { u_monthStart: state.monthStart, u_monthEnd: state.monthEnd },
+    }
+  }
+
+  return {
+    selector: { band: state.band, month: state.month },
+  }
+}
+
+const carbonplan4d: Dataset<State> = {
   id: 'carbonplan_4d',
   source:
     'https://carbonplan-maps.s3.us-west-2.amazonaws.com/v2/demo/4d/tavg-prec-month',
@@ -195,10 +171,7 @@ const carbonplan4dDataset: DatasetModule<Carbonplan4dState> = {
   info: '4d pyramid, temp/precip by month',
   sourceInfo:
     'Zarr v2 pyramid. Select different bands for demonstrations of custom fragment shaders and uniform variables.',
-  spatialDimensions: {
-    lat: 'y',
-    lon: 'x',
-  },
+  spatialDimensions: { lat: 'y', lon: 'x' },
   defaultState: {
     band: 'prec',
     month: 1,
@@ -206,8 +179,8 @@ const carbonplan4dDataset: DatasetModule<Carbonplan4dState> = {
     monthEnd: 6,
     precipWeight: 1.0,
   },
-  Controls: Carbonplan4dControls,
+  Controls,
   buildLayerProps,
 }
 
-export default carbonplan4dDataset
+export default carbonplan4d

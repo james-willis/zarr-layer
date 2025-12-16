@@ -13,7 +13,7 @@ import mapboxgl from 'mapbox-gl'
 import { layers, namedFlavor } from '@protomaps/basemaps'
 import { Protocol } from 'pmtiles'
 import { useAppStore } from '../lib/store'
-import { BuildLayerResult } from '../datasets/types'
+import type { LayerProps } from '../datasets/types'
 
 export type MapProvider = 'maplibre' | 'mapbox'
 
@@ -154,8 +154,8 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const setPointResult = useAppStore((state) => state.setPointResult)
   const setZarrLayer = useAppStore((state) => state.setZarrLayer)
 
-  const layerConfig: BuildLayerResult = useMemo(
-    () => datasetModule.buildLayerProps({ state: datasetState as any }),
+  const layerConfig: LayerProps = useMemo(
+    () => datasetModule.buildLayerProps(datasetState as any),
     [datasetModule, datasetState],
   )
 

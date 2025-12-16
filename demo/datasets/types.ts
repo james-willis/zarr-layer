@@ -1,7 +1,7 @@
 import React from 'react'
 import type { Selector } from '@carbonplan/zarr-layer'
 
-export type DatasetCommonConfig = {
+export type DatasetConfig = {
   id: string
   source: string
   variable: string
@@ -18,55 +18,23 @@ export type DatasetCommonConfig = {
     lat?: string
     lon?: string
   }
-  /** Explicit bounds [west, south, east, north] when coordinate arrays aren't available */
   bounds?: [number, number, number, number]
 }
 
-export type DatasetControlsProps<State> = {
+export type ControlsProps<State> = {
   state: State
   setState: (updates: Partial<State>) => void
 }
 
-export type BuildLayerResult = {
+export type LayerProps = {
   selector: Selector
   variable?: string
   customFrag?: string
   uniforms?: Record<string, number>
 }
 
-export type DatasetModule<
-  State extends Record<string, unknown> = Record<string, unknown>,
-> = DatasetCommonConfig & {
+export type Dataset<State = Record<string, unknown>> = DatasetConfig & {
   defaultState: State
-  Controls: React.FC<DatasetControlsProps<State>>
-  buildLayerProps: (args: { state: State }) => BuildLayerResult
-}
-
-export type TimeDatasetState = { time: number }
-
-export const defineDatasetModule = <State extends Record<string, unknown>>(
-  module: DatasetModule<State>,
-) => module
-
-export const createDatasetList = <
-  const Modules extends readonly DatasetModule<any>[],
->(
-  ...modules: Modules
-) => modules
-
-export const defineModules = <
-  Modules extends readonly DatasetModule<any>[],
-  Ids extends Modules[number]['id'],
-  ModuleMap extends { [K in Ids]: Extract<Modules[number], { id: K }> },
->(
-  modules: Modules,
-) => {
-  const map = modules.reduce(
-    (acc, module) => {
-      acc[module.id as Ids] = module as Modules[number]
-      return acc
-    },
-    {} as Record<Ids, Modules[number]>,
-  )
-  return map as ModuleMap
+  Controls: React.FC<ControlsProps<State>>
+  buildLayerProps: (state: State) => LayerProps
 }
