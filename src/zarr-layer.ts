@@ -139,6 +139,24 @@ export class ZarrLayer {
     renderingMode = '3d',
     onLoadingStateChange,
   }: ZarrLayerOptions) {
+    if (!id) {
+      throw new Error('[ZarrLayer] id is required')
+    }
+    if (!source) {
+      throw new Error('[ZarrLayer] source is required')
+    }
+    if (!variable) {
+      throw new Error('[ZarrLayer] variable is required')
+    }
+    if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
+      throw new Error(
+        '[ZarrLayer] colormap is required and must be an array of [r, g, b] or hex string values'
+      )
+    }
+    if (!clim || !Array.isArray(clim) || clim.length !== 2) {
+      throw new Error('[ZarrLayer] clim is required and must be [min, max]')
+    }
+
     this.id = id
     this.url = source
     this.variable = variable
@@ -151,12 +169,6 @@ export class ZarrLayer {
     this.selectorHash = this.computeSelectorHash(this.normalizedSelector)
     this.renderingMode = renderingMode
     this.invalidate = () => {}
-
-    if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
-      throw new Error(
-        '[ZarrLayer] colormap is required and must be an array of [r, g, b] or hex string values'
-      )
-    }
     this.colormap = new ColormapState(colormap)
     this.clim = clim
     this.opacity = opacity

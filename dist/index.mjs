@@ -8536,21 +8536,6 @@ var SingleImageMode = class {
     }
   }
   /**
-   * Check if a query selector matches the layer's current selector.
-   * Only compares keys present in the query selector - missing keys use layer defaults anyway.
-   */
-  queryMatchesLayerSelector(querySelector) {
-    for (const key of Object.keys(querySelector)) {
-      const querySpec = querySelector[key];
-      const layerSpec = this.selector[key];
-      if (!layerSpec) return false;
-      if (JSON.stringify(querySpec.selected) !== JSON.stringify(layerSpec.selected)) {
-        return false;
-      }
-    }
-    return true;
-  }
-  /**
    * Query data for point or region geometries.
    */
   async queryData(geometry, selector) {
@@ -8562,40 +8547,21 @@ var SingleImageMode = class {
       };
     }
     const normalizedSelector = selector ? normalizeSelector(selector) : this.selector;
-    const needsFetch = selector ? !this.queryMatchesLayerSelector(normalizedSelector) : false;
-    let queryData;
-    let queryChannels;
-    let queryChannelLabels;
-    let queryMultiValueDimNames;
-    if (needsFetch) {
-      const fetched = await this.fetchDataForSelector(normalizedSelector);
-      if (!fetched) {
-        return {
-          [this.variable]: [],
-          dimensions: [],
-          coordinates: { lat: [], lon: [] }
-        };
-      }
-      queryData = fetched.data;
-      queryChannels = fetched.channels;
-      queryChannelLabels = fetched.channelLabels;
-      queryMultiValueDimNames = fetched.multiValueDimNames;
-    } else {
-      queryData = this.data;
-      queryChannels = this.channels;
-      queryChannelLabels = this.channelLabels;
-      queryMultiValueDimNames = this.multiValueDimNames;
+    const fetched = await this.fetchDataForSelector(normalizedSelector);
+    if (!fetched) {
+      return {
+        [this.variable]: [],
+        dimensions: [],
+        coordinates: { lat: [], lon: [] }
+      };
     }
+    const queryData = fetched.data;
+    const queryChannels = fetched.channels;
+    const queryChannelLabels = fetched.channelLabels;
+    const queryMultiValueDimNames = fetched.multiValueDimNames;
     if (geometry.type === "Point") {
       const [lon, lat] = geometry.coordinates;
       const coords = { lat: [lat], lon: [lon] };
-      if (!queryData) {
-        return {
-          [this.variable]: [],
-          dimensions: ["lat", "lon"],
-          coordinates: coords
-        };
-      }
       const pixel = mercatorBoundsToPixel(
         lon,
         lat,
@@ -8759,6 +8725,23 @@ var ZarrLayer = class {
       this.chunksLoading = state.chunks;
       this.emitLoadingState();
     };
+    if (!id) {
+      throw new Error("[ZarrLayer] id is required");
+    }
+    if (!source) {
+      throw new Error("[ZarrLayer] source is required");
+    }
+    if (!variable) {
+      throw new Error("[ZarrLayer] variable is required");
+    }
+    if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
+      throw new Error(
+        "[ZarrLayer] colormap is required and must be an array of [r, g, b] or hex string values"
+      );
+    }
+    if (!clim || !Array.isArray(clim) || clim.length !== 2) {
+      throw new Error("[ZarrLayer] clim is required and must be [min, max]");
+    }
     this.id = id;
     this.url = source;
     this.variable = variable;
@@ -8772,11 +8755,6 @@ var ZarrLayer = class {
     this.renderingMode = renderingMode;
     this.invalidate = () => {
     };
-    if (!colormap || !Array.isArray(colormap) || colormap.length === 0) {
-      throw new Error(
-        "[ZarrLayer] colormap is required and must be an array of [r, g, b] or hex string values"
-      );
-    }
     this.colormap = new ColormapState(colormap);
     this.clim = clim;
     this.opacity = opacity;
