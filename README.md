@@ -8,7 +8,7 @@ This is an active experiment so expect to run into some bugs! Please report them
 
 ## demo
 
-See the [demo](https://zarr-layer.vercel.app/) for a quick tour of capabilities. Code for the demo is in the `/demo` folder.
+See the [demo](https://zarr-layer.demo.carbonplan.org/) for a quick tour of capabilities. Code for the demo is in the `/demo` folder.
 
 ## data requirements
 
