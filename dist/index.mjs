@@ -4229,19 +4229,6 @@ function identifyDimensionIndices(dimNames, spatialDimensions, coordinates) {
   }
   return indices;
 }
-function calculateNearestIndex(values, target) {
-  const selectedValue = target;
-  let nearestIdx = 0;
-  let minDiff = Infinity;
-  values.forEach((val, i) => {
-    const diff = Math.abs(val - selectedValue);
-    if (diff < minDiff) {
-      minDiff = diff;
-      nearestIdx = i;
-    }
-  });
-  return nearestIdx;
-}
 async function loadDimensionValues(dimensionValues, levelInfo, dimIndices, root2, zarrVersion, slice2) {
   if (dimensionValues[dimIndices.name]) return dimensionValues[dimIndices.name];
   let targetRoot;
@@ -8423,9 +8410,9 @@ var SingleImageMode = class {
       if (typeof value === "number" || typeof value === "string") {
         const coordIdx = coords.indexOf(value);
         if (coordIdx >= 0) return coordIdx;
-        if (typeof value === "number") {
-          return calculateNearestIndex(coords, value);
-        }
+        throw new Error(
+          `[ZarrLayer] Selector value '${value}' not found in coordinate array for dimension '${dimName}'. Available values: [${coords.slice(0, 10).join(", ")}${coords.length > 10 ? ", ..." : ""}]. Use { selected: <index>, type: 'index' } to select by array index instead.`
+        );
       }
     } catch (err) {
       console.debug(`Could not resolve coordinate for '${dimName}':`, err);

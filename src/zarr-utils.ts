@@ -81,29 +81,6 @@ export function identifyDimensionIndices(
 }
 
 /**
- * Finds the index of the value in `values` nearest to `target`.
- * @param values - Array of numeric values.
- * @param target - Target value to find.
- * @returns Index of the nearest value.
- */
-export function calculateNearestIndex(
-  values: Float64Array | number[],
-  target: number
-): number {
-  const selectedValue = target
-  let nearestIdx = 0
-  let minDiff = Infinity
-  values.forEach((val, i) => {
-    const diff = Math.abs(val - selectedValue)
-    if (diff < minDiff) {
-      minDiff = diff
-      nearestIdx = i
-    }
-  })
-  return nearestIdx
-}
-
-/**
  * Loads the coordinate values for a specific dimension.
  *
  * Behavior:

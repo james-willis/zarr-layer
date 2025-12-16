@@ -24,11 +24,7 @@ import type {
   NormalizedSelector,
   Selector,
 } from './types'
-import {
-  calculateNearestIndex,
-  loadDimensionValues,
-  normalizeSelector,
-} from './zarr-utils'
+import { loadDimensionValues, normalizeSelector } from './zarr-utils'
 import { SINGLE_IMAGE_TILE_SUBDIVISIONS } from './constants'
 import type { ZarrRenderer } from './zarr-renderer'
 import { renderMapboxTile } from './mapbox-globe-tile-renderer'
@@ -481,9 +477,11 @@ export class SingleImageMode implements ZarrMode {
       if (typeof value === 'number' || typeof value === 'string') {
         const coordIdx = (coords as (number | string)[]).indexOf(value)
         if (coordIdx >= 0) return coordIdx
-        if (typeof value === 'number') {
-          return calculateNearestIndex(coords, value)
-        }
+        throw new Error(
+          `[ZarrLayer] Selector value '${value}' not found in coordinate array for dimension '${dimName}'. ` +
+            `Available values: [${(coords as (number | string)[]).slice(0, 10).join(', ')}${coords.length > 10 ? ', ...' : ''}]. ` +
+            `Use { selected: <index>, type: 'index' } to select by array index instead.`
+        )
       }
     } catch (err) {
       // Coordinate lookup failed - fall through to use raw index value
