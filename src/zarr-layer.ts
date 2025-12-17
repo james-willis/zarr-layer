@@ -1,7 +1,7 @@
 /**
  * @module zarr-layer
  *
- * MapLibre/MapBox custom layer implementation for rendering Zarr datasets.
+ * MapLibre/Mapbox custom layer implementation for rendering Zarr datasets.
  * Implements CustomLayerInterface for direct WebGL rendering.
  */
 
