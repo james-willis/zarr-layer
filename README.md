@@ -3,7 +3,7 @@
 ![NPM Version](https://img.shields.io/npm/v/@carbonplan/zarr-layer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-MapLibre/Mapbox GL custom layer for rendering Zarr datasets, inspired (and borrowing significant code and concepts from)
+Custom layer for rendering Zarr datasets in MapLibre or Mapbox GL, inspired (and borrowing significant code and concepts from)
 [zarr-gl](https://github.com/carderne/zarr-gl), [zarr-cesium](https://github.com/NOC-OI/zarr-cesium),
 and [@carbonplan/maps](https://github.com/carbonplan/maps). Uses [CustomLayerInterface](https://maplibre.org/maplibre-gl-js/docs/API/interfaces/CustomLayerInterface/) to render data directly to the map and supports globe and mercator projections for both Maplibre and Mapbox.
 
