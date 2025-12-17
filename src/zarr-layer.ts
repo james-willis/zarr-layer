@@ -28,7 +28,7 @@ import type {
 } from './types'
 import type { ZarrMode, RenderContext } from './zarr-mode'
 import { TiledMode } from './tiled-mode'
-import { SingleImageMode } from './single-image-mode'
+import { UntiledMode } from './untiled-mode'
 import {
   computeWorldOffsets,
   resolveProjectionParams,
@@ -57,7 +57,6 @@ export class ZarrLayer {
   private maxzoom: number
   private selectorHash: string = ''
 
-  private isMultiscale: boolean = true
   private _fillValue: number | null = null
   private scaleFactor: number = 1
   private offset: number = 0
@@ -364,7 +363,13 @@ export class ZarrLayer {
       this.mode.dispose(this.gl)
     }
 
-    if (this.isMultiscale) {
+    const desc = this.zarrStore.describe()
+
+    // Mode selection based on auto-detected metadata format:
+    // - 'tiled' = OME-NGFF style with slippy map tile convention
+    // - 'untiled' = zarr-conventions/multiscales format or single-level
+    // - 'none' = single-level dataset (also uses UntiledMode)
+    if (desc.multiscaleType === 'tiled') {
       this.mode = new TiledMode(
         this.zarrStore,
         this.variable,
@@ -373,7 +378,8 @@ export class ZarrLayer {
         this.throttleMs
       )
     } else {
-      this.mode = new SingleImageMode(
+      // Use UntiledMode for untiled multiscales and single-level datasets
+      this.mode = new UntiledMode(
         this.zarrStore,
         this.variable,
         this.normalizedSelector,
@@ -419,8 +425,6 @@ export class ZarrLayer {
       ) {
         this._fillValue = desc.fill_value
       }
-
-      this.isMultiscale = this.levelInfos.length > 0
 
       this.normalizedSelector = normalizeSelector(this.selector)
       await this.loadInitialDimensionValues()

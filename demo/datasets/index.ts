@@ -1,5 +1,6 @@
 import carbonplan4d from './carbonplan-4d'
 import hurricane from './hurricane'
+import { createSimpleDataset } from './simple'
 import { createTimeDataset } from './time'
 import type { Dataset } from './types'
 
@@ -78,6 +79,30 @@ export const DATASETS: Dataset<any>[] = [
     latIsAscending: true,
     info: 'Delta FG CO2 (single image, global)',
     sourceInfo: 'v2 single image (global)',
+  }),
+  createSimpleDataset({
+    id: 'untiled_2level_4326',
+    source:
+      'https://carbonplan-share.s3.us-west-2.amazonaws.com/scratch/ndpyramid/2-lvl-test-4326.zarr',
+    variable: 'pr',
+    clim: [0, 20],
+    colormap: 'blues',
+    zarrVersion: 3,
+    info: 'Untiled 2-level (EPSG:4326)',
+    sourceInfo:
+      'zarr-conventions/multiscales format. Loads different resolutions based on current zoom.',
+  }),
+  createSimpleDataset({
+    id: 'untiled_2level_3857',
+    source:
+      'https://carbonplan-share.s3.us-west-2.amazonaws.com/scratch/ndpyramid/2-lvl-test-web-mercator.zarr',
+    variable: 'pr',
+    clim: [0, 20],
+    colormap: 'blues',
+    zarrVersion: 3,
+    info: 'Untiled 2-level (EPSG:3857)',
+    sourceInfo:
+      'zarr-conventions/multiscales format. Loads different resolutions based on current zoom.',
   }),
 ]
 

@@ -441,3 +441,72 @@ export function boundsToMercatorNorm(
     latMax: yMax,
   }
 }
+
+// === Untiled mode utilities ===
+
+/**
+ * Convert a geographic coordinate to an array index.
+ * Used for mapping viewport bounds to array pixel coordinates.
+ * @param geo - Geographic coordinate value (lon or lat).
+ * @param geoMin - Minimum geographic extent.
+ * @param geoMax - Maximum geographic extent.
+ * @param arraySize - Size of the array in this dimension.
+ * @returns Array index (integer).
+ */
+export function geoToArrayIndex(
+  geo: number,
+  geoMin: number,
+  geoMax: number,
+  arraySize: number
+): number {
+  const normalized = (geo - geoMin) / (geoMax - geoMin)
+  return Math.floor(Math.max(0, Math.min(arraySize - 1, normalized * arraySize)))
+}
+
+/**
+ * Convert an array index to a geographic coordinate.
+ * Used for computing chunk bounds in geographic space.
+ * @param index - Array index.
+ * @param geoMin - Minimum geographic extent.
+ * @param geoMax - Maximum geographic extent.
+ * @param arraySize - Size of the array in this dimension.
+ * @returns Geographic coordinate value.
+ */
+export function arrayIndexToGeo(
+  index: number,
+  geoMin: number,
+  geoMax: number,
+  arraySize: number
+): number {
+  return geoMin + (index / arraySize) * (geoMax - geoMin)
+}
+
+/**
+ * Convert an array index to a chunk index.
+ * @param arrayIndex - Array index.
+ * @param chunkSize - Size of each chunk.
+ * @returns Chunk index.
+ */
+export function arrayIndexToChunkIndex(
+  arrayIndex: number,
+  chunkSize: number
+): number {
+  return Math.floor(arrayIndex / chunkSize)
+}
+
+/**
+ * Get the array index range covered by a chunk.
+ * @param chunkIndex - Chunk index.
+ * @param chunkSize - Size of each chunk.
+ * @param arraySize - Total size of the array.
+ * @returns [startIndex, endIndex] (exclusive end).
+ */
+export function chunkIndexToArrayRange(
+  chunkIndex: number,
+  chunkSize: number,
+  arraySize: number
+): [number, number] {
+  const startIndex = chunkIndex * chunkSize
+  const endIndex = Math.min((chunkIndex + 1) * chunkSize, arraySize)
+  return [startIndex, endIndex]
+}

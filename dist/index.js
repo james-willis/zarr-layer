@@ -4356,12 +4356,16 @@ var _ZarrStore = class _ZarrStore {
     this.maxLevelIndex = 0;
     this.tileSize = 128;
     this.crs = "EPSG:4326";
+    this.multiscaleType = "none";
+    this.untiledLevels = [];
     this.dimIndices = {};
     this.xyLimits = null;
     this.scaleFactor = 1;
     this.addOffset = 0;
     this.coordinates = {};
     this.latIsAscending = null;
+    this._crsFromMetadata = false;
+    // Track if CRS was explicitly set from metadata
     this.store = null;
     this.root = null;
     this._arrayHandles = /* @__PURE__ */ new Map();
@@ -4443,6 +4447,8 @@ var _ZarrStore = class _ZarrStore {
       maxLevelIndex: this.maxLevelIndex,
       tileSize: this.tileSize,
       crs: this.crs,
+      multiscaleType: this.multiscaleType,
+      untiledLevels: this.untiledLevels,
       dimIndices: this.dimIndices,
       xyLimits: this.xyLimits,
       scaleFactor: this.scaleFactor,
@@ -4462,6 +4468,17 @@ var _ZarrStore = class _ZarrStore {
   }
   async getArray() {
     return this._getArray(this.variable);
+  }
+  /**
+   * Get metadata (shape, chunks) for a specific untiled level.
+   * Used by UntiledMode to determine chunk boundaries for viewport-based loading.
+   */
+  async getUntiledLevelMetadata(levelAsset) {
+    const array = await this.getLevelArray(levelAsset);
+    return {
+      shape: array.shape,
+      chunks: array.chunks
+    };
   }
   async _getArray(key) {
     if (!this.root) {
@@ -4726,9 +4743,18 @@ var _ZarrStore = class _ZarrStore {
         this.latIsAscending = null;
       }
     }
+    if (this.multiscaleType === "untiled" && !this._crsFromMetadata && this.xyLimits) {
+      const maxAbsX = Math.max(
+        Math.abs(this.xyLimits.xMin),
+        Math.abs(this.xyLimits.xMax)
+      );
+      if (maxAbsX > 180) {
+        this.crs = "EPSG:3857";
+      }
+    }
   }
   _getPyramidMetadata(multiscales) {
-    if (!multiscales || !multiscales[0]?.datasets?.length) {
+    if (!multiscales) {
       return {
         levels: [],
         maxLevelIndex: 0,
@@ -4736,12 +4762,64 @@ var _ZarrStore = class _ZarrStore {
         crs: "EPSG:4326"
       };
     }
-    const datasets = multiscales[0].datasets;
-    const levels = datasets.map((dataset) => String(dataset.path));
+    if ("layout" in multiscales && Array.isArray(multiscales.layout)) {
+      return this._parseUntiledMultiscale(multiscales);
+    }
+    if (Array.isArray(multiscales) && multiscales[0]?.datasets?.length) {
+      const datasets = multiscales[0].datasets;
+      const levels = datasets.map((dataset) => String(dataset.path));
+      const maxLevelIndex = levels.length - 1;
+      const tileSize = datasets[0].pixels_per_tile;
+      const crs = datasets[0].crs === "EPSG:4326" ? "EPSG:4326" : "EPSG:3857";
+      if (tileSize) {
+        this.multiscaleType = "tiled";
+        return { levels, maxLevelIndex, tileSize, crs };
+      } else {
+        this.untiledLevels = levels.map((level) => ({
+          asset: level,
+          scale: [1, 1],
+          translation: [0, 0]
+        }));
+        this.multiscaleType = "untiled";
+        return { levels, maxLevelIndex, tileSize: 128, crs };
+      }
+    }
+    return {
+      levels: [],
+      maxLevelIndex: 0,
+      tileSize: 128,
+      crs: "EPSG:4326"
+    };
+  }
+  _parseUntiledMultiscale(metadata) {
+    const layout = metadata.layout;
+    if (!layout || layout.length === 0) {
+      return {
+        levels: [],
+        maxLevelIndex: 0,
+        tileSize: 128,
+        crs: "EPSG:4326"
+      };
+    }
+    const levels = layout.map((entry) => entry.asset);
     const maxLevelIndex = levels.length - 1;
-    const tileSize = datasets[0].pixels_per_tile || 128;
-    const crs = datasets[0].crs === "EPSG:4326" ? "EPSG:4326" : "EPSG:3857";
-    return { levels, maxLevelIndex, tileSize, crs };
+    this.untiledLevels = layout.map((entry) => ({
+      asset: entry.asset,
+      scale: entry.transform?.scale ?? [1, 1],
+      translation: entry.transform?.translation ?? [0, 0]
+    }));
+    this.multiscaleType = "untiled";
+    const crs = metadata.crs ?? "EPSG:4326";
+    if (metadata.crs) {
+      this._crsFromMetadata = true;
+    }
+    return {
+      levels,
+      maxLevelIndex,
+      tileSize: 128,
+      // Will be overridden by chunk shape
+      crs
+    };
   }
   static clearCache() {
     _ZarrStore._cache.clear();
@@ -7475,19 +7553,13 @@ function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexA
       ...texOverride
     });
   } else {
-    const tileSizeNorm = 1 / tilesPerSide;
-    const localX0 = (overlapX0 - tileX0) / tileSizeNorm;
-    const localX1 = (overlapX1 - tileX0) / tileSizeNorm;
-    const localY0 = (overlapY0 - tileY0) / tileSizeNorm;
-    const localY1 = (overlapY1 - tileY0) / tileSizeNorm;
-    const clipX0 = localX0 * 2 - 1;
-    const clipX1 = localX1 * 2 - 1;
-    const clipY0 = localY0 * 2 - 1;
-    const clipY1 = localY1 * 2 - 1;
-    const scaleX = (clipX1 - clipX0) / 2;
-    const scaleY = (clipY1 - clipY0) / 2;
-    const shiftX = (clipX0 + clipX1) / 2;
-    const shiftY = (clipY0 + clipY1) / 2;
+    if (shaderProgram.isEquirectangularLoc) {
+      renderer.gl.uniform1i(shaderProgram.isEquirectangularLoc, 0);
+    }
+    const scaleX = (overlapX1 - overlapX0) / 2;
+    const scaleY = (overlapY1 - overlapY0) / 2;
+    const shiftX = (overlapX0 + overlapX1) / 2;
+    const shiftY = (overlapY0 + overlapY1) / 2;
     const imgWidth = bounds.x1 - bounds.x0;
     const imgHeight = bounds.y1 - bounds.y0;
     const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1;
@@ -7517,7 +7589,7 @@ function renderMapboxTile({
 }) {
   const { colormapTexture, uniforms, customShaderConfig } = context;
   const singleImageState = mode.getSingleImageState?.();
-  if (!mode.isMultiscale && singleImageState) {
+  if (singleImageState) {
     const { singleImage, vertexArr: vertexArr2 } = singleImageState;
     const bounds = singleImage.bounds;
     if (!bounds) return false;
@@ -8151,16 +8223,16 @@ var TiledMode = class {
   }
 };
 
-// src/single-image-mode.ts
-var SingleImageMode = class {
+// src/untiled-mode.ts
+var UntiledMode = class {
   constructor(store, variable, selector, invalidate, throttleMs = 100) {
     this.isMultiscale = false;
+    // Data state (single-level mode)
     this.data = null;
     this.width = 0;
     this.height = 0;
     this.channels = 1;
-    this.channelLabels = [];
-    this.multiValueDimNames = [];
+    // WebGL resources
     this.texture = null;
     this.vertexBuffer = null;
     this.pixCoordBuffer = null;
@@ -8169,11 +8241,20 @@ var SingleImageMode = class {
     this.currentSubdivisions = 0;
     this.geometryVersion = 0;
     this.dataVersion = 0;
+    // Texture transforms
+    this.texScale = [1, 1];
+    this.texOffset = [0, 0];
+    // Bounds
     this.mercatorBounds = null;
     this.dimIndices = {};
     this.xyLimits = null;
-    this.crs = null;
+    this.crs = "EPSG:4326";
     this.zarrArray = null;
+    this.latIsAscending = null;
+    // Multi-level support
+    this.levels = [];
+    this.currentLevelIndex = 0;
+    // Loading state
     this.isRemoved = false;
     this.isLoadingData = false;
     this.metadataLoading = false;
@@ -8183,10 +8264,9 @@ var SingleImageMode = class {
     this.lastFetchTime = 0;
     this.throttleTimeout = null;
     this.throttledFetchPromise = null;
+    // Dimension values cache
     this.dimensionValues = {};
-    this.latIsAscending = null;
-    this.texScale = [1, 1];
-    this.texOffset = [0, 0];
+    // Data processing
     this.clim = [0, 1];
     this.zarrStore = store;
     this.variable = variable;
@@ -8203,19 +8283,39 @@ var SingleImageMode = class {
       this.crs = desc.crs;
       this.xyLimits = desc.xyLimits;
       this.latIsAscending = desc.latIsAscending ?? null;
-      this.zarrArray = await this.zarrStore.getArray();
-      this.width = this.zarrArray.shape[this.dimIndices.lon.index];
-      this.height = this.zarrArray.shape[this.dimIndices.lat.index];
+      if (desc.untiledLevels && desc.untiledLevels.length > 0) {
+        this.levels = desc.untiledLevels;
+        this.isMultiscale = true;
+        await this.loadLevelMetadata();
+        this.currentLevelIndex = -1;
+      } else {
+        this.isMultiscale = false;
+        this.zarrArray = await this.zarrStore.getArray();
+        this.width = this.zarrArray.shape[this.dimIndices.lon.index];
+        this.height = this.zarrArray.shape[this.dimIndices.lat.index];
+      }
       if (this.xyLimits) {
         this.mercatorBounds = boundsToMercatorNorm(this.xyLimits, this.crs);
       } else {
-        console.warn("SingleImageMode: No XY limits found");
+        console.warn("UntiledMode: No XY limits found");
       }
       this.updateGeometryForProjection(false);
       this.updateTexTransform();
     } finally {
       this.metadataLoading = false;
       this.emitLoadingState();
+    }
+  }
+  async loadLevelMetadata() {
+    for (let i = 0; i < this.levels.length; i++) {
+      const level = this.levels[i];
+      try {
+        const meta = await this.zarrStore.getUntiledLevelMetadata(level.asset);
+        level.shape = meta.shape;
+        level.chunks = meta.chunks;
+      } catch (err) {
+        console.warn(`Failed to load metadata for level ${level.asset}:`, err);
+      }
     }
   }
   update(map, gl) {
@@ -8231,10 +8331,193 @@ var SingleImageMode = class {
     const projection = map.getProjection ? map.getProjection() : null;
     const isGlobe = isGlobeProjection(projection);
     this.updateGeometryForProjection(isGlobe);
+    if (this.isMultiscale && this.levels.length > 0) {
+      const mapZoom = map.getZoom?.() ?? 0;
+      const bestLevelIndex = this.selectLevelForZoom(mapZoom);
+      if (this.currentLevelIndex === -1) {
+        this.initializeLevel(bestLevelIndex);
+        return;
+      } else if (bestLevelIndex !== this.currentLevelIndex) {
+        this.switchToLevel(bestLevelIndex);
+        return;
+      }
+    }
     if (!this.data && !this.isLoadingData) {
       this.fetchData().then(() => {
         this.invalidate();
       });
+    }
+  }
+  async initializeLevel(levelIndex) {
+    if (levelIndex < 0 || levelIndex >= this.levels.length) return;
+    if (this.isLoadingData) return;
+    const level = this.levels[levelIndex];
+    console.log(`Initializing with level ${levelIndex} (${level.asset})`);
+    this.currentLevelIndex = levelIndex;
+    try {
+      this.zarrArray = await this.zarrStore.getLevelArray(level.asset);
+      this.width = this.zarrArray.shape[this.dimIndices.lon.index];
+      this.height = this.zarrArray.shape[this.dimIndices.lat.index];
+      await this.fetchData();
+      this.invalidate();
+    } catch (err) {
+      console.error(`Failed to initialize level ${level.asset}:`, err);
+    }
+  }
+  selectLevelForZoom(mapZoom) {
+    if (!this.xyLimits || this.levels.length === 0) return 0;
+    const mapPixelsPerWorld = 256 * Math.pow(2, mapZoom);
+    const dataWidth = this.xyLimits.xMax - this.xyLimits.xMin;
+    let worldFraction;
+    if (this.crs === "EPSG:3857") {
+      const fullWorldMeters = 2 * 20037508342789244e-9;
+      worldFraction = dataWidth / fullWorldMeters;
+    } else {
+      worldFraction = dataWidth / 360;
+    }
+    const levelResolutions = [];
+    for (let i = 0; i < this.levels.length; i++) {
+      const level = this.levels[i];
+      if (!level.shape) continue;
+      const lonIndex = this.dimIndices.lon?.index ?? level.shape.length - 1;
+      const effectivePixels = level.shape[lonIndex] / worldFraction;
+      levelResolutions.push({ index: i, effectivePixels });
+    }
+    if (levelResolutions.length === 0) return 0;
+    levelResolutions.sort((a, b) => a.effectivePixels - b.effectivePixels);
+    const minRequired = mapPixelsPerWorld * 0.5;
+    for (const { index, effectivePixels } of levelResolutions) {
+      if (effectivePixels >= minRequired) {
+        return index;
+      }
+    }
+    return levelResolutions[levelResolutions.length - 1].index;
+  }
+  async switchToLevel(newLevelIndex) {
+    if (newLevelIndex === this.currentLevelIndex) return;
+    if (newLevelIndex < 0 || newLevelIndex >= this.levels.length) return;
+    if (this.isLoadingData) return;
+    const level = this.levels[newLevelIndex];
+    console.log(`Switching to level ${newLevelIndex} (${level.asset})`);
+    this.currentLevelIndex = newLevelIndex;
+    try {
+      const newArray = await this.zarrStore.getLevelArray(level.asset);
+      const newWidth = newArray.shape[this.dimIndices.lon.index];
+      const newHeight = newArray.shape[this.dimIndices.lat.index];
+      const result = await this.fetchDataForLevel(newArray, newWidth, newHeight);
+      if (result && !this.isRemoved) {
+        this.zarrArray = newArray;
+        this.width = newWidth;
+        this.height = newHeight;
+        this.data = result.data;
+        this.channels = result.channels;
+        this.dataVersion++;
+        this.invalidate();
+      }
+    } catch (err) {
+      console.error(`Failed to switch to level ${level.asset}:`, err);
+    }
+  }
+  async fetchDataForLevel(array, width, height) {
+    this.isLoadingData = true;
+    this.emitLoadingState();
+    try {
+      const baseSliceArgs = new Array(
+        array.shape.length
+      ).fill(0);
+      const multiValueDims = [];
+      const dimNames = Object.keys(this.dimIndices);
+      for (const dimName of dimNames) {
+        const dimInfo = this.dimIndices[dimName];
+        const dimKey = dimName.toLowerCase();
+        const isLon = dimKey === "lon" || dimKey === "x" || dimKey === "lng" || dimKey.includes("lon");
+        const isLat = dimKey === "lat" || dimKey === "y" || dimKey.includes("lat");
+        if (isLon) {
+          baseSliceArgs[dimInfo.index] = slice(0, width);
+        } else if (isLat) {
+          baseSliceArgs[dimInfo.index] = slice(0, height);
+        } else {
+          const selectionSpec = this.selector[dimName] || (dimKey.includes("time") ? this.selector["time"] : void 0);
+          if (selectionSpec !== void 0) {
+            const selectionValue = selectionSpec.selected;
+            const selectionType = selectionSpec.type;
+            if (Array.isArray(selectionValue) && selectionValue.length > 1) {
+              const resolvedIndices = [];
+              const labelValues = [];
+              for (const val of selectionValue) {
+                const idx = await this.resolveSelectionIndex(
+                  dimName,
+                  dimInfo,
+                  val,
+                  selectionType
+                );
+                resolvedIndices.push(idx);
+                labelValues.push(val);
+              }
+              multiValueDims.push({
+                dimIndex: dimInfo.index,
+                dimName,
+                values: resolvedIndices,
+                labels: labelValues
+              });
+              baseSliceArgs[dimInfo.index] = resolvedIndices[0];
+            } else {
+              const primaryValue = Array.isArray(selectionValue) ? selectionValue[0] : selectionValue;
+              baseSliceArgs[dimInfo.index] = await this.resolveSelectionIndex(
+                dimName,
+                dimInfo,
+                primaryValue,
+                selectionType
+              );
+            }
+          } else {
+            baseSliceArgs[dimInfo.index] = 0;
+          }
+        }
+      }
+      let channelCombinations = [[]];
+      for (const { values } of multiValueDims) {
+        const next = [];
+        for (const val of values) {
+          for (const combo of channelCombinations) {
+            next.push([...combo, val]);
+          }
+        }
+        channelCombinations = next;
+      }
+      const numChannels = channelCombinations.length || 1;
+      if (numChannels === 1) {
+        const result = await get2(array, baseSliceArgs);
+        return {
+          data: new Float32Array(result.data.buffer),
+          channels: 1
+        };
+      } else {
+        const packedData = new Float32Array(width * height * numChannels);
+        for (let c = 0; c < numChannels; c++) {
+          const sliceArgs = [...baseSliceArgs];
+          const combo = channelCombinations[c];
+          for (let i = 0; i < multiValueDims.length; i++) {
+            sliceArgs[multiValueDims[i].dimIndex] = combo[i];
+          }
+          const bandData = await get2(array, sliceArgs);
+          const bandArray = new Float32Array(
+            bandData.data.buffer
+          );
+          for (let pixIdx = 0; pixIdx < width * height; pixIdx++) {
+            packedData[pixIdx * numChannels + c] = bandArray[pixIdx];
+          }
+        }
+        return { data: packedData, channels: numChannels };
+      }
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        console.error("Error fetching level data:", err);
+      }
+      return null;
+    } finally {
+      this.isLoadingData = false;
+      this.emitLoadingState();
     }
   }
   render(renderer, context) {
@@ -8342,27 +8625,19 @@ var SingleImageMode = class {
     this.loadingCallback = callback;
   }
   getCRS() {
-    return this.crs ?? "EPSG:4326";
+    return this.crs;
   }
   getXYLimits() {
     return this.xyLimits;
   }
   getMaxLevelIndex() {
-    return 0;
+    return this.levels.length > 0 ? this.levels.length - 1 : 0;
   }
   getLevels() {
-    return [];
+    return this.levels.map((l) => l.asset);
   }
   updateClim(clim) {
     this.clim = clim;
-  }
-  emitLoadingState() {
-    if (!this.loadingCallback) return;
-    this.loadingCallback({
-      loading: this.metadataLoading || this.isLoadingData,
-      metadata: this.metadataLoading,
-      chunks: this.isLoadingData
-    });
   }
   async setSelector(selector) {
     this.selector = selector;
@@ -8377,6 +8652,24 @@ var SingleImageMode = class {
     this.currentSubdivisions = targetSubdivisions;
     this.geometryVersion += 1;
     this.invalidate();
+  }
+  updateTexTransform() {
+    if (this.latIsAscending) {
+      this.texScale = [1, -1];
+      this.texOffset = [0, 1];
+    } else {
+      this.texScale = [1, 1];
+      this.texOffset = [0, 0];
+    }
+    this.geometryVersion += 1;
+  }
+  emitLoadingState() {
+    if (!this.loadingCallback) return;
+    this.loadingCallback({
+      loading: this.metadataLoading || this.isLoadingData,
+      metadata: this.metadataLoading,
+      chunks: this.isLoadingData
+    });
   }
   async fetchData() {
     if (!this.zarrArray || this.isRemoved) return;
@@ -8475,8 +8768,6 @@ var SingleImageMode = class {
       }
       const numChannels = channelCombinations.length || 1;
       this.channels = numChannels;
-      this.multiValueDimNames = multiValueDims.map((d) => d.dimName);
-      this.channelLabels = channelLabelCombinations;
       if (numChannels === 1) {
         const data = await get2(this.zarrArray, baseSliceArgs, {
           opts: { signal }
@@ -8517,7 +8808,7 @@ var SingleImageMode = class {
       this.invalidate();
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        console.error("Error fetching single image data:", err);
+        console.error("Error fetching data:", err);
       }
     } finally {
       this.pendingControllers.delete(requestId);
@@ -8565,7 +8856,6 @@ var SingleImageMode = class {
   }
   /**
    * Fetch data for a specific selector (used for queries with selector overrides).
-   * Returns the data array along with channel metadata.
    */
   async fetchDataForSelector(selector) {
     if (!this.zarrArray) return null;
@@ -8807,16 +9097,6 @@ var SingleImageMode = class {
       }
     );
   }
-  updateTexTransform() {
-    if (this.latIsAscending) {
-      this.texScale = [1, -1];
-      this.texOffset = [0, 1];
-    } else {
-      this.texScale = [1, 1];
-      this.texOffset = [0, 0];
-    }
-    this.geometryVersion += 1;
-  }
 };
 
 // src/zarr-layer.ts
@@ -8846,7 +9126,6 @@ var ZarrLayer = class {
     this.zarrVersion = null;
     this.latIsAscending = null;
     this.selectorHash = "";
-    this.isMultiscale = true;
     this._fillValue = null;
     this.scaleFactor = 1;
     this.offset = 0;
@@ -9077,7 +9356,8 @@ var ZarrLayer = class {
     if (this.mode) {
       this.mode.dispose(this.gl);
     }
-    if (this.isMultiscale) {
+    const desc = this.zarrStore.describe();
+    if (desc.multiscaleType === "tiled") {
       this.mode = new TiledMode(
         this.zarrStore,
         this.variable,
@@ -9086,7 +9366,7 @@ var ZarrLayer = class {
         this.throttleMs
       );
     } else {
-      this.mode = new SingleImageMode(
+      this.mode = new UntiledMode(
         this.zarrStore,
         this.variable,
         this.normalizedSelector,
@@ -9121,7 +9401,6 @@ var ZarrLayer = class {
       if (this._fillValue === null && desc.fill_value !== null && desc.fill_value !== void 0) {
         this._fillValue = desc.fill_value;
       }
-      this.isMultiscale = this.levelInfos.length > 0;
       this.normalizedSelector = normalizeSelector(this.selector);
       await this.loadInitialDimensionValues();
       this.bandNames = getBands(this.variable, this.normalizedSelector);

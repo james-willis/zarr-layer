@@ -184,22 +184,17 @@ function renderSingleImageToTile(
     })
   } else {
     // EPSG:3857 path: Direct Mercator mapping, no reprojection needed
-    const tileSizeNorm = 1 / tilesPerSide
-    const localX0 = (overlapX0 - tileX0) / tileSizeNorm
-    const localX1 = (overlapX1 - tileX0) / tileSizeNorm
-    const localY0 = (overlapY0 - tileY0) / tileSizeNorm
-    const localY1 = (overlapY1 - tileY0) / tileSizeNorm
+    // Explicitly disable equirectangular mode in case shader has stale state
+    if (shaderProgram.isEquirectangularLoc) {
+      renderer.gl.uniform1i(shaderProgram.isEquirectangularLoc, 0)
+    }
 
-    // Position geometry in clip space
-    const clipX0 = localX0 * 2 - 1
-    const clipX1 = localX1 * 2 - 1
-    const clipY0 = localY0 * 2 - 1
-    const clipY1 = localY1 * 2 - 1
-
-    const scaleX = (clipX1 - clipX0) / 2
-    const scaleY = (clipY1 - clipY0) / 2
-    const shiftX = (clipX0 + clipX1) / 2
-    const shiftY = (clipY0 + clipY1) / 2
+    // Use mercator normalized bounds directly (same as tiled path in tile-renderer.ts)
+    // The shader expects bounds in [0,1] mercator space, not clip space
+    const scaleX = (overlapX1 - overlapX0) / 2
+    const scaleY = (overlapY1 - overlapY0) / 2
+    const shiftX = (overlapX0 + overlapX1) / 2
+    const shiftY = (overlapY0 + overlapY1) / 2
 
     // Texture crop mapping
     const imgWidth = bounds.x1 - bounds.x0
@@ -250,8 +245,9 @@ export function renderMapboxTile({
   const { colormapTexture, uniforms, customShaderConfig } = context
 
   // Handle single image (non-tiled) data
+  // This includes both single-level and multi-level UntiledMode datasets
   const singleImageState = mode.getSingleImageState?.()
-  if (!mode.isMultiscale && singleImageState) {
+  if (singleImageState) {
     const { singleImage, vertexArr } = singleImageState
     const bounds = singleImage.bounds
     if (!bounds) return false
