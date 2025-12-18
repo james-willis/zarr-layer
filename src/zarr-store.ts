@@ -622,17 +622,9 @@ export class ZarrStore {
     if (!this.dimIndices.lon || !this.dimIndices.lat || !this.root) return
 
     try {
-      // Use coarsest level for bounds detection:
-      // - Tiled pyramids: level 0 is coarsest
-      // - Untiled multiscale: last level (maxLevelIndex) is coarsest
-      const coarsestLevel =
-        this.multiscaleType === 'untiled'
-          ? this.levels[this.maxLevelIndex]
-          : this.levels[0]
-      const levelRoot =
-        this.levels.length > 0 && coarsestLevel
-          ? this.root.resolve(coarsestLevel)
-          : this.root
+      const levelRoot = this.coarsestLevel
+        ? this.root.resolve(this.coarsestLevel)
+        : this.root
 
       const openArray = (loc: zarr.Location<Readable>) => {
         if (this.version === 2) {
