@@ -4729,7 +4729,7 @@ var _ZarrStore = class _ZarrStore {
         Math.abs(this.xyLimits.xMin),
         Math.abs(this.xyLimits.xMax)
       );
-      if (maxAbsX > 180) {
+      if (maxAbsX > 360) {
         this.crs = "EPSG:3857";
       }
     }
@@ -7717,7 +7717,8 @@ function drawRegion(params) {
     shiftX,
     shiftY,
     texScale,
-    texOffset
+    texOffset,
+    skipBaseTexture
   } = params;
   gl.uniform1f(shaderProgram.scaleLoc, 0);
   gl.uniform1f(shaderProgram.scaleXLoc, scaleX);
@@ -7732,10 +7733,14 @@ function drawRegion(params) {
   gl.bindBuffer(gl.ARRAY_BUFFER, pixCoordBuffer);
   gl.enableVertexAttribArray(shaderProgram.pixCoordLoc);
   gl.vertexAttribPointer(shaderProgram.pixCoordLoc, 2, gl.FLOAT, false, 0, 0);
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.uniform1i(shaderProgram.texLoc, 0);
-  configureDataTexture(gl);
+  if (!skipBaseTexture) {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    if (shaderProgram.texLoc !== null) {
+      gl.uniform1i(shaderProgram.texLoc, 0);
+    }
+    configureDataTexture(gl);
+  }
   gl.uniform1f(shaderProgram.worldXOffsetLoc, 0);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexArr.length / 2);
 }
@@ -7801,6 +7806,25 @@ function renderRegionToTile(renderer, context, tileId, region) {
   const baseTexScale = region.texScale ?? [1, 1];
   const baseTexOffset = region.texOffset ?? [0, 0];
   const gl = renderer.gl;
+  let skipBaseTexture = false;
+  if (shaderProgram.useCustomShader && customShaderConfig) {
+    setupBandTextureUniforms(gl, shaderProgram, customShaderConfig);
+    if (region.bandData && region.bandTextures && region.bandTexturesUploaded && region.bandTexturesConfigured) {
+      const bandsBound = bindBandTextures(gl, {
+        bandData: region.bandData,
+        bandTextures: region.bandTextures,
+        bandTexturesUploaded: region.bandTexturesUploaded,
+        bandTexturesConfigured: region.bandTexturesConfigured,
+        customShaderConfig,
+        width: region.width,
+        height: region.height
+      });
+      if (!bandsBound) {
+        return false;
+      }
+      skipBaseTexture = true;
+    }
+  }
   const isEquirectangular = bounds.latMin !== void 0 && bounds.latMax !== void 0;
   if (isEquirectangular) {
     const cropLatNorth = mercatorNormToLat(overlapY0);
@@ -7848,7 +7872,8 @@ function renderRegionToTile(renderer, context, tileId, region) {
       scaleY,
       shiftX,
       shiftY,
-      ...texOverride
+      ...texOverride,
+      skipBaseTexture
     });
   } else {
     if (shaderProgram.isEquirectangularLoc) {
@@ -7881,9 +7906,11 @@ function renderRegionToTile(renderer, context, tileId, region) {
       scaleY,
       shiftX,
       shiftY,
-      ...texOverride
+      ...texOverride,
+      skipBaseTexture
     });
   }
+  return true;
 }
 function renderMapboxTile({
   renderer,
@@ -7906,15 +7933,21 @@ function renderMapboxTile({
       const intersects = bounds.x0 < tileX1 && bounds.x1 > tileX0 && bounds.y0 < tileY1 && bounds.y1 > tileY0;
       if (!intersects) continue;
       const linearBuffer = getLinearPixCoordBuffer(context.gl, region);
-      renderRegionToTile(renderer, context, tileId, {
+      const rendered = renderRegionToTile(renderer, context, tileId, {
         vertexBuffer: region.vertexBuffer,
         pixCoordBuffer: linearBuffer,
         texture: region.texture,
         vertexArr: region.vertexArr,
         bounds,
-        latIsAscending: region.latIsAscending
+        latIsAscending: region.latIsAscending,
+        width: region.width,
+        height: region.height,
+        bandData: region.bandData,
+        bandTextures: region.bandTextures,
+        bandTexturesUploaded: region.bandTexturesUploaded,
+        bandTexturesConfigured: region.bandTexturesConfigured
       });
-      anyRendered = true;
+      if (rendered) anyRendered = true;
     }
     return !anyRendered;
   }
@@ -9309,7 +9342,11 @@ var UntiledMode = class {
       width: region.width,
       height: region.height,
       channels: this.channels,
-      latIsAscending: this.latIsAscending ?? void 0
+      latIsAscending: this.latIsAscending ?? void 0,
+      bandData: region.bandData,
+      bandTextures: region.bandTextures,
+      bandTexturesUploaded: region.bandTexturesUploaded,
+      bandTexturesConfigured: region.bandTexturesConfigured
     }));
   }
   dispose(gl) {

@@ -21,6 +21,7 @@ import type {
   RegionRenderState,
 } from './zarr-mode'
 import { computeTexOverride, configureDataTexture } from './webgl-utils'
+import { bindBandTextures, setupBandTextureUniforms } from './render-helpers'
 
 /**
  * Cache for linear texture coordinate buffers used in globe rendering.
@@ -79,6 +80,8 @@ interface DrawRegionParams {
   shiftY: number
   texScale: [number, number]
   texOffset: [number, number]
+  /** If true, skip base texture binding (band textures already bound) */
+  skipBaseTexture?: boolean
 }
 
 /**
@@ -99,6 +102,7 @@ function drawRegion(params: DrawRegionParams): void {
     shiftY,
     texScale,
     texOffset,
+    skipBaseTexture,
   } = params
 
   // Set scale/shift uniforms
@@ -120,11 +124,15 @@ function drawRegion(params: DrawRegionParams): void {
   gl.enableVertexAttribArray(shaderProgram.pixCoordLoc)
   gl.vertexAttribPointer(shaderProgram.pixCoordLoc, 2, gl.FLOAT, false, 0, 0)
 
-  // Bind texture
-  gl.activeTexture(gl.TEXTURE0)
-  gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.uniform1i(shaderProgram.texLoc, 0)
-  configureDataTexture(gl)
+  // Bind base texture (unless using custom shader with band textures)
+  if (!skipBaseTexture) {
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    if (shaderProgram.texLoc !== null) {
+      gl.uniform1i(shaderProgram.texLoc, 0)
+    }
+    configureDataTexture(gl)
+  }
 
   // Draw (worldOffset=0 for globe tiles)
   gl.uniform1f(shaderProgram.worldXOffsetLoc, 0)
@@ -192,6 +200,12 @@ interface RegionTileParams {
   texScale?: [number, number]
   texOffset?: [number, number]
   latIsAscending?: boolean
+  width: number
+  height: number
+  bandData?: Map<string, Float32Array>
+  bandTextures?: Map<string, WebGLTexture>
+  bandTexturesUploaded?: Set<string>
+  bandTexturesConfigured?: Set<string>
 }
 
 /**
@@ -209,7 +223,7 @@ function renderRegionToTile(
   context: RenderContext,
   tileId: TileId,
   region: RegionTileParams
-): void {
+): boolean {
   const { colormapTexture, uniforms, customShaderConfig } = context
   const { bounds, vertexBuffer, pixCoordBuffer, texture, vertexArr } = region
 
@@ -251,6 +265,32 @@ function renderRegionToTile(
   const baseTexScale: [number, number] = region.texScale ?? [1, 1]
   const baseTexOffset: [number, number] = region.texOffset ?? [0, 0]
   const gl = renderer.gl
+
+  // Bind band textures for custom shaders with multiple bands
+  let skipBaseTexture = false
+  if (shaderProgram.useCustomShader && customShaderConfig) {
+    setupBandTextureUniforms(gl, shaderProgram, customShaderConfig)
+    if (
+      region.bandData &&
+      region.bandTextures &&
+      region.bandTexturesUploaded &&
+      region.bandTexturesConfigured
+    ) {
+      const bandsBound = bindBandTextures(gl, {
+        bandData: region.bandData,
+        bandTextures: region.bandTextures,
+        bandTexturesUploaded: region.bandTexturesUploaded,
+        bandTexturesConfigured: region.bandTexturesConfigured,
+        customShaderConfig,
+        width: region.width,
+        height: region.height,
+      })
+      if (!bandsBound) {
+        return false // Missing band data
+      }
+      skipBaseTexture = true
+    }
+  }
 
   // Check if this is equirectangular (EPSG:4326) data that needs reprojection
   const isEquirectangular =
@@ -315,6 +355,7 @@ function renderRegionToTile(
       shiftX,
       shiftY,
       ...texOverride,
+      skipBaseTexture,
     })
   } else {
     // EPSG:3857 path: Direct Mercator mapping
@@ -353,8 +394,11 @@ function renderRegionToTile(
       shiftX,
       shiftY,
       ...texOverride,
+      skipBaseTexture,
     })
   }
+
+  return true
 }
 
 /**
@@ -407,15 +451,21 @@ export function renderMapboxTile({
       // Get or create linear tex coord buffer (computed from vertex positions)
       const linearBuffer = getLinearPixCoordBuffer(context.gl, region)
 
-      renderRegionToTile(renderer, context, tileId, {
+      const rendered = renderRegionToTile(renderer, context, tileId, {
         vertexBuffer: region.vertexBuffer,
         pixCoordBuffer: linearBuffer,
         texture: region.texture,
         vertexArr: region.vertexArr,
         bounds,
         latIsAscending: region.latIsAscending,
+        width: region.width,
+        height: region.height,
+        bandData: region.bandData,
+        bandTextures: region.bandTextures,
+        bandTexturesUploaded: region.bandTexturesUploaded,
+        bandTexturesConfigured: region.bandTexturesConfigured,
       })
-      anyRendered = true
+      if (rendered) anyRendered = true
     }
     return !anyRendered // Return true if nothing rendered (still loading)
   }

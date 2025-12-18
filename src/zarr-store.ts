@@ -690,7 +690,8 @@ export class ZarrStore {
     }
 
     // Infer CRS from bounds for untiled multiscales if not explicitly set
-    // If |x| > 180, data is likely in meters (EPSG:3857) not degrees
+    // Only classify as meters if clearly outside degree range (> 360)
+    // This handles both [-180, 180] and [0, 360] degree conventions
     if (
       this.multiscaleType === 'untiled' &&
       !this._crsFromMetadata &&
@@ -700,7 +701,7 @@ export class ZarrStore {
         Math.abs(this.xyLimits.xMin),
         Math.abs(this.xyLimits.xMax)
       )
-      if (maxAbsX > 180) {
+      if (maxAbsX > 360) {
         this.crs = 'EPSG:3857'
       }
     }

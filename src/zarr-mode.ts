@@ -56,6 +56,11 @@ export interface RegionRenderState {
   channels: number
   /** Whether latitude increases with array index (needed for globe tile coordinate calculation) */
   latIsAscending?: boolean
+  /** Band textures for multi-band custom shaders */
+  bandData?: Map<string, Float32Array>
+  bandTextures?: Map<string, WebGLTexture>
+  bandTexturesUploaded?: Set<string>
+  bandTexturesConfigured?: Set<string>
 }
 
 export interface ZarrMode {

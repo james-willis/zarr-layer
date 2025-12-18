@@ -1322,6 +1322,10 @@ export class UntiledMode implements ZarrMode {
       height: region.height,
       channels: this.channels,
       latIsAscending: this.latIsAscending ?? undefined,
+      bandData: region.bandData,
+      bandTextures: region.bandTextures,
+      bandTexturesUploaded: region.bandTexturesUploaded,
+      bandTexturesConfigured: region.bandTexturesConfigured,
     }))
   }
 
