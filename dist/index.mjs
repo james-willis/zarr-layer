@@ -8598,6 +8598,46 @@ var UntiledMode = class {
     };
   }
   /**
+   * Check if a region has all required data for rendering.
+   */
+  isRegionValid(region) {
+    return !!(region.data && region.textureUploaded && region.texture && region.vertexBuffer && region.pixCoordBuffer && region.vertexArr && region.mercatorBounds);
+  }
+  /**
+   * Get all loaded regions from both caches (previous first for fallback, then current).
+   */
+  getLoadedRegions() {
+    const regions = [];
+    for (const region of this.previousRegionCache.values()) {
+      if (this.isRegionValid(region)) regions.push(region);
+    }
+    for (const region of this.regionCache.values()) {
+      if (this.isRegionValid(region)) regions.push(region);
+    }
+    return regions;
+  }
+  /**
+   * Build all index combinations from multi-value dimensions.
+   * Returns cartesian product of all dimension value arrays.
+   */
+  buildChannelCombinations(multiValueDims) {
+    let combinations = [[]];
+    let labelCombinations = [[]];
+    for (const { values, labels } of multiValueDims) {
+      const nextCombos = [];
+      const nextLabels = [];
+      for (let idx = 0; idx < values.length; idx++) {
+        for (let c = 0; c < combinations.length; c++) {
+          nextCombos.push([...combinations[c], values[idx]]);
+          nextLabels.push([...labelCombinations[c], labels[idx]]);
+        }
+      }
+      combinations = nextCombos;
+      labelCombinations = nextLabels;
+    }
+    return { combinations, labelCombinations };
+  }
+  /**
    * Get geographic bounds for a region.
    * Accounts for data orientation (latIsAscending).
    */
@@ -8655,7 +8695,6 @@ var UntiledMode = class {
     }
     const lonFactor = Math.max(1, lonSpan / 180);
     subdivisions = Math.ceil(subdivisions * Math.sqrt(lonFactor));
-    console.log("subdivisions", subdivisions);
     return Math.max(4, Math.min(64, subdivisions));
   }
   /**
@@ -8928,16 +8967,7 @@ var UntiledMode = class {
       baseSliceArgs[lonIdx] = slice(xStart, xEnd);
       const desc = this.zarrStore.describe();
       const fillValue = desc.fill_value;
-      let channelCombinations = [[]];
-      for (const { values } of this.baseMultiValueDims) {
-        const next = [];
-        for (const val of values) {
-          for (const combo of channelCombinations) {
-            next.push([...combo, val]);
-          }
-        }
-        channelCombinations = next;
-      }
+      const { combinations: channelCombinations } = this.buildChannelCombinations(this.baseMultiValueDims);
       const numChannels = channelCombinations.length || 1;
       const pixelCount = actualW * actualH;
       const bandArrays = [];
@@ -9040,7 +9070,7 @@ var UntiledMode = class {
       const mapZoom = map.getZoom?.() ?? 0;
       const bestLevelIndex = this.selectLevelForZoom(mapZoom);
       if (this.currentLevelIndex === -1) {
-        this.initializeLevel(bestLevelIndex, gl);
+        this.initializeLevel(bestLevelIndex);
         return;
       } else if (bestLevelIndex !== this.currentLevelIndex) {
         this.switchToLevel(bestLevelIndex, gl);
@@ -9063,7 +9093,7 @@ var UntiledMode = class {
       }
     }
   }
-  async initializeLevel(levelIndex, gl) {
+  async initializeLevel(levelIndex) {
     if (levelIndex < 0 || levelIndex >= this.levels.length) {
       return;
     }
@@ -9213,21 +9243,7 @@ var UntiledMode = class {
         textureUnit++;
       }
     }
-    const isRegionValid = (region) => {
-      return !!(region.data && region.textureUploaded && region.texture && region.vertexBuffer && region.pixCoordBuffer && region.vertexArr && region.mercatorBounds);
-    };
-    const regionsToRender = [];
-    for (const region of this.previousRegionCache.values()) {
-      if (isRegionValid(region)) {
-        regionsToRender.push(region);
-      }
-    }
-    for (const region of this.regionCache.values()) {
-      if (isRegionValid(region)) {
-        regionsToRender.push(region);
-      }
-    }
-    for (const region of regionsToRender) {
+    for (const region of this.getLoadedRegions()) {
       const bounds = region.mercatorBounds;
       const scaleX = (bounds.x1 - bounds.x0) / 2;
       const scaleY = (bounds.y1 - bounds.y0) / 2;
@@ -9329,11 +9345,7 @@ var UntiledMode = class {
     if (!this.regionSize) {
       return [];
     }
-    const states = [];
-    const isRegionValid = (region) => {
-      return !!(region.data && region.textureUploaded && region.texture && region.vertexBuffer && region.pixCoordBuffer && region.vertexArr && region.mercatorBounds);
-    };
-    const createRenderState = (region) => ({
+    return this.getLoadedRegions().map((region) => ({
       texture: region.texture,
       vertexBuffer: region.vertexBuffer,
       pixCoordBuffer: region.pixCoordBuffer,
@@ -9343,18 +9355,7 @@ var UntiledMode = class {
       height: region.height,
       channels: this.channels,
       latIsAscending: this.latIsAscending ?? void 0
-    });
-    for (const region of this.previousRegionCache.values()) {
-      if (isRegionValid(region)) {
-        states.push(createRenderState(region));
-      }
-    }
-    for (const region of this.regionCache.values()) {
-      if (isRegionValid(region)) {
-        states.push(createRenderState(region));
-      }
-    }
-    return states;
+    }));
   }
   dispose(gl) {
     this.isRemoved = true;
@@ -9388,21 +9389,20 @@ var UntiledMode = class {
     this.selector = selector;
     this.bandNames = getBands(this.variable, selector);
     const gl = this.cachedGl;
-    if (this.regionSize && gl) {
-      this.selectorVersion++;
-      await this.buildBaseSliceArgs();
-      this.lastViewportHash = "";
+    if (!gl) {
       this.invalidate();
-    } else if (gl && this.zarrArray) {
-      const detectedRegionSize = this.getRegionSize(this.zarrArray);
-      this.regionSize = detectedRegionSize ?? [this.height, this.width];
-      this.selectorVersion++;
-      await this.buildBaseSliceArgs();
-      this.lastViewportHash = "";
-      this.invalidate();
-    } else {
-      this.invalidate();
+      return;
     }
+    if (!this.regionSize && this.zarrArray) {
+      this.regionSize = this.getRegionSize(this.zarrArray) ?? [
+        this.height,
+        this.width
+      ];
+    }
+    this.selectorVersion++;
+    await this.buildBaseSliceArgs();
+    this.lastViewportHash = "";
+    this.invalidate();
   }
   emitLoadingState() {
     if (this.throttleState.throttledPending && !this.loadingManager.chunksLoading) {
@@ -9450,22 +9450,10 @@ var UntiledMode = class {
         trackMultiValue: true,
         spatialBounds: spatialQuery
       });
-      let channelCombinations = [[]];
-      let channelLabelCombinations = [[]];
-      for (const { values, labels } of multiValueDims) {
-        const next = [];
-        const nextLabels = [];
-        for (let idx = 0; idx < values.length; idx++) {
-          const val = values[idx];
-          const label = labels[idx];
-          for (let c = 0; c < channelCombinations.length; c++) {
-            next.push([...channelCombinations[c], val]);
-            nextLabels.push([...channelLabelCombinations[c], label]);
-          }
-        }
-        channelCombinations = next;
-        channelLabelCombinations = nextLabels;
-      }
+      const {
+        combinations: channelCombinations,
+        labelCombinations: channelLabelCombinations
+      } = this.buildChannelCombinations(multiValueDims);
       const numChannels = channelCombinations.length || 1;
       const multiValueDimNames = multiValueDims.map((d) => d.dimName);
       if (spatialQuery.type === "point") {

@@ -384,6 +384,61 @@ export class UntiledMode implements ZarrMode {
   }
 
   /**
+   * Check if a region has all required data for rendering.
+   */
+  private isRegionValid(region: RegionState): boolean {
+    return !!(
+      region.data &&
+      region.textureUploaded &&
+      region.texture &&
+      region.vertexBuffer &&
+      region.pixCoordBuffer &&
+      region.vertexArr &&
+      region.mercatorBounds
+    )
+  }
+
+  /**
+   * Get all loaded regions from both caches (previous first for fallback, then current).
+   */
+  private getLoadedRegions(): RegionState[] {
+    const regions: RegionState[] = []
+    for (const region of this.previousRegionCache.values()) {
+      if (this.isRegionValid(region)) regions.push(region)
+    }
+    for (const region of this.regionCache.values()) {
+      if (this.isRegionValid(region)) regions.push(region)
+    }
+    return regions
+  }
+
+  /**
+   * Build all index combinations from multi-value dimensions.
+   * Returns cartesian product of all dimension value arrays.
+   */
+  private buildChannelCombinations(
+    multiValueDims: Array<{ values: number[]; labels: (number | string)[] }>
+  ): { combinations: number[][]; labelCombinations: (number | string)[][] } {
+    let combinations: number[][] = [[]]
+    let labelCombinations: (number | string)[][] = [[]]
+
+    for (const { values, labels } of multiValueDims) {
+      const nextCombos: number[][] = []
+      const nextLabels: (number | string)[][] = []
+      for (let idx = 0; idx < values.length; idx++) {
+        for (let c = 0; c < combinations.length; c++) {
+          nextCombos.push([...combinations[c], values[idx]])
+          nextLabels.push([...labelCombinations[c], labels[idx]])
+        }
+      }
+      combinations = nextCombos
+      labelCombinations = nextLabels
+    }
+
+    return { combinations, labelCombinations }
+  }
+
+  /**
    * Get geographic bounds for a region.
    * Accounts for data orientation (latIsAscending).
    */
@@ -480,7 +535,6 @@ export class UntiledMode implements ZarrMode {
     subdivisions = Math.ceil(subdivisions * Math.sqrt(lonFactor))
 
     // Clamp to reasonable range: minimum 4, maximum 64
-    console.log('subdivisions', subdivisions)
     return Math.max(4, Math.min(64, subdivisions))
   }
 
@@ -921,18 +975,8 @@ export class UntiledMode implements ZarrMode {
       const desc = this.zarrStore.describe()
       const fillValue = desc.fill_value
 
-      // Build channel combinations from multi-value dimensions
-      let channelCombinations: number[][] = [[]]
-      for (const { values } of this.baseMultiValueDims) {
-        const next: number[][] = []
-        for (const val of values) {
-          for (const combo of channelCombinations) {
-            next.push([...combo, val])
-          }
-        }
-        channelCombinations = next
-      }
-
+      const { combinations: channelCombinations } =
+        this.buildChannelCombinations(this.baseMultiValueDims)
       const numChannels = channelCombinations.length || 1
       const pixelCount = actualW * actualH
 
@@ -1071,7 +1115,7 @@ export class UntiledMode implements ZarrMode {
       // Initial load or level switch needed
       if (this.currentLevelIndex === -1) {
         // First time - load the appropriate level for current zoom
-        this.initializeLevel(bestLevelIndex, gl)
+        this.initializeLevel(bestLevelIndex)
         return
       } else if (bestLevelIndex !== this.currentLevelIndex) {
         // Zoom changed enough to warrant level switch
@@ -1107,10 +1151,7 @@ export class UntiledMode implements ZarrMode {
     }
   }
 
-  private async initializeLevel(
-    levelIndex: number,
-    gl?: WebGL2RenderingContext
-  ): Promise<void> {
+  private async initializeLevel(levelIndex: number): Promise<void> {
     if (levelIndex < 0 || levelIndex >= this.levels.length) {
       return
     }
@@ -1326,34 +1367,8 @@ export class UntiledMode implements ZarrMode {
       }
     }
 
-    // Helper to check if a region is valid for rendering
-    const isRegionValid = (region: RegionState): boolean => {
-      return !!(
-        region.data &&
-        region.textureUploaded &&
-        region.texture &&
-        region.vertexBuffer &&
-        region.pixCoordBuffer &&
-        region.vertexArr &&
-        region.mercatorBounds
-      )
-    }
-
-    // Collect regions to render (previous cache for fallback, then current)
-    const regionsToRender: RegionState[] = []
-    for (const region of this.previousRegionCache.values()) {
-      if (isRegionValid(region)) {
-        regionsToRender.push(region)
-      }
-    }
-    for (const region of this.regionCache.values()) {
-      if (isRegionValid(region)) {
-        regionsToRender.push(region)
-      }
-    }
-
-    // Render each region
-    for (const region of regionsToRender) {
+    // Render each loaded region
+    for (const region of this.getLoadedRegions()) {
       const bounds = region.mercatorBounds!
 
       // Compute scale and shift from mercator bounds
@@ -1490,28 +1505,11 @@ export class UntiledMode implements ZarrMode {
    * Includes previous level regions as fallback during level transitions.
    */
   private getRegionStates(): RegionRenderState[] {
-    // Return empty if not yet initialized (regionSize not set)
     if (!this.regionSize) {
       return []
     }
 
-    const states: RegionRenderState[] = []
-
-    // Helper to check if a region is valid for rendering
-    const isRegionValid = (region: RegionState): boolean => {
-      return !!(
-        region.data &&
-        region.textureUploaded &&
-        region.texture &&
-        region.vertexBuffer &&
-        region.pixCoordBuffer &&
-        region.vertexArr &&
-        region.mercatorBounds
-      )
-    }
-
-    // Helper to create render state from region
-    const createRenderState = (region: RegionState): RegionRenderState => ({
+    return this.getLoadedRegions().map((region) => ({
       texture: region.texture!,
       vertexBuffer: region.vertexBuffer!,
       pixCoordBuffer: region.pixCoordBuffer!,
@@ -1521,23 +1519,7 @@ export class UntiledMode implements ZarrMode {
       height: region.height,
       channels: this.channels,
       latIsAscending: this.latIsAscending ?? undefined,
-    })
-
-    // First, add previous level regions as fallback (rendered first/underneath)
-    for (const region of this.previousRegionCache.values()) {
-      if (isRegionValid(region)) {
-        states.push(createRenderState(region))
-      }
-    }
-
-    // Then add current level regions (rendered on top)
-    for (const region of this.regionCache.values()) {
-      if (isRegionValid(region)) {
-        states.push(createRenderState(region))
-      }
-    }
-
-    return states
+    }))
   }
 
   dispose(gl: WebGL2RenderingContext): void {
@@ -1580,28 +1562,25 @@ export class UntiledMode implements ZarrMode {
     this.selector = selector
     this.bandNames = getBands(this.variable, selector)
 
-    // Use cached gl context (always available after first update())
     const gl = this.cachedGl
-
-    if (this.regionSize && gl) {
-      // Region-based loading is active - update state and invalidate
-      // (throttling happens in fetchRegions)
-      this.selectorVersion++
-      await this.buildBaseSliceArgs()
-      this.lastViewportHash = '' // Force viewport recalculation
-      this.invalidate()
-    } else if (gl && this.zarrArray) {
-      // First time setup - initialize region size (no throttle)
-      const detectedRegionSize = this.getRegionSize(this.zarrArray)
-      this.regionSize = detectedRegionSize ?? [this.height, this.width]
-      this.selectorVersion++
-      await this.buildBaseSliceArgs()
-      this.lastViewportHash = ''
-      this.invalidate()
-    } else {
+    if (!gl) {
       // No gl context yet - selector is stored, update() will handle loading
       this.invalidate()
+      return
     }
+
+    // Initialize region size if needed
+    if (!this.regionSize && this.zarrArray) {
+      this.regionSize = this.getRegionSize(this.zarrArray) ?? [
+        this.height,
+        this.width,
+      ]
+    }
+
+    this.selectorVersion++
+    await this.buildBaseSliceArgs()
+    this.lastViewportHash = ''
+    this.invalidate()
   }
 
   private emitLoadingState(): void {
@@ -1690,24 +1669,10 @@ export class UntiledMode implements ZarrMode {
           spatialBounds: spatialQuery,
         })
 
-      // Build channel combinations from multi-value dimensions
-      let channelCombinations: number[][] = [[]]
-      let channelLabelCombinations: (number | string)[][] = [[]]
-      for (const { values, labels } of multiValueDims) {
-        const next: number[][] = []
-        const nextLabels: (number | string)[][] = []
-        for (let idx = 0; idx < values.length; idx++) {
-          const val = values[idx]
-          const label = labels[idx]
-          for (let c = 0; c < channelCombinations.length; c++) {
-            next.push([...channelCombinations[c], val])
-            nextLabels.push([...channelLabelCombinations[c], label])
-          }
-        }
-        channelCombinations = next
-        channelLabelCombinations = nextLabels
-      }
-
+      const {
+        combinations: channelCombinations,
+        labelCombinations: channelLabelCombinations,
+      } = this.buildChannelCombinations(multiValueDims)
       const numChannels = channelCombinations.length || 1
       const multiValueDimNames = multiValueDims.map((d) => d.dimName)
 
