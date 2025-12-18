@@ -33,7 +33,7 @@ import {
   computeWorldOffsets,
   resolveProjectionParams,
   isGlobeProjection as checkGlobeProjection,
-} from './render-utils'
+} from './map-utils'
 import type { QueryGeometry, QueryResult } from './query/types'
 
 export class ZarrLayer {

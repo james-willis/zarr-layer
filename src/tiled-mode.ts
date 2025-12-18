@@ -34,6 +34,7 @@ import { Tiles } from './tiles'
 import {
   getTilesAtZoom,
   getTilesAtZoomEquirect,
+  isGlobeProjection,
   latToMercatorNorm,
   lonToMercatorNorm,
   normalizeGlobalExtent,
@@ -53,7 +54,6 @@ import {
 } from './constants'
 import type { ZarrRenderer } from './zarr-renderer'
 import { renderMapboxTile } from './mapbox-globe-tile-renderer'
-import { isGlobeProjection } from './render-utils'
 
 export class TiledMode implements ZarrMode {
   isMultiscale: true = true
@@ -145,6 +145,16 @@ export class TiledMode implements ZarrMode {
       this.currentLevel = visibleInfo.pyramidLevel
     }
 
+    // Pass lat bounds to tile cache for coordinate warping (EPSG:4326 only)
+    for (const [tileKey, bounds] of Object.entries(this.tileBounds)) {
+      if (bounds.latMin !== undefined && bounds.latMax !== undefined) {
+        this.tileCache.setTileLatBounds(tileKey, {
+          min: bounds.latMin,
+          max: bounds.latMax,
+        })
+      }
+    }
+
     const currentHash = JSON.stringify(this.selector)
     const tilesToFetch: TileTuple[] = []
 
@@ -224,6 +234,7 @@ export class TiledMode implements ZarrMode {
       this.tileSize,
       this.vertexArr,
       this.pixCoordArr,
+      this.zarrStore.latIsAscending,
       Object.keys(this.tileBounds).length > 0 ? this.tileBounds : undefined,
       context.customShaderConfig,
       false
@@ -257,6 +268,7 @@ export class TiledMode implements ZarrMode {
       pixCoordArr: this.pixCoordArr,
       tileBounds:
         Object.keys(this.tileBounds).length > 0 ? this.tileBounds : undefined,
+      latIsAscending: this.zarrStore.latIsAscending,
     }
   }
 

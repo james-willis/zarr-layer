@@ -41,6 +41,7 @@ export interface TiledRenderState {
   vertexArr: Float32Array
   pixCoordArr: Float32Array
   tileBounds?: Record<string, MercatorBounds>
+  latIsAscending: boolean | null
 }
 
 export interface RegionRenderState {

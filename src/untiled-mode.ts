@@ -28,17 +28,13 @@ import type {
 import { ZarrStore } from './zarr-store'
 import {
   boundsToMercatorNorm,
-  mercatorNormToLat,
+  createWarpedTexCoords,
+  flipTexCoordV,
   type MercatorBounds,
   type XYLimits,
 } from './map-utils'
 import { loadDimensionValues, normalizeSelector, getBands } from './zarr-utils'
-import {
-  createSubdividedQuad,
-  normalizeDataForTexture,
-  configureDataTexture,
-  getTextureFormats,
-} from './webgl-utils'
+import { createSubdividedQuad, normalizeDataForTexture } from './webgl-utils'
 import type { ZarrRenderer, ShaderProgram } from './zarr-renderer'
 import type { CustomShaderConfig } from './renderer-types'
 import { renderMapboxTile } from './mapbox-globe-tile-renderer'
@@ -66,6 +62,8 @@ import {
   setLoadingCallback as setLoadingCallbackUtil,
   emitLoadingState as emitLoadingStateUtil,
 } from './mode-utils'
+import { setupBandTextureUniforms, uploadDataTexture } from './render-helpers'
+import { renderRegion, type RenderableRegion } from './renderable-region'
 
 /** State for a single region (chunk/shard) in region-based loading */
 interface RegionState {
@@ -142,7 +140,6 @@ export class UntiledMode implements ZarrMode {
   // Region-based loading (for multi-level datasets with chunking/sharding)
   private regionCache: Map<string, RegionState> = new Map()
   private previousRegionCache: Map<string, RegionState> = new Map() // Fallback during level transitions
-  private previousLevelIndex: number = -1 // Track which level the previous cache is from
   private regionSize: [number, number] | null = null // [height, width] of each region
   private lastViewportHash: string = ''
   private baseSliceArgs: (number | zarr.Slice)[] = [] // Cached slice args for non-spatial dims
@@ -280,7 +277,6 @@ export class UntiledMode implements ZarrMode {
   private clearPreviousRegionCache(gl: WebGL2RenderingContext): void {
     this.disposeRegionCache(this.previousRegionCache, gl)
     this.previousRegionCache.clear()
-    this.previousLevelIndex = -1
   }
 
   /**
@@ -482,67 +478,9 @@ export class UntiledMode implements ZarrMode {
   }
 
   /**
-   * Calculate the number of subdivisions needed for a region based on its
-   * geographic extent. Larger regions and higher latitudes need more subdivisions
-   * for accurate mercator warping.
-   */
-  private calculateRegionSubdivisions(geoBounds: {
-    xMin: number
-    xMax: number
-    yMin: number
-    yMax: number
-  }): number {
-    let latSpan: number
-    let lonSpan: number
-    let maxAbsLat: number
-
-    if (this.crs === 'EPSG:3857') {
-      // Convert mercator meters to approximate degrees for subdivision calculation
-      const WORLD_EXTENT = 20037508.342789244
-      // Normalize to 0-1 range then to degrees
-      latSpan =
-        (Math.abs(geoBounds.yMax - geoBounds.yMin) / (2 * WORLD_EXTENT)) * 180
-      lonSpan =
-        (Math.abs(geoBounds.xMax - geoBounds.xMin) / (2 * WORLD_EXTENT)) * 360
-      // Approximate max latitude from mercator Y
-      const maxAbsY = Math.max(
-        Math.abs(geoBounds.yMin),
-        Math.abs(geoBounds.yMax)
-      )
-      // mercatorY to lat: lat = atan(sinh(y / R)) where R = WORLD_EXTENT / PI
-      const R = WORLD_EXTENT / Math.PI
-      maxAbsLat = Math.abs(Math.atan(Math.sinh(maxAbsY / R)) * (180 / Math.PI))
-    } else {
-      // EPSG:4326 - already in degrees
-      latSpan = Math.abs(geoBounds.yMax - geoBounds.yMin)
-      lonSpan = Math.abs(geoBounds.xMax - geoBounds.xMin)
-      maxAbsLat = Math.max(Math.abs(geoBounds.yMin), Math.abs(geoBounds.yMax))
-    }
-
-    // Base subdivisions on latitude span (more span = more subdivisions)
-    // A full 180° span would need ~64 subdivisions, smaller spans proportionally less
-    let subdivisions = Math.ceil((latSpan / 180) * 64)
-
-    // Boost for high latitudes where mercator distortion is more severe
-    // At 60° latitude, mercator scale is 2x equatorial; at 80° it's ~6x
-    if (maxAbsLat > 60) {
-      const latBoost = 1 + (maxAbsLat - 60) / 25 // Up to 2x boost at 85°
-      subdivisions = Math.ceil(subdivisions * latBoost)
-    }
-
-    // Also consider longitude span for very wide regions
-    const lonFactor = Math.max(1, lonSpan / 180)
-    subdivisions = Math.ceil(subdivisions * Math.sqrt(lonFactor))
-
-    // Clamp to reasonable range: minimum 4, maximum 64
-    return Math.max(4, Math.min(64, subdivisions))
-  }
-
-  /**
    * Create geometry (vertex positions and tex coords) for a region.
-   * Uses subdivided geometry with pre-warped texture coordinates to account
-   * for mercator distortion (since geometry is in mercator space but texture
-   * is in linear latitude space).
+   * Uses subdivided geometry for smooth globe rendering and pre-warped
+   * texture coordinates for mercator display.
    */
   private createRegionGeometry(
     regionX: number,
@@ -556,8 +494,9 @@ export class UntiledMode implements ZarrMode {
     // Store mercator bounds for shader uniforms
     region.mercatorBounds = mercBounds
 
-    // Calculate subdivisions dynamically based on region size and latitude
-    const subdivisions = this.calculateRegionSubdivisions(geoBounds)
+    // Subdivisions for smooth globe tessellation - more for larger regions
+    const latSpan = Math.abs(geoBounds.yMax - geoBounds.yMin)
+    const subdivisions = Math.max(16, Math.min(128, Math.ceil(latSpan)))
     const subdivided = createSubdividedQuad(subdivisions)
 
     region.vertexArr = subdivided.vertexArr
@@ -566,45 +505,19 @@ export class UntiledMode implements ZarrMode {
     // (Globe rendering computes linear coords from vertexArr on demand)
     // For EPSG:4326 data, texture is in linear lat space but geometry is in mercator
     if (this.crs === 'EPSG:4326') {
-      const warped = new Float32Array(subdivided.texCoordArr.length)
-      const { y0, y1 } = mercBounds
-      const latMin = geoBounds.yMin
-      const latMax = geoBounds.yMax
-      const latRange = latMax - latMin
-
-      for (let i = 0; i < subdivided.vertexArr.length; i += 2) {
-        const u = subdivided.texCoordArr[i]
-        const normY = subdivided.vertexArr[i + 1] // vertex Y in [-1, 1]
-
-        // Compute mercator Y for this vertex
-        // vertex y=-1 maps to y1 (south), y=1 maps to y0 (north)
-        const mercY = y0 + ((1 - normY) / 2) * (y1 - y0)
-
-        // Convert mercator Y to latitude
-        const lat = mercatorNormToLat(mercY)
-
-        // Compute texture V for this latitude
-        let v = (lat - latMin) / latRange
-
-        // Handle latIsAscending (only flip if explicitly false, not null)
-        if (this.latIsAscending === false) {
-          // Data row 0 = north (latMax), so flip V
-          v = 1 - v
-        }
-
-        // Clamp to valid range
-        v = Math.max(0, Math.min(1, v))
-
-        warped[i] = u
-        warped[i + 1] = v
-      }
-      region.pixCoordArr = warped
+      region.pixCoordArr = createWarpedTexCoords(
+        subdivided.vertexArr,
+        subdivided.texCoordArr,
+        mercBounds,
+        { latMin: geoBounds.yMin, latMax: geoBounds.yMax },
+        this.latIsAscending
+      )
     } else {
       // EPSG:3857 - texture is already in mercator space, use linear coords
       // If latIsAscending (row 0 = south), flip V so V=0 samples north (row N-1)
       // If not ascending (row 0 = north), use coords as-is
       region.pixCoordArr = this.latIsAscending
-        ? this.flipTexCoordV(subdivided.texCoordArr)
+        ? flipTexCoordV(subdivided.texCoordArr)
         : subdivided.texCoordArr
     }
 
@@ -620,15 +533,6 @@ export class UntiledMode implements ZarrMode {
     gl.bufferData(gl.ARRAY_BUFFER, region.vertexArr, gl.STATIC_DRAW)
     gl.bindBuffer(gl.ARRAY_BUFFER, region.pixCoordBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, region.pixCoordArr, gl.STATIC_DRAW)
-  }
-
-  private flipTexCoordV(texCoords: Float32Array): Float32Array {
-    const flipped = new Float32Array(texCoords.length)
-    for (let i = 0; i < texCoords.length; i += 2) {
-      flipped[i] = texCoords[i]
-      flipped[i + 1] = 1 - texCoords[i + 1]
-    }
-    return flipped
   }
 
   /**
@@ -1068,26 +972,17 @@ export class UntiledMode implements ZarrMode {
       if (!region.texture) {
         region.texture = gl.createTexture()
       }
-      gl.bindTexture(gl.TEXTURE_2D, region.texture)
 
-      // Determine texture format based on channels
-      const { format, internalFormat } = getTextureFormats(gl, numChannels)
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        internalFormat,
-        actualW,
-        actualH,
-        0,
-        format,
-        gl.FLOAT,
-        normalized
-      )
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-      region.textureUploaded = true
+      // Upload texture using shared helper
+      const result = uploadDataTexture(gl, {
+        texture: region.texture!,
+        data: normalized,
+        width: actualW,
+        height: actualH,
+        channels: numChannels,
+        configured: false,
+      })
+      region.textureUploaded = result.uploaded
 
       // Create geometry for this region
       this.createRegionGeometry(regionX, regionY, gl, region)
@@ -1267,7 +1162,6 @@ export class UntiledMode implements ZarrMode {
     // Cancel any pending region requests
     cancelAllRequests(this.requestCanceller)
 
-    const oldLevelIndex = this.currentLevelIndex
     this.currentLevelIndex = newLevelIndex
 
     try {
@@ -1287,7 +1181,6 @@ export class UntiledMode implements ZarrMode {
       // Clear any existing previous cache first
       this.clearPreviousRegionCache(gl)
       this.previousRegionCache = this.regionCache
-      this.previousLevelIndex = oldLevelIndex
       this.regionCache = new Map()
 
       this.zarrArray = newArray
@@ -1337,8 +1230,26 @@ export class UntiledMode implements ZarrMode {
   }
 
   /**
-   * Render all loaded regions.
-   * Iterates over region caches directly to access band data for custom shaders.
+   * Convert a RegionState to a RenderableRegion for unified rendering.
+   */
+  private regionToRenderable(region: RegionState): RenderableRegion {
+    return {
+      mercatorBounds: region.mercatorBounds!,
+      vertexBuffer: region.vertexBuffer!,
+      pixCoordBuffer: region.pixCoordBuffer!,
+      vertexCount: region.vertexArr!.length / 2,
+      texture: region.texture!,
+      bandData: region.bandData,
+      bandTextures: region.bandTextures,
+      bandTexturesUploaded: region.bandTexturesUploaded,
+      bandTexturesConfigured: region.bandTexturesConfigured,
+      width: region.width,
+      height: region.height,
+    }
+  }
+
+  /**
+   * Render all loaded regions using the unified render path.
    * Note: Regions have geometry already positioned in mercator space,
    * so we disable the equirectangular shader correction to avoid double transformation.
    */
@@ -1355,126 +1266,18 @@ export class UntiledMode implements ZarrMode {
       gl.uniform1i(shaderProgram.isEquirectangularLoc, 0)
     }
 
-    // Set band texture uniform locations if using custom shader
-    if (shaderProgram.useCustomShader && customShaderConfig) {
-      let textureUnit = 2 // 0 = main texture, 1 = colormap
-      for (const bandName of customShaderConfig.bands) {
-        const loc = shaderProgram.bandTexLocs.get(bandName)
-        if (loc) {
-          gl.uniform1i(loc, textureUnit)
-        }
-        textureUnit++
-      }
-    }
+    // Set up band texture uniforms once per frame
+    setupBandTextureUniforms(gl, shaderProgram, customShaderConfig)
 
-    // Render each loaded region
+    // Render each loaded region using unified path
     for (const region of this.getLoadedRegions()) {
-      const bounds = region.mercatorBounds!
-
-      // Compute scale and shift from mercator bounds
-      // Transform: final = vertex * scale + shift
-      // vertex range is [-1, 1], maps to [x0, x1]
-      const scaleX = (bounds.x1 - bounds.x0) / 2
-      const scaleY = (bounds.y1 - bounds.y0) / 2
-      const shiftX = (bounds.x0 + bounds.x1) / 2
-      const shiftY = (bounds.y0 + bounds.y1) / 2
-
-      gl.uniform1f(shaderProgram.scaleLoc, 0)
-      gl.uniform1f(shaderProgram.scaleXLoc, scaleX)
-      gl.uniform1f(shaderProgram.scaleYLoc, scaleY)
-      gl.uniform1f(shaderProgram.shiftXLoc, shiftX)
-      gl.uniform1f(shaderProgram.shiftYLoc, shiftY)
-
-      // For flat map, pixCoordArr already accounts for latIsAscending via pre-warping,
-      // so use identity texture transform (no additional flip needed)
-      gl.uniform2f(shaderProgram.texScaleLoc, 1.0, 1.0)
-      gl.uniform2f(shaderProgram.texOffsetLoc, 0.0, 0.0)
-
-      // Bind vertex buffer
-      gl.bindBuffer(gl.ARRAY_BUFFER, region.vertexBuffer)
-      gl.enableVertexAttribArray(shaderProgram.vertexLoc)
-      gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0)
-
-      // Bind texture coordinate buffer (use warped pixCoordBuffer for flat map)
-      gl.bindBuffer(gl.ARRAY_BUFFER, region.pixCoordBuffer)
-      gl.enableVertexAttribArray(shaderProgram.pixCoordLoc)
-      gl.vertexAttribPointer(
-        shaderProgram.pixCoordLoc,
-        2,
-        gl.FLOAT,
-        false,
-        0,
-        0
+      renderRegion(
+        gl,
+        shaderProgram,
+        this.regionToRenderable(region),
+        worldOffsets,
+        customShaderConfig
       )
-
-      // Bind main texture
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, region.texture)
-      gl.uniform1i(shaderProgram.texLoc, 0)
-
-      // Bind band textures if using custom shader
-      if (shaderProgram.useCustomShader && customShaderConfig) {
-        let textureUnit = 2
-        let missingBandData = false
-
-        for (const bandName of customShaderConfig.bands) {
-          const bandData = region.bandData.get(bandName)
-          if (!bandData) {
-            missingBandData = true
-            break
-          }
-
-          // Create band texture if it doesn't exist
-          let bandTex = region.bandTextures.get(bandName)
-          if (!bandTex) {
-            bandTex = gl.createTexture()
-            if (!bandTex) {
-              missingBandData = true
-              break
-            }
-            region.bandTextures.set(bandName, bandTex)
-          }
-
-          gl.activeTexture(gl.TEXTURE0 + textureUnit)
-          gl.bindTexture(gl.TEXTURE_2D, bandTex)
-
-          // Configure texture parameters if not yet done
-          if (!region.bandTexturesConfigured.has(bandName)) {
-            configureDataTexture(gl)
-            region.bandTexturesConfigured.add(bandName)
-          }
-
-          // Upload texture data if not yet done
-          if (!region.bandTexturesUploaded.has(bandName)) {
-            gl.texImage2D(
-              gl.TEXTURE_2D,
-              0,
-              gl.R32F,
-              region.width,
-              region.height,
-              0,
-              gl.RED,
-              gl.FLOAT,
-              bandData
-            )
-            region.bandTexturesUploaded.add(bandName)
-          }
-
-          textureUnit++
-        }
-
-        // Skip this region if any band data is missing
-        if (missingBandData) {
-          continue
-        }
-      }
-
-      // Draw for each world offset (for map wrapping)
-      const vertexCount = region.vertexArr!.length / 2
-      for (const worldOffset of worldOffsets) {
-        gl.uniform1f(shaderProgram.worldXOffsetLoc, worldOffset)
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexCount)
-      }
     }
   }
 

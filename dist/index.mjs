@@ -5686,202 +5686,385 @@ function geoToArrayIndex(geo, geoMin, geoMax, arraySize) {
     Math.max(0, Math.min(arraySize - 1, normalized * arraySize))
   );
 }
+function createWarpedTexCoords(vertexArr, texCoordArr, mercatorBounds, latBounds, latIsAscending) {
+  const warped = new Float32Array(texCoordArr.length);
+  const { y0, y1 } = mercatorBounds;
+  const { latMin, latMax } = latBounds;
+  const latRange = latMax - latMin;
+  for (let i = 0; i < vertexArr.length; i += 2) {
+    const u = texCoordArr[i];
+    const normY = vertexArr[i + 1];
+    const mercY = y0 + (1 - normY) / 2 * (y1 - y0);
+    const lat = mercatorNormToLat(mercY);
+    let v = (lat - latMin) / latRange;
+    if (latIsAscending === false) {
+      v = 1 - v;
+    }
+    v = Math.max(0, Math.min(1, v));
+    warped[i] = u;
+    warped[i + 1] = v;
+  }
+  return warped;
+}
+function flipTexCoordV(texCoords) {
+  const flipped = new Float32Array(texCoords.length);
+  for (let i = 0; i < texCoords.length; i += 2) {
+    flipped[i] = texCoords[i];
+    flipped[i + 1] = 1 - texCoords[i + 1];
+  }
+  return flipped;
+}
+function isGlobeProjection(projection) {
+  return projection?.type === "globe" || projection?.name === "globe";
+}
+function resolveProjectionParams(params, projection, projectionToMercatorMatrix, projectionToMercatorTransition) {
+  const paramsObj = params && typeof params === "object" && !Array.isArray(params) && !ArrayBuffer.isView(params) ? params : null;
+  const shaderData = paramsObj?.shaderData;
+  let projectionData;
+  const defaultProj = paramsObj?.defaultProjectionData;
+  if (defaultProj && defaultProj.mainMatrix && defaultProj.fallbackMatrix && defaultProj.tileMercatorCoords && defaultProj.clippingPlane && typeof defaultProj.projectionTransition === "number") {
+    projectionData = {
+      mainMatrix: defaultProj.mainMatrix,
+      fallbackMatrix: defaultProj.fallbackMatrix,
+      tileMercatorCoords: defaultProj.tileMercatorCoords,
+      clippingPlane: defaultProj.clippingPlane,
+      projectionTransition: defaultProj.projectionTransition
+    };
+  }
+  let matrix = null;
+  if (projectionData?.mainMatrix && projectionData.mainMatrix.length) {
+    matrix = projectionData.mainMatrix;
+  } else if (Array.isArray(params) || params instanceof Float32Array || params instanceof Float64Array) {
+    matrix = params;
+  } else if (paramsObj?.modelViewProjectionMatrix) {
+    matrix = paramsObj.modelViewProjectionMatrix;
+  } else if (paramsObj?.projectionMatrix) {
+    matrix = paramsObj.projectionMatrix;
+  }
+  const mapboxGlobe = projection && projectionToMercatorMatrix !== void 0 ? {
+    projection,
+    globeToMercatorMatrix: projectionToMercatorMatrix,
+    transition: typeof projectionToMercatorTransition === "number" ? projectionToMercatorTransition : 0
+  } : void 0;
+  return { matrix, shaderData, projectionData, mapboxGlobe };
+}
+function computeWorldOffsets(map, isGlobe) {
+  if (!map) return [0];
+  const bounds = map.getBounds ? map.getBounds() : null;
+  if (!bounds) return [0];
+  const renderWorldCopies = typeof map.getRenderWorldCopies === "function" ? map.getRenderWorldCopies() : true;
+  if (isGlobe || !renderWorldCopies) return [0];
+  const west = bounds.getWest();
+  const east = bounds.getEast();
+  let effectiveEast = east;
+  if (west > east) {
+    effectiveEast = east + 360;
+  }
+  const minWorld = Math.floor((west + 180) / 360);
+  const maxWorld = Math.floor((effectiveEast + 180) / 360);
+  const worldOffsets = [];
+  for (let i = minWorld; i <= maxWorld; i++) {
+    worldOffsets.push(i);
+  }
+  return worldOffsets.length > 0 ? worldOffsets : [0];
+}
 
-// src/tile-renderer.ts
-function renderTiles(gl, shaderProgram, visibleTiles, worldOffsets, tileCache, tileSize, vertexArr, pixCoordArr, tileBounds, customShaderConfig, isGlobeTileRender = false, tileTexOverrides) {
-  if (shaderProgram.useCustomShader && customShaderConfig) {
-    let textureUnit = 2;
-    for (const bandName of customShaderConfig.bands) {
-      const loc = shaderProgram.bandTexLocs.get(bandName);
-      if (loc) {
-        gl.uniform1i(loc, textureUnit);
+// src/render-helpers.ts
+function setupBandTextureUniforms(gl, shaderProgram, customShaderConfig) {
+  if (!shaderProgram.useCustomShader || !customShaderConfig) return;
+  let textureUnit = 2;
+  for (const bandName of customShaderConfig.bands) {
+    const loc = shaderProgram.bandTexLocs.get(bandName);
+    if (loc) {
+      gl.uniform1i(loc, textureUnit);
+    }
+    textureUnit++;
+  }
+}
+function bindBandTextures(gl, options) {
+  const {
+    bandData,
+    bandTextures,
+    bandTexturesUploaded,
+    bandTexturesConfigured,
+    customShaderConfig,
+    width,
+    height,
+    ensureTexture
+  } = options;
+  let textureUnit = 2;
+  for (const bandName of customShaderConfig.bands) {
+    const data = bandData.get(bandName);
+    if (!data) {
+      return false;
+    }
+    let bandTex = bandTextures.get(bandName);
+    if (!bandTex) {
+      if (ensureTexture) {
+        const newTex = ensureTexture(bandName);
+        if (newTex) {
+          bandTex = newTex;
+          bandTextures.set(bandName, bandTex);
+        }
+      } else {
+        bandTex = gl.createTexture();
+        if (bandTex) {
+          bandTextures.set(bandName, bandTex);
+        }
       }
-      textureUnit++;
+    }
+    if (!bandTex) {
+      return false;
+    }
+    gl.activeTexture(gl.TEXTURE0 + textureUnit);
+    gl.bindTexture(gl.TEXTURE_2D, bandTex);
+    if (!bandTexturesConfigured.has(bandName)) {
+      configureDataTexture(gl);
+      bandTexturesConfigured.add(bandName);
+    }
+    if (!bandTexturesUploaded.has(bandName)) {
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.R32F,
+        width,
+        height,
+        0,
+        gl.RED,
+        gl.FLOAT,
+        data
+      );
+      bandTexturesUploaded.add(bandName);
+    }
+    textureUnit++;
+  }
+  return true;
+}
+function bindGeometryBuffers(gl, shaderProgram, vertexBuffer, pixCoordBuffer) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+  gl.enableVertexAttribArray(shaderProgram.vertexLoc);
+  gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, pixCoordBuffer);
+  gl.enableVertexAttribArray(shaderProgram.pixCoordLoc);
+  gl.vertexAttribPointer(shaderProgram.pixCoordLoc, 2, gl.FLOAT, false, 0, 0);
+}
+function uploadDataTexture(gl, options) {
+  const { texture, data, width, height, channels, configured } = options;
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  if (!configured) {
+    configureDataTexture(gl);
+  }
+  const { format, internalFormat } = getTextureFormats(gl, channels);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    internalFormat,
+    width,
+    height,
+    0,
+    format,
+    gl.FLOAT,
+    data
+  );
+  return { configured: true, uploaded: true };
+}
+
+// src/renderable-region.ts
+function renderRegion(gl, shaderProgram, region, worldOffsets, customShaderConfig) {
+  const bounds = region.mercatorBounds;
+  const scaleX = (bounds.x1 - bounds.x0) / 2;
+  const scaleY = (bounds.y1 - bounds.y0) / 2;
+  const shiftX = (bounds.x0 + bounds.x1) / 2;
+  const shiftY = (bounds.y0 + bounds.y1) / 2;
+  gl.uniform1f(shaderProgram.scaleLoc, 0);
+  gl.uniform1f(shaderProgram.scaleXLoc, scaleX);
+  gl.uniform1f(shaderProgram.scaleYLoc, scaleY);
+  gl.uniform1f(shaderProgram.shiftXLoc, shiftX);
+  gl.uniform1f(shaderProgram.shiftYLoc, shiftY);
+  const texScale = region.texScale ?? [1, 1];
+  const texOffset = region.texOffset ?? [0, 0];
+  gl.uniform2f(shaderProgram.texScaleLoc, texScale[0], texScale[1]);
+  gl.uniform2f(shaderProgram.texOffsetLoc, texOffset[0], texOffset[1]);
+  bindGeometryBuffers(
+    gl,
+    shaderProgram,
+    region.vertexBuffer,
+    region.pixCoordBuffer
+  );
+  if (shaderProgram.useCustomShader && customShaderConfig) {
+    const bandsBound = bindBandTextures(gl, {
+      bandData: region.bandData,
+      bandTextures: region.bandTextures,
+      bandTexturesUploaded: region.bandTexturesUploaded,
+      bandTexturesConfigured: region.bandTexturesConfigured,
+      customShaderConfig,
+      width: region.width,
+      height: region.height,
+      ensureTexture: region.ensureBandTexture
+    });
+    if (!bandsBound) {
+      return false;
+    }
+  } else {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, region.texture);
+    if (shaderProgram.texLoc !== null) {
+      gl.uniform1i(shaderProgram.texLoc, 0);
     }
   }
-  const vertexCount = vertexArr.length / 2;
   for (const worldOffset of worldOffsets) {
-    gl.uniform1f(
-      shaderProgram.worldXOffsetLoc,
-      isGlobeTileRender ? 0 : worldOffset
+    gl.uniform1f(shaderProgram.worldXOffsetLoc, worldOffset);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, region.vertexCount);
+  }
+  return true;
+}
+
+// src/tile-renderer.ts
+function prepareTileGeometry(gl, tile, vertexArr, pixCoordArr, bounds, latIsAscending, isGlobeTileRender) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, tile.vertexBuffer);
+  if (!tile.geometryUploaded) {
+    gl.bufferData(gl.ARRAY_BUFFER, vertexArr, gl.STATIC_DRAW);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, tile.pixCoordBuffer);
+  if (!tile.geometryUploaded) {
+    gl.bufferData(gl.ARRAY_BUFFER, pixCoordArr, gl.STATIC_DRAW);
+    tile.geometryUploaded = true;
+  }
+  const useWarpedCoords = !isGlobeTileRender && tile.latBounds && bounds?.latMin !== void 0 && tile.warpedPixCoordBuffer;
+  if (useWarpedCoords && !tile.warpedGeometryUploaded) {
+    const warpedCoords = createWarpedTexCoords(
+      vertexArr,
+      pixCoordArr,
+      {
+        x0: bounds.x0,
+        x1: bounds.x1,
+        y0: bounds.y0,
+        y1: bounds.y1
+      },
+      {
+        latMin: tile.latBounds.min,
+        latMax: tile.latBounds.max
+      },
+      latIsAscending
     );
-    for (const tileTuple of visibleTiles) {
-      const [z, x, y] = tileTuple;
-      const tileKey = tileToKey(tileTuple);
-      const tile = tileCache.get(tileKey);
-      const bounds = tileBounds?.[tileKey];
-      let tileToRender = null;
-      let renderTileKey = tileKey;
-      let texScale = [1, 1];
-      let texOffset = [0, 0];
-      if (tile && tile.data) {
-        tileToRender = tile;
-      } else {
-        const parent = findBestParentTile(tileCache, z, x, y);
-        if (parent) {
-          tileToRender = parent.tile;
-          renderTileKey = tileToKey([
-            parent.ancestorZ,
-            parent.ancestorX,
-            parent.ancestorY
-          ]);
-          const levelDiff = z - parent.ancestorZ;
-          const divisor = Math.pow(2, levelDiff);
-          const localX = x % divisor;
-          const localY = y % divisor;
-          texScale = [1 / divisor, 1 / divisor];
-          texOffset = [localX / divisor, localY / divisor];
-        }
+    gl.bindBuffer(gl.ARRAY_BUFFER, tile.warpedPixCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW);
+    tile.warpedGeometryUploaded = true;
+  }
+  return useWarpedCoords && tile.warpedGeometryUploaded ? tile.warpedPixCoordBuffer : tile.pixCoordBuffer;
+}
+function tileToRenderable(tile, bounds, pixCoordBuffer, vertexCount, tileSize, texScale, texOffset, tileCache, renderTileKey) {
+  return {
+    mercatorBounds: bounds,
+    vertexBuffer: tile.vertexBuffer,
+    pixCoordBuffer,
+    vertexCount,
+    texture: tile.tileTexture,
+    bandData: tile.bandData,
+    bandTextures: tile.bandTextures,
+    bandTexturesUploaded: tile.bandTexturesUploaded,
+    bandTexturesConfigured: tile.bandTexturesConfigured,
+    width: tileSize,
+    height: tileSize,
+    texScale,
+    texOffset,
+    ensureBandTexture: (bandName) => tileCache.ensureBandTexture(renderTileKey, bandName)
+  };
+}
+function renderTiles(gl, shaderProgram, visibleTiles, worldOffsets, tileCache, tileSize, vertexArr, pixCoordArr, latIsAscending, tileBounds, customShaderConfig, isGlobeTileRender = false, tileTexOverrides) {
+  setupBandTextureUniforms(gl, shaderProgram, customShaderConfig);
+  const vertexCount = vertexArr.length / 2;
+  for (const tileTuple of visibleTiles) {
+    const [z, x, y] = tileTuple;
+    const tileKey = tileToKey(tileTuple);
+    const tile = tileCache.get(tileKey);
+    const bounds = tileBounds?.[tileKey];
+    let tileToRender = null;
+    let renderTileKey = tileKey;
+    let texScale = [1, 1];
+    let texOffset = [0, 0];
+    if (tile && tile.data) {
+      tileToRender = tile;
+    } else {
+      const parent = findBestParentTile(tileCache, z, x, y);
+      if (parent) {
+        tileToRender = parent.tile;
+        renderTileKey = tileToKey([
+          parent.ancestorZ,
+          parent.ancestorX,
+          parent.ancestorY
+        ]);
+        const levelDiff = z - parent.ancestorZ;
+        const divisor = Math.pow(2, levelDiff);
+        const localX = x % divisor;
+        const localY = y % divisor;
+        texScale = [1 / divisor, 1 / divisor];
+        texOffset = [localX / divisor, localY / divisor];
       }
-      if (!tileToRender || !tileToRender.data || !tileToRender.vertexBuffer || !tileToRender.pixCoordBuffer || !tileToRender.tileTexture) {
-        continue;
-      }
-      if (bounds) {
-        const scaleX = (bounds.x1 - bounds.x0) / 2;
-        const scaleY = (bounds.y1 - bounds.y0) / 2;
-        const shiftX = (bounds.x0 + bounds.x1) / 2;
-        const shiftY = (bounds.y0 + bounds.y1) / 2;
-        gl.uniform1f(shaderProgram.scaleLoc, 0);
-        gl.uniform1f(shaderProgram.scaleXLoc, scaleX);
-        gl.uniform1f(shaderProgram.scaleYLoc, scaleY);
-        gl.uniform1f(shaderProgram.shiftXLoc, shiftX);
-        gl.uniform1f(shaderProgram.shiftYLoc, shiftY);
-        if (shaderProgram.isEquirectangularLoc) {
-          gl.uniform1i(
-            shaderProgram.isEquirectangularLoc,
-            bounds.latMin !== void 0 ? 1 : 0
-          );
-        }
-        if (shaderProgram.latMinLoc && bounds.latMin !== void 0) {
-          gl.uniform1f(shaderProgram.latMinLoc, bounds.latMin);
-        }
-        if (shaderProgram.latMaxLoc && bounds.latMax !== void 0) {
-          gl.uniform1f(shaderProgram.latMaxLoc, bounds.latMax);
-        }
-      } else {
-        const [scale, shiftX, shiftY] = tileToScale(tileTuple);
-        gl.uniform1f(shaderProgram.scaleLoc, scale);
-        gl.uniform1f(shaderProgram.scaleXLoc, 0);
-        gl.uniform1f(shaderProgram.scaleYLoc, 0);
-        gl.uniform1f(shaderProgram.shiftXLoc, shiftX);
-        gl.uniform1f(shaderProgram.shiftYLoc, shiftY);
-        if (shaderProgram.isEquirectangularLoc) {
-          gl.uniform1i(shaderProgram.isEquirectangularLoc, 0);
-        }
-      }
-      if (isGlobeTileRender && tileTexOverrides?.[tileKey]) {
-        const override = tileTexOverrides[tileKey];
-        gl.uniform2f(
-          shaderProgram.texScaleLoc,
-          override.texScale[0],
-          override.texScale[1]
-        );
-        gl.uniform2f(
-          shaderProgram.texOffsetLoc,
-          override.texOffset[0],
-          override.texOffset[1]
-        );
-      } else {
-        gl.uniform2f(shaderProgram.texScaleLoc, texScale[0], texScale[1]);
-        gl.uniform2f(shaderProgram.texOffsetLoc, texOffset[0], texOffset[1]);
-      }
-      gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.vertexBuffer);
-      if (!tileToRender.geometryUploaded) {
-        gl.bufferData(gl.ARRAY_BUFFER, vertexArr, gl.STATIC_DRAW);
-      }
-      gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.pixCoordBuffer);
-      if (!tileToRender.geometryUploaded) {
-        gl.bufferData(gl.ARRAY_BUFFER, pixCoordArr, gl.STATIC_DRAW);
-        tileToRender.geometryUploaded = true;
-      }
-      if (shaderProgram.useCustomShader && customShaderConfig) {
-        let textureUnit = 2;
-        let missingBandData = false;
-        for (const bandName of customShaderConfig.bands) {
-          const bandData = tileToRender.bandData.get(bandName);
-          if (!bandData) {
-            missingBandData = true;
-            break;
-          }
-          let bandTex = tileToRender.bandTextures.get(bandName);
-          if (!bandTex) {
-            const newTex = tileCache.ensureBandTexture(renderTileKey, bandName);
-            if (newTex) {
-              bandTex = newTex;
-              tileToRender.bandTextures.set(bandName, bandTex);
-            }
-          }
-          if (!bandTex) {
-            missingBandData = true;
-            break;
-          }
-          gl.activeTexture(gl.TEXTURE0 + textureUnit);
-          gl.bindTexture(gl.TEXTURE_2D, bandTex);
-          if (!tileToRender.bandTexturesConfigured.has(bandName)) {
-            configureDataTexture(gl);
-            tileToRender.bandTexturesConfigured.add(bandName);
-          }
-          if (!tileToRender.bandTexturesUploaded.has(bandName)) {
-            gl.texImage2D(
-              gl.TEXTURE_2D,
-              0,
-              gl.R32F,
-              tileSize,
-              tileSize,
-              0,
-              gl.RED,
-              gl.FLOAT,
-              bandData
-            );
-            tileToRender.bandTexturesUploaded.add(bandName);
-          }
-          textureUnit++;
-        }
-        if (missingBandData) {
-          continue;
-        }
-      } else {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, tileToRender.tileTexture);
-        if (shaderProgram.texLoc) {
-          gl.uniform1i(shaderProgram.texLoc, 0);
-        }
-        if (!tileToRender.textureConfigured) {
-          configureDataTexture(gl);
-          tileToRender.textureConfigured = true;
-        }
-        const channels = tileToRender.channels ?? 1;
-        const { format, internalFormat } = getTextureFormats(gl, channels);
-        if (!tileToRender.textureUploaded) {
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            internalFormat,
-            tileSize,
-            tileSize,
-            0,
-            format,
-            gl.FLOAT,
-            tileToRender.data
-          );
-          tileToRender.textureUploaded = true;
-        }
-      }
-      gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.vertexBuffer);
-      gl.enableVertexAttribArray(shaderProgram.vertexLoc);
-      gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, tileToRender.pixCoordBuffer);
-      gl.enableVertexAttribArray(shaderProgram.pixCoordLoc);
-      gl.vertexAttribPointer(
-        shaderProgram.pixCoordLoc,
-        2,
-        gl.FLOAT,
-        false,
-        0,
-        0
-      );
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexCount);
     }
+    if (!tileToRender || !tileToRender.data || !tileToRender.vertexBuffer || !tileToRender.pixCoordBuffer || !tileToRender.tileTexture) {
+      continue;
+    }
+    if (shaderProgram.isEquirectangularLoc) {
+      const useShaderReproject = isGlobeTileRender && bounds?.latMin !== void 0;
+      gl.uniform1i(
+        shaderProgram.isEquirectangularLoc,
+        useShaderReproject ? 1 : 0
+      );
+    }
+    if (isGlobeTileRender) {
+      if (tileTexOverrides?.[tileKey]) {
+        const override = tileTexOverrides[tileKey];
+        texScale = override.texScale;
+        texOffset = override.texOffset;
+      }
+      if (bounds?.latMin !== void 0 && shaderProgram.latMinLoc) {
+        gl.uniform1f(shaderProgram.latMinLoc, bounds.latMin);
+      }
+      if (bounds?.latMax !== void 0 && shaderProgram.latMaxLoc) {
+        gl.uniform1f(shaderProgram.latMaxLoc, bounds.latMax);
+      }
+    }
+    const pixCoordBuffer = prepareTileGeometry(
+      gl,
+      tileToRender,
+      vertexArr,
+      pixCoordArr,
+      bounds,
+      latIsAscending,
+      isGlobeTileRender
+    );
+    let mercatorBounds;
+    if (bounds) {
+      mercatorBounds = bounds;
+    } else {
+      const [scale, shiftX, shiftY] = tileToScale(tileTuple);
+      mercatorBounds = {
+        x0: shiftX - scale,
+        x1: shiftX + scale,
+        y0: shiftY - scale,
+        y1: shiftY + scale
+      };
+    }
+    const renderable = tileToRenderable(
+      tileToRender,
+      mercatorBounds,
+      pixCoordBuffer,
+      vertexCount,
+      tileSize,
+      texScale,
+      texOffset,
+      tileCache,
+      renderTileKey
+    );
+    renderRegion(
+      gl,
+      shaderProgram,
+      renderable,
+      isGlobeTileRender ? [0] : worldOffsets,
+      customShaderConfig
+    );
   }
 }
 
@@ -5890,13 +6073,10 @@ var ZarrRenderer = class _ZarrRenderer {
   constructor(gl, fragmentShaderSource, customShaderConfig) {
     this.shaderCache = /* @__PURE__ */ new Map();
     this.customShaderConfig = null;
-    this._gl = _ZarrRenderer.resolveGl(gl);
+    this.gl = _ZarrRenderer.resolveGl(gl);
     this.fragmentShaderSource = fragmentShaderSource;
     this.customShaderConfig = customShaderConfig || null;
     this.getProgram(void 0, customShaderConfig);
-  }
-  get gl() {
-    return this._gl;
   }
   updateMultiBandConfig(config) {
     if (config && this.customShaderConfig) {
@@ -5931,7 +6111,7 @@ var ZarrRenderer = class _ZarrRenderer {
     if (cached) {
       return cached;
     }
-    const { shaderProgram } = createShaderProgram(this._gl, {
+    const { shaderProgram } = createShaderProgram(this.gl, {
       fragmentShaderSource: this.fragmentShaderSource,
       shaderData,
       customShaderConfig: config,
@@ -5942,7 +6122,7 @@ var ZarrRenderer = class _ZarrRenderer {
     return shaderProgram;
   }
   applyCommonUniforms(shaderProgram, colormapTexture, uniforms, customShaderConfig, projectionData, mapboxGlobe, matrix, isGlobeTileRender = false) {
-    const gl = this._gl;
+    const gl = this.gl;
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.activeTexture(gl.TEXTURE1);
@@ -5997,9 +6177,9 @@ var ZarrRenderer = class _ZarrRenderer {
       );
     }
   }
-  renderTiles(shaderProgram, visibleTiles, worldOffsets, tileCache, tileSize, vertexArr, pixCoordArr, tileBounds, customShaderConfig, isGlobeTileRender = false, tileTexOverrides) {
+  renderTiles(shaderProgram, visibleTiles, worldOffsets, tileCache, tileSize, vertexArr, pixCoordArr, latIsAscending, tileBounds, customShaderConfig, isGlobeTileRender = false, tileTexOverrides) {
     renderTiles(
-      this._gl,
+      this.gl,
       shaderProgram,
       visibleTiles,
       worldOffsets,
@@ -6007,6 +6187,7 @@ var ZarrRenderer = class _ZarrRenderer {
       tileSize,
       vertexArr,
       pixCoordArr,
+      latIsAscending,
       tileBounds,
       customShaderConfig,
       isGlobeTileRender,
@@ -6014,7 +6195,7 @@ var ZarrRenderer = class _ZarrRenderer {
     );
   }
   dispose() {
-    const gl = this._gl;
+    const gl = this.gl;
     for (const [, shader] of this.shaderCache) {
       gl.deleteProgram(shader.program);
     }
@@ -7199,7 +7380,7 @@ var Tiles = class {
     return { data: paddedData, channels, bandData };
   }
   /**
-   * Apply normalization to tile data for half-float precision safety.
+   * Apply normalization to tile data and upload texture.
    * Updates tile.data, tile.bandData with normalized values and stores scale factors.
    */
   applyNormalization(tile, sliced) {
@@ -7211,8 +7392,12 @@ var Tiles = class {
     tile.data = normalized;
     tile.dataScale = scale;
     tile.channels = sliced.channels;
+    if (this.gl && tile.tileTexture) {
+      this.uploadTileTexture(tile);
+    }
     tile.bandData = /* @__PURE__ */ new Map();
     tile.bandDataScales = /* @__PURE__ */ new Map();
+    tile.bandTexturesUploaded.clear();
     for (const [bandName, bandData] of sliced.bandData) {
       const bandResult = normalizeDataForTexture(
         bandData,
@@ -7222,6 +7407,33 @@ var Tiles = class {
       tile.bandData.set(bandName, bandResult.normalized);
       tile.bandDataScales.set(bandName, bandResult.scale);
     }
+  }
+  /**
+   * Upload tile data to its texture.
+   */
+  uploadTileTexture(tile) {
+    if (!this.gl || !tile.tileTexture || !tile.data) return;
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tile.tileTexture);
+    if (!tile.textureConfigured) {
+      configureDataTexture(gl);
+      tile.textureConfigured = true;
+    }
+    const { format, internalFormat } = getTextureFormats(gl, tile.channels);
+    const tileSize = this.store.tileSize;
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      internalFormat,
+      tileSize,
+      tileSize,
+      0,
+      format,
+      gl.FLOAT,
+      tile.data
+    );
+    tile.textureUploaded = true;
   }
   /**
    * Get or create a tile entry, using Map's insertion order for LRU tracking.
@@ -7246,6 +7458,7 @@ var Tiles = class {
       loading: false,
       dataScale: 1,
       bandDataScales: /* @__PURE__ */ new Map(),
+      latBounds: null,
       tileTexture: this.gl ? mustCreateTexture(this.gl) : null,
       bandTextures: /* @__PURE__ */ new Map(),
       bandTexturesUploaded: /* @__PURE__ */ new Set(),
@@ -7254,7 +7467,9 @@ var Tiles = class {
       textureConfigured: false,
       vertexBuffer: this.gl ? mustCreateBuffer(this.gl) : null,
       pixCoordBuffer: this.gl ? mustCreateBuffer(this.gl) : null,
-      geometryUploaded: false
+      warpedPixCoordBuffer: this.gl ? mustCreateBuffer(this.gl) : null,
+      geometryUploaded: false,
+      warpedGeometryUploaded: false
     };
     this.tiles.set(tileKey, tile);
     this.evictOldTiles();
@@ -7276,6 +7491,8 @@ var Tiles = class {
         }
         if (tile.vertexBuffer) this.gl.deleteBuffer(tile.vertexBuffer);
         if (tile.pixCoordBuffer) this.gl.deleteBuffer(tile.pixCoordBuffer);
+        if (tile.warpedPixCoordBuffer)
+          this.gl.deleteBuffer(tile.warpedPixCoordBuffer);
       }
       this.tiles.delete(oldestKey);
     }
@@ -7313,6 +7530,18 @@ var Tiles = class {
   getTile(tileTuple) {
     return this.tiles.get(tileToKey(tileTuple));
   }
+  /**
+   * Set latitude bounds for a tile (used for coordinate warping in EPSG:4326 mode).
+   * If bounds change, marks warped geometry as needing re-upload.
+   */
+  setTileLatBounds(tileKey, latBounds) {
+    const tile = this.tiles.get(tileKey);
+    if (!tile) return;
+    if (tile.latBounds?.min !== latBounds.min || tile.latBounds?.max !== latBounds.max) {
+      tile.latBounds = latBounds;
+      tile.warpedGeometryUploaded = false;
+    }
+  }
   async reextractTileSlices(visibleTiles, selectorHash, version) {
     for (const tileTuple of visibleTiles) {
       const tileKey = tileToKey(tileTuple);
@@ -7337,8 +7566,6 @@ var Tiles = class {
         this.applyNormalization(tile, sliced);
         tile.selectorHash = selectorHash;
         tile.selectorVersion = version;
-        tile.textureUploaded = false;
-        tile.bandTexturesUploaded.clear();
       } else {
         tile.selectorHash = null;
         tile.chunkData = null;
@@ -7376,8 +7603,6 @@ var Tiles = class {
         this.applyNormalization(tile, sliced2);
         tile.selectorHash = selectorHash;
         tile.selectorVersion = version;
-        tile.textureUploaded = false;
-        tile.bandTexturesUploaded.clear();
         tile.loading = false;
         return tile;
       }
@@ -7402,8 +7627,6 @@ var Tiles = class {
       this.applyNormalization(tile, sliced);
       tile.selectorHash = selectorHash;
       tile.selectorVersion = version;
-      tile.textureUploaded = false;
-      tile.bandTexturesUploaded.clear();
       tile.loading = false;
       return tile;
     } catch (err) {
@@ -7421,6 +7644,7 @@ var Tiles = class {
   markGeometryDirty() {
     for (const tile of this.tiles.values()) {
       tile.geometryUploaded = false;
+      tile.warpedGeometryUploaded = false;
     }
   }
   /**
@@ -7435,6 +7659,8 @@ var Tiles = class {
         }
         if (tile.vertexBuffer) this.gl.deleteBuffer(tile.vertexBuffer);
         if (tile.pixCoordBuffer) this.gl.deleteBuffer(tile.pixCoordBuffer);
+        if (tile.warpedPixCoordBuffer)
+          this.gl.deleteBuffer(tile.warpedPixCoordBuffer);
       }
     }
     this.tiles.clear();
@@ -7696,7 +7922,14 @@ function renderMapboxTile({
   if (!tiledState?.tileCache) {
     return true;
   }
-  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState;
+  const {
+    tileCache,
+    vertexArr,
+    pixCoordArr,
+    tileSize,
+    tileBounds,
+    latIsAscending
+  } = tiledState;
   const tilesPerSide = 2 ** tileId.z;
   const mapboxMercX0 = tileId.x / tilesPerSide;
   const mapboxMercX1 = (tileId.x + 1) / tilesPerSide;
@@ -7804,6 +8037,7 @@ function renderMapboxTile({
         tileSize,
         vertexArr,
         pixCoordArr,
+        latIsAscending,
         tileBoundsForRender,
         customShaderConfig,
         true,
@@ -7859,68 +8093,13 @@ function renderMapboxTile({
     tileSize,
     vertexArr,
     pixCoordArr,
+    latIsAscending,
     tileBoundsOverride,
     customShaderConfig,
     true
   );
   const tileHasData = tileCache.get(tileKey)?.data;
   return !tileHasData;
-}
-
-// src/render-utils.ts
-function isGlobeProjection(projection) {
-  return projection?.type === "globe" || projection?.name === "globe";
-}
-function resolveProjectionParams(params, projection, projectionToMercatorMatrix, projectionToMercatorTransition) {
-  const paramsObj = params && typeof params === "object" && !Array.isArray(params) && !ArrayBuffer.isView(params) ? params : null;
-  const shaderData = paramsObj?.shaderData;
-  let projectionData;
-  const defaultProj = paramsObj?.defaultProjectionData;
-  if (defaultProj && defaultProj.mainMatrix && defaultProj.fallbackMatrix && defaultProj.tileMercatorCoords && defaultProj.clippingPlane && typeof defaultProj.projectionTransition === "number") {
-    projectionData = {
-      mainMatrix: defaultProj.mainMatrix,
-      fallbackMatrix: defaultProj.fallbackMatrix,
-      tileMercatorCoords: defaultProj.tileMercatorCoords,
-      clippingPlane: defaultProj.clippingPlane,
-      projectionTransition: defaultProj.projectionTransition
-    };
-  }
-  let matrix = null;
-  if (projectionData?.mainMatrix && projectionData.mainMatrix.length) {
-    matrix = projectionData.mainMatrix;
-  } else if (Array.isArray(params) || params instanceof Float32Array || params instanceof Float64Array) {
-    matrix = params;
-  } else if (paramsObj?.modelViewProjectionMatrix) {
-    matrix = paramsObj.modelViewProjectionMatrix;
-  } else if (paramsObj?.projectionMatrix) {
-    matrix = paramsObj.projectionMatrix;
-  }
-  const mapboxGlobe = projection && projectionToMercatorMatrix !== void 0 ? {
-    projection,
-    globeToMercatorMatrix: projectionToMercatorMatrix,
-    transition: typeof projectionToMercatorTransition === "number" ? projectionToMercatorTransition : 0
-  } : void 0;
-  return { matrix, shaderData, projectionData, mapboxGlobe };
-}
-function computeWorldOffsets(map, isGlobe) {
-  if (!map) return [0];
-  const bounds = map.getBounds ? map.getBounds() : null;
-  if (!bounds) return [0];
-  const renderWorldCopies = typeof map.getRenderWorldCopies === "function" ? map.getRenderWorldCopies() : true;
-  if (isGlobe || !renderWorldCopies) return [0];
-  const west = bounds.getWest();
-  const east = bounds.getEast();
-  let effectiveEast = east;
-  if (west > east) {
-    effectiveEast = east + 360;
-  }
-  const minWorld = Math.floor((west + 180) / 360);
-  const maxWorld = Math.floor((effectiveEast + 180) / 360);
-  const worldOffsets = [];
-  for (let i = minWorld; i <= maxWorld; i++) {
-    worldOffsets.push(i);
-  }
-  return worldOffsets.length > 0 ? worldOffsets : [0];
 }
 
 // src/tiled-mode.ts
@@ -7988,6 +8167,14 @@ var TiledMode = class {
     this.tileBounds = this.computeTileBounds(this.visibleTiles);
     if (visibleInfo.pyramidLevel !== null) {
       this.currentLevel = visibleInfo.pyramidLevel;
+    }
+    for (const [tileKey, bounds] of Object.entries(this.tileBounds)) {
+      if (bounds.latMin !== void 0 && bounds.latMax !== void 0) {
+        this.tileCache.setTileLatBounds(tileKey, {
+          min: bounds.latMin,
+          max: bounds.latMax
+        });
+      }
     }
     const currentHash = JSON.stringify(this.selector);
     const tilesToFetch = [];
@@ -8058,6 +8245,7 @@ var TiledMode = class {
       this.tileSize,
       this.vertexArr,
       this.pixCoordArr,
+      this.zarrStore.latIsAscending,
       Object.keys(this.tileBounds).length > 0 ? this.tileBounds : void 0,
       context.customShaderConfig,
       false
@@ -8082,7 +8270,8 @@ var TiledMode = class {
       tileSize: this.tileSize,
       vertexArr: this.vertexArr,
       pixCoordArr: this.pixCoordArr,
-      tileBounds: Object.keys(this.tileBounds).length > 0 ? this.tileBounds : void 0
+      tileBounds: Object.keys(this.tileBounds).length > 0 ? this.tileBounds : void 0,
+      latIsAscending: this.zarrStore.latIsAscending
     };
   }
   getSingleImageState() {
@@ -8310,8 +8499,6 @@ var UntiledMode = class {
     this.regionCache = /* @__PURE__ */ new Map();
     this.previousRegionCache = /* @__PURE__ */ new Map();
     // Fallback during level transitions
-    this.previousLevelIndex = -1;
-    // Track which level the previous cache is from
     this.regionSize = null;
     // [height, width] of each region
     this.lastViewportHash = "";
@@ -8415,7 +8602,6 @@ var UntiledMode = class {
   clearPreviousRegionCache(gl) {
     this.disposeRegionCache(this.previousRegionCache, gl);
     this.previousRegionCache.clear();
-    this.previousLevelIndex = -1;
   }
   /**
    * Dispose WebGL resources for a region cache.
@@ -8560,73 +8746,28 @@ var UntiledMode = class {
     return { xMin: geoXMin, xMax: geoXMax, yMin: geoYMin, yMax: geoYMax };
   }
   /**
-   * Calculate the number of subdivisions needed for a region based on its
-   * geographic extent. Larger regions and higher latitudes need more subdivisions
-   * for accurate mercator warping.
-   */
-  calculateRegionSubdivisions(geoBounds) {
-    let latSpan;
-    let lonSpan;
-    let maxAbsLat;
-    if (this.crs === "EPSG:3857") {
-      const WORLD_EXTENT = 20037508342789244e-9;
-      latSpan = Math.abs(geoBounds.yMax - geoBounds.yMin) / (2 * WORLD_EXTENT) * 180;
-      lonSpan = Math.abs(geoBounds.xMax - geoBounds.xMin) / (2 * WORLD_EXTENT) * 360;
-      const maxAbsY = Math.max(
-        Math.abs(geoBounds.yMin),
-        Math.abs(geoBounds.yMax)
-      );
-      const R = WORLD_EXTENT / Math.PI;
-      maxAbsLat = Math.abs(Math.atan(Math.sinh(maxAbsY / R)) * (180 / Math.PI));
-    } else {
-      latSpan = Math.abs(geoBounds.yMax - geoBounds.yMin);
-      lonSpan = Math.abs(geoBounds.xMax - geoBounds.xMin);
-      maxAbsLat = Math.max(Math.abs(geoBounds.yMin), Math.abs(geoBounds.yMax));
-    }
-    let subdivisions = Math.ceil(latSpan / 180 * 64);
-    if (maxAbsLat > 60) {
-      const latBoost = 1 + (maxAbsLat - 60) / 25;
-      subdivisions = Math.ceil(subdivisions * latBoost);
-    }
-    const lonFactor = Math.max(1, lonSpan / 180);
-    subdivisions = Math.ceil(subdivisions * Math.sqrt(lonFactor));
-    return Math.max(4, Math.min(64, subdivisions));
-  }
-  /**
    * Create geometry (vertex positions and tex coords) for a region.
-   * Uses subdivided geometry with pre-warped texture coordinates to account
-   * for mercator distortion (since geometry is in mercator space but texture
-   * is in linear latitude space).
+   * Uses subdivided geometry for smooth globe rendering and pre-warped
+   * texture coordinates for mercator display.
    */
   createRegionGeometry(regionX, regionY, gl, region) {
     const geoBounds = this.getRegionBounds(regionX, regionY);
     const mercBounds = boundsToMercatorNorm(geoBounds, this.crs);
     region.mercatorBounds = mercBounds;
-    const subdivisions = this.calculateRegionSubdivisions(geoBounds);
+    const latSpan = Math.abs(geoBounds.yMax - geoBounds.yMin);
+    const subdivisions = Math.max(16, Math.min(128, Math.ceil(latSpan)));
     const subdivided = createSubdividedQuad(subdivisions);
     region.vertexArr = subdivided.vertexArr;
     if (this.crs === "EPSG:4326") {
-      const warped = new Float32Array(subdivided.texCoordArr.length);
-      const { y0, y1 } = mercBounds;
-      const latMin = geoBounds.yMin;
-      const latMax = geoBounds.yMax;
-      const latRange = latMax - latMin;
-      for (let i = 0; i < subdivided.vertexArr.length; i += 2) {
-        const u = subdivided.texCoordArr[i];
-        const normY = subdivided.vertexArr[i + 1];
-        const mercY = y0 + (1 - normY) / 2 * (y1 - y0);
-        const lat = mercatorNormToLat(mercY);
-        let v = (lat - latMin) / latRange;
-        if (this.latIsAscending === false) {
-          v = 1 - v;
-        }
-        v = Math.max(0, Math.min(1, v));
-        warped[i] = u;
-        warped[i + 1] = v;
-      }
-      region.pixCoordArr = warped;
+      region.pixCoordArr = createWarpedTexCoords(
+        subdivided.vertexArr,
+        subdivided.texCoordArr,
+        mercBounds,
+        { latMin: geoBounds.yMin, latMax: geoBounds.yMax },
+        this.latIsAscending
+      );
     } else {
-      region.pixCoordArr = this.latIsAscending ? this.flipTexCoordV(subdivided.texCoordArr) : subdivided.texCoordArr;
+      region.pixCoordArr = this.latIsAscending ? flipTexCoordV(subdivided.texCoordArr) : subdivided.texCoordArr;
     }
     if (!region.vertexBuffer) {
       region.vertexBuffer = gl.createBuffer();
@@ -8638,14 +8779,6 @@ var UntiledMode = class {
     gl.bufferData(gl.ARRAY_BUFFER, region.vertexArr, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, region.pixCoordBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, region.pixCoordArr, gl.STATIC_DRAW);
-  }
-  flipTexCoordV(texCoords) {
-    const flipped = new Float32Array(texCoords.length);
-    for (let i = 0; i < texCoords.length; i += 2) {
-      flipped[i] = texCoords[i];
-      flipped[i + 1] = 1 - texCoords[i + 1];
-    }
-    return flipped;
   }
   /**
    * Classify a dimension by its name.
@@ -8869,14 +9002,14 @@ var UntiledMode = class {
       const packedData = new Float32Array(pixelCount * numChannels);
       packedData.fill(fillValue ?? 0);
       if (numChannels === 1) {
-        const result = await get2(this.zarrArray, baseSliceArgs, {
+        const result2 = await get2(this.zarrArray, baseSliceArgs, {
           opts: { signal: controller.signal }
         });
         if (controller.signal.aborted || this.isRemoved) {
           region.loading = false;
           return;
         }
-        const rawData = new Float32Array(result.data);
+        const rawData = new Float32Array(result2.data);
         bandArrays.push(rawData);
         packedData.set(rawData);
       } else {
@@ -8886,14 +9019,14 @@ var UntiledMode = class {
           for (let i = 0; i < this.baseMultiValueDims.length; i++) {
             sliceArgs[this.baseMultiValueDims[i].dimIndex] = combo[i];
           }
-          const result = await get2(this.zarrArray, sliceArgs, {
+          const result2 = await get2(this.zarrArray, sliceArgs, {
             opts: { signal: controller.signal }
           });
           if (controller.signal.aborted || this.isRemoved) {
             region.loading = false;
             return;
           }
-          const bandData = new Float32Array(result.data);
+          const bandData = new Float32Array(result2.data);
           bandArrays.push(bandData);
           for (let pixIdx = 0; pixIdx < pixelCount; pixIdx++) {
             packedData[pixIdx * numChannels + c] = bandData[pixIdx];
@@ -8930,24 +9063,15 @@ var UntiledMode = class {
       if (!region.texture) {
         region.texture = gl.createTexture();
       }
-      gl.bindTexture(gl.TEXTURE_2D, region.texture);
-      const { format, internalFormat } = getTextureFormats(gl, numChannels);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        internalFormat,
-        actualW,
-        actualH,
-        0,
-        format,
-        gl.FLOAT,
-        normalized
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      region.textureUploaded = true;
+      const result = uploadDataTexture(gl, {
+        texture: region.texture,
+        data: normalized,
+        width: actualW,
+        height: actualH,
+        channels: numChannels,
+        configured: false
+      });
+      region.textureUploaded = result.uploaded;
       this.createRegionGeometry(regionX, regionY, gl, region);
       this.invalidate();
     } catch (err) {
@@ -9066,7 +9190,6 @@ var UntiledMode = class {
     if (this.loadingManager.chunksLoading) return;
     const level = this.levels[newLevelIndex];
     cancelAllRequests(this.requestCanceller);
-    const oldLevelIndex = this.currentLevelIndex;
     this.currentLevelIndex = newLevelIndex;
     try {
       const newArray = await this.zarrStore.getLevelArray(level.asset);
@@ -9079,7 +9202,6 @@ var UntiledMode = class {
       ];
       this.clearPreviousRegionCache(gl);
       this.previousRegionCache = this.regionCache;
-      this.previousLevelIndex = oldLevelIndex;
       this.regionCache = /* @__PURE__ */ new Map();
       this.zarrArray = newArray;
       this.width = newWidth;
@@ -9118,8 +9240,25 @@ var UntiledMode = class {
     );
   }
   /**
-   * Render all loaded regions.
-   * Iterates over region caches directly to access band data for custom shaders.
+   * Convert a RegionState to a RenderableRegion for unified rendering.
+   */
+  regionToRenderable(region) {
+    return {
+      mercatorBounds: region.mercatorBounds,
+      vertexBuffer: region.vertexBuffer,
+      pixCoordBuffer: region.pixCoordBuffer,
+      vertexCount: region.vertexArr.length / 2,
+      texture: region.texture,
+      bandData: region.bandData,
+      bandTextures: region.bandTextures,
+      bandTexturesUploaded: region.bandTexturesUploaded,
+      bandTexturesConfigured: region.bandTexturesConfigured,
+      width: region.width,
+      height: region.height
+    };
+  }
+  /**
+   * Render all loaded regions using the unified render path.
    * Note: Regions have geometry already positioned in mercator space,
    * so we disable the equirectangular shader correction to avoid double transformation.
    */
@@ -9128,94 +9267,15 @@ var UntiledMode = class {
     if (shaderProgram.isEquirectangularLoc) {
       gl.uniform1i(shaderProgram.isEquirectangularLoc, 0);
     }
-    if (shaderProgram.useCustomShader && customShaderConfig) {
-      let textureUnit = 2;
-      for (const bandName of customShaderConfig.bands) {
-        const loc = shaderProgram.bandTexLocs.get(bandName);
-        if (loc) {
-          gl.uniform1i(loc, textureUnit);
-        }
-        textureUnit++;
-      }
-    }
+    setupBandTextureUniforms(gl, shaderProgram, customShaderConfig);
     for (const region of this.getLoadedRegions()) {
-      const bounds = region.mercatorBounds;
-      const scaleX = (bounds.x1 - bounds.x0) / 2;
-      const scaleY = (bounds.y1 - bounds.y0) / 2;
-      const shiftX = (bounds.x0 + bounds.x1) / 2;
-      const shiftY = (bounds.y0 + bounds.y1) / 2;
-      gl.uniform1f(shaderProgram.scaleLoc, 0);
-      gl.uniform1f(shaderProgram.scaleXLoc, scaleX);
-      gl.uniform1f(shaderProgram.scaleYLoc, scaleY);
-      gl.uniform1f(shaderProgram.shiftXLoc, shiftX);
-      gl.uniform1f(shaderProgram.shiftYLoc, shiftY);
-      gl.uniform2f(shaderProgram.texScaleLoc, 1, 1);
-      gl.uniform2f(shaderProgram.texOffsetLoc, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, region.vertexBuffer);
-      gl.enableVertexAttribArray(shaderProgram.vertexLoc);
-      gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, region.pixCoordBuffer);
-      gl.enableVertexAttribArray(shaderProgram.pixCoordLoc);
-      gl.vertexAttribPointer(
-        shaderProgram.pixCoordLoc,
-        2,
-        gl.FLOAT,
-        false,
-        0,
-        0
+      renderRegion(
+        gl,
+        shaderProgram,
+        this.regionToRenderable(region),
+        worldOffsets,
+        customShaderConfig
       );
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, region.texture);
-      gl.uniform1i(shaderProgram.texLoc, 0);
-      if (shaderProgram.useCustomShader && customShaderConfig) {
-        let textureUnit = 2;
-        let missingBandData = false;
-        for (const bandName of customShaderConfig.bands) {
-          const bandData = region.bandData.get(bandName);
-          if (!bandData) {
-            missingBandData = true;
-            break;
-          }
-          let bandTex = region.bandTextures.get(bandName);
-          if (!bandTex) {
-            bandTex = gl.createTexture();
-            if (!bandTex) {
-              missingBandData = true;
-              break;
-            }
-            region.bandTextures.set(bandName, bandTex);
-          }
-          gl.activeTexture(gl.TEXTURE0 + textureUnit);
-          gl.bindTexture(gl.TEXTURE_2D, bandTex);
-          if (!region.bandTexturesConfigured.has(bandName)) {
-            configureDataTexture(gl);
-            region.bandTexturesConfigured.add(bandName);
-          }
-          if (!region.bandTexturesUploaded.has(bandName)) {
-            gl.texImage2D(
-              gl.TEXTURE_2D,
-              0,
-              gl.R32F,
-              region.width,
-              region.height,
-              0,
-              gl.RED,
-              gl.FLOAT,
-              bandData
-            );
-            region.bandTexturesUploaded.add(bandName);
-          }
-          textureUnit++;
-        }
-        if (missingBandData) {
-          continue;
-        }
-      }
-      const vertexCount = region.vertexArr.length / 2;
-      for (const worldOffset of worldOffsets) {
-        gl.uniform1f(shaderProgram.worldXOffsetLoc, worldOffset);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexCount);
-      }
     }
   }
   renderToTile(renderer, tileId, context) {

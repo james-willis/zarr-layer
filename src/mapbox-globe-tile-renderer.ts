@@ -426,7 +426,14 @@ export function renderMapboxTile({
     return true
   }
 
-  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState
+  const {
+    tileCache,
+    vertexArr,
+    pixCoordArr,
+    tileSize,
+    tileBounds,
+    latIsAscending,
+  } = tiledState
 
   const tilesPerSide = 2 ** tileId.z
   const mapboxMercX0 = tileId.x / tilesPerSide
@@ -552,6 +559,7 @@ export function renderMapboxTile({
         tileSize,
         vertexArr,
         pixCoordArr,
+        latIsAscending,
         tileBoundsForRender,
         customShaderConfig,
         true,
@@ -614,6 +622,7 @@ export function renderMapboxTile({
     tileSize,
     vertexArr,
     pixCoordArr,
+    latIsAscending,
     tileBoundsOverride,
     customShaderConfig,
     true

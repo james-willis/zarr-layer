@@ -18,21 +18,17 @@ import type { Tiles } from './tiles'
 export { type ShaderProgram } from './shader-program'
 
 export class ZarrRenderer {
-  private _gl: WebGL2RenderingContext
+  readonly gl: WebGL2RenderingContext
   private fragmentShaderSource: string
   private shaderCache: Map<string, ShaderProgram> = new Map()
   private customShaderConfig: CustomShaderConfig | null = null
-
-  get gl(): WebGL2RenderingContext {
-    return this._gl
-  }
 
   constructor(
     gl: WebGL2RenderingContext,
     fragmentShaderSource: string,
     customShaderConfig?: CustomShaderConfig
   ) {
-    this._gl = ZarrRenderer.resolveGl(gl)
+    this.gl = ZarrRenderer.resolveGl(gl)
     this.fragmentShaderSource = fragmentShaderSource
     this.customShaderConfig = customShaderConfig || null
     this.getProgram(undefined, customShaderConfig)
@@ -85,7 +81,7 @@ export class ZarrRenderer {
       return cached
     }
 
-    const { shaderProgram } = createShaderProgram(this._gl, {
+    const { shaderProgram } = createShaderProgram(this.gl, {
       fragmentShaderSource: this.fragmentShaderSource,
       shaderData,
       customShaderConfig: config,
@@ -107,7 +103,7 @@ export class ZarrRenderer {
     matrix?: number[] | Float32Array | Float64Array,
     isGlobeTileRender: boolean = false
   ): void {
-    const gl = this._gl
+    const gl = this.gl
 
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
@@ -178,6 +174,7 @@ export class ZarrRenderer {
     tileSize: number,
     vertexArr: Float32Array,
     pixCoordArr: Float32Array,
+    latIsAscending: boolean | null,
     tileBounds?: Record<string, MercatorBounds>,
     customShaderConfig?: CustomShaderConfig,
     isGlobeTileRender: boolean = false,
@@ -187,7 +184,7 @@ export class ZarrRenderer {
     >
   ): void {
     renderTiles(
-      this._gl,
+      this.gl,
       shaderProgram,
       visibleTiles,
       worldOffsets,
@@ -195,6 +192,7 @@ export class ZarrRenderer {
       tileSize,
       vertexArr,
       pixCoordArr,
+      latIsAscending,
       tileBounds,
       customShaderConfig,
       isGlobeTileRender,
@@ -203,7 +201,7 @@ export class ZarrRenderer {
   }
 
   dispose() {
-    const gl = this._gl
+    const gl = this.gl
     for (const [, shader] of this.shaderCache) {
       gl.deleteProgram(shader.program)
     }

@@ -3,11 +3,13 @@
  *
  * Utility functions for custom layer integration.
  * Provides tile management, zoom level conversion,
- * and coordinate transformations.
+ * coordinate transformations, and projection handling.
  * adapted from zarr-cesium/src/map-utils.ts
  */
 
 import { MERCATOR_LAT_LIMIT } from './constants'
+import type { ProjectionData, ShaderData } from './shaders'
+import type { MapLike } from './types'
 
 export type TileTuple = [number, number, number]
 
@@ -515,4 +517,226 @@ export function chunkIndexToArrayRange(
   const startIndex = chunkIndex * chunkSize
   const endIndex = Math.min((chunkIndex + 1) * chunkSize, arraySize)
   return [startIndex, endIndex]
+}
+
+// === Texture coordinate warping utilities ===
+
+/** Latitude bounds in degrees (for texture coordinate warping) */
+export interface LatBounds {
+  latMin: number
+  latMax: number
+  lonMin?: number
+  lonMax?: number
+}
+
+/**
+ * Create warped texture coordinates for EPSG:4326 data displayed on a mercator map.
+ *
+ * The texture is in linear lat/lon space, but the geometry is in mercator space.
+ * This function computes the texture V coordinate for each vertex based on the
+ * mercator Y position, accounting for the non-linear relationship between
+ * latitude and mercator Y.
+ *
+ * @param vertexArr - Subdivided quad vertices in [-1, 1] range
+ * @param texCoordArr - Linear texture coordinates [0, 1] for each vertex
+ * @param mercatorBounds - Mercator normalized bounds for the geometry
+ * @param latBounds - Latitude bounds in degrees
+ * @param latIsAscending - If false, texture row 0 is north (latMax); if true/null, row 0 is south
+ */
+export function createWarpedTexCoords(
+  vertexArr: Float32Array,
+  texCoordArr: Float32Array,
+  mercatorBounds: MercatorBounds,
+  latBounds: LatBounds,
+  latIsAscending: boolean | null
+): Float32Array {
+  const warped = new Float32Array(texCoordArr.length)
+  const { y0, y1 } = mercatorBounds
+  const { latMin, latMax } = latBounds
+  const latRange = latMax - latMin
+
+  for (let i = 0; i < vertexArr.length; i += 2) {
+    const u = texCoordArr[i]
+    const normY = vertexArr[i + 1] // vertex Y in [-1, 1]
+
+    // Compute mercator Y for this vertex
+    // vertex y=-1 maps to y1 (south), y=1 maps to y0 (north)
+    const mercY = y0 + ((1 - normY) / 2) * (y1 - y0)
+
+    // Convert mercator Y to latitude
+    const lat = mercatorNormToLat(mercY)
+
+    // Compute texture V for this latitude
+    let v = (lat - latMin) / latRange
+
+    // Handle latIsAscending (only flip if explicitly false, not null)
+    if (latIsAscending === false) {
+      // Data row 0 = north (latMax), so flip V
+      v = 1 - v
+    }
+
+    // Clamp to valid range
+    v = Math.max(0, Math.min(1, v))
+
+    warped[i] = u
+    warped[i + 1] = v
+  }
+  return warped
+}
+
+/**
+ * Flip texture V coordinates (for EPSG:3857 data with latIsAscending=true).
+ */
+export function flipTexCoordV(texCoords: Float32Array): Float32Array {
+  const flipped = new Float32Array(texCoords.length)
+  for (let i = 0; i < texCoords.length; i += 2) {
+    flipped[i] = texCoords[i]
+    flipped[i + 1] = 1 - texCoords[i + 1]
+  }
+  return flipped
+}
+
+// === Projection utilities ===
+
+/**
+ * Detects if the given projection is a globe projection.
+ * Works with both Mapbox (projection.name) and MapLibre (projection.type).
+ */
+export function isGlobeProjection(
+  projection: { type?: string; name?: string } | null | undefined
+): boolean {
+  return projection?.type === 'globe' || projection?.name === 'globe'
+}
+
+interface ProjectionResolution {
+  matrix: number[] | Float32Array | Float64Array | null
+  shaderData?: ShaderData
+  projectionData?: ProjectionData
+  mapboxGlobe?:
+    | {
+        projection: { name: string }
+        globeToMercatorMatrix: number[] | Float32Array | Float64Array
+        transition: number
+      }
+    | undefined
+}
+
+export function resolveProjectionParams(
+  params: unknown,
+  projection?: { name: string },
+  projectionToMercatorMatrix?: number[] | Float32Array | Float64Array,
+  projectionToMercatorTransition?: number
+): ProjectionResolution {
+  type MatrixLike = number[] | Float32Array | Float64Array
+  type ProjectionParams = {
+    shaderData?: ShaderData
+    defaultProjectionData?: {
+      mainMatrix?: MatrixLike
+      fallbackMatrix?: MatrixLike
+      tileMercatorCoords?: number[]
+      clippingPlane?: number[]
+      projectionTransition?: number
+    }
+    modelViewProjectionMatrix?: MatrixLike
+    projectionMatrix?: MatrixLike
+  }
+
+  const paramsObj =
+    params &&
+    typeof params === 'object' &&
+    !Array.isArray(params) &&
+    !ArrayBuffer.isView(params)
+      ? (params as ProjectionParams)
+      : null
+
+  const shaderData = paramsObj?.shaderData
+  let projectionData: ProjectionData | undefined
+  const defaultProj = paramsObj?.defaultProjectionData
+  if (
+    defaultProj &&
+    defaultProj.mainMatrix &&
+    defaultProj.fallbackMatrix &&
+    defaultProj.tileMercatorCoords &&
+    defaultProj.clippingPlane &&
+    typeof defaultProj.projectionTransition === 'number'
+  ) {
+    projectionData = {
+      mainMatrix: defaultProj.mainMatrix,
+      fallbackMatrix: defaultProj.fallbackMatrix,
+      tileMercatorCoords: defaultProj.tileMercatorCoords as [
+        number,
+        number,
+        number,
+        number
+      ],
+      clippingPlane: defaultProj.clippingPlane as [
+        number,
+        number,
+        number,
+        number
+      ],
+      projectionTransition: defaultProj.projectionTransition,
+    }
+  }
+  let matrix: number[] | Float32Array | Float64Array | null = null
+  if (projectionData?.mainMatrix && projectionData.mainMatrix.length) {
+    matrix = projectionData.mainMatrix
+  } else if (
+    Array.isArray(params) ||
+    params instanceof Float32Array ||
+    params instanceof Float64Array
+  ) {
+    matrix = params as number[] | Float32Array | Float64Array
+  } else if (paramsObj?.modelViewProjectionMatrix) {
+    matrix = paramsObj.modelViewProjectionMatrix
+  } else if (paramsObj?.projectionMatrix) {
+    matrix = paramsObj.projectionMatrix
+  }
+
+  const mapboxGlobe =
+    projection && projectionToMercatorMatrix !== undefined
+      ? {
+          projection,
+          globeToMercatorMatrix: projectionToMercatorMatrix,
+          transition:
+            typeof projectionToMercatorTransition === 'number'
+              ? projectionToMercatorTransition
+              : 0,
+        }
+      : undefined
+
+  return { matrix, shaderData, projectionData, mapboxGlobe }
+}
+
+export function computeWorldOffsets(
+  map: MapLike | null,
+  isGlobe: boolean
+): number[] {
+  if (!map) return [0]
+
+  const bounds = map.getBounds ? map.getBounds() : null
+  if (!bounds) return [0]
+
+  const renderWorldCopies =
+    typeof map.getRenderWorldCopies === 'function'
+      ? map.getRenderWorldCopies()
+      : true
+  if (isGlobe || !renderWorldCopies) return [0]
+
+  const west = bounds.getWest()
+  const east = bounds.getEast()
+
+  let effectiveEast = east
+  if (west > east) {
+    effectiveEast = east + 360
+  }
+
+  const minWorld = Math.floor((west + 180) / 360)
+  const maxWorld = Math.floor((effectiveEast + 180) / 360)
+
+  const worldOffsets: number[] = []
+  for (let i = minWorld; i <= maxWorld; i++) {
+    worldOffsets.push(i)
+  }
+  return worldOffsets.length > 0 ? worldOffsets : [0]
 }
