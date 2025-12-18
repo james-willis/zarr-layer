@@ -12,7 +12,6 @@ import type {
   CustomShaderConfig,
   MapboxGlobeParams,
   RendererUniforms,
-  SingleImageParams,
 } from './renderer-types'
 import type { ZarrRenderer } from './zarr-renderer'
 import type { QueryGeometry, QueryResult } from './query/types'

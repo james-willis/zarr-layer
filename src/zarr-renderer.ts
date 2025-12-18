@@ -10,12 +10,7 @@ import type {
   CustomShaderConfig,
   MapboxGlobeParams,
   RendererUniforms,
-  SingleImageParams,
 } from './renderer-types'
-import {
-  renderSingleImage,
-  type SingleImageState,
-} from './single-image-renderer'
 import { renderTiles } from './tile-renderer'
 import type { TileTuple, MercatorBounds } from './map-utils'
 import type { Tiles } from './tiles'
@@ -26,12 +21,6 @@ export class ZarrRenderer {
   private _gl: WebGL2RenderingContext
   private fragmentShaderSource: string
   private shaderCache: Map<string, ShaderProgram> = new Map()
-  private singleImageState: SingleImageState = {
-    uploaded: false,
-    geometryVersion: null,
-    dataVersion: null,
-    normalizedData: null,
-  }
   private customShaderConfig: CustomShaderConfig | null = null
 
   get gl(): WebGL2RenderingContext {
@@ -213,40 +202,11 @@ export class ZarrRenderer {
     )
   }
 
-  renderSingleImage(
-    shaderProgram: ShaderProgram,
-    worldOffsets: number[],
-    params: SingleImageParams,
-    vertexArr: Float32Array,
-    tileOverride?: {
-      scaleX: number
-      scaleY: number
-      shiftX: number
-      shiftY: number
-      texScale: [number, number]
-      texOffset: [number, number]
-    }
-  ): void {
-    this.singleImageState = renderSingleImage(
-      this._gl,
-      shaderProgram,
-      worldOffsets,
-      params,
-      vertexArr,
-      this.singleImageState,
-      tileOverride
-    )
-  }
-
   dispose() {
     const gl = this._gl
     for (const [, shader] of this.shaderCache) {
       gl.deleteProgram(shader.program)
     }
     this.shaderCache.clear()
-  }
-
-  resetSingleImageGeometry() {
-    this.singleImageState.uploaded = false
   }
 }

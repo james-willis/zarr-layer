@@ -316,7 +316,6 @@ export class ZarrLayer {
       this.projectionChangeHandler = () => {
         const isGlobe = this.isGlobeProjection()
         this.mode?.onProjectionChange(isGlobe)
-        this.renderer?.resetSingleImageGeometry()
       }
       if (typeof map.on === 'function' && this.projectionChangeHandler) {
         map.on('projectionchange', this.projectionChangeHandler)

@@ -5464,118 +5464,6 @@ function applyProjectionUniforms(gl, shaderProgram, matrix, projectionData, mapb
   }
 }
 
-// src/single-image-renderer.ts
-function renderSingleImage(gl, shaderProgram, worldOffsets, params, vertexArr, state, tileOverride) {
-  const {
-    data,
-    bounds,
-    texture,
-    vertexBuffer,
-    pixCoordBuffer,
-    width,
-    height,
-    channels = 1,
-    pixCoordArr,
-    geometryVersion,
-    dataVersion,
-    texScale: baseTexScale = [1, 1],
-    texOffset: baseTexOffset = [0, 0],
-    fillValue = null,
-    clim
-  } = params;
-  const isRegionRender = data === null;
-  let uploaded = state.uploaded;
-  let currentGeometryVersion = state.geometryVersion;
-  let currentDataVersion = state.dataVersion;
-  let normalizedData = state.normalizedData;
-  let dataChanged = false;
-  if (!isRegionRender) {
-    const geometryChanged = currentGeometryVersion === null || currentGeometryVersion !== geometryVersion;
-    dataChanged = currentDataVersion === null || currentDataVersion !== dataVersion;
-    if (geometryChanged) {
-      uploaded = false;
-      currentGeometryVersion = geometryVersion;
-    }
-    if (dataChanged || !normalizedData) {
-      normalizedData = normalizeDataForTexture(data, fillValue, clim).normalized;
-    }
-  }
-  if (!bounds || !texture || !vertexBuffer || !pixCoordBuffer) {
-    return {
-      uploaded,
-      geometryVersion: currentGeometryVersion,
-      dataVersion: currentDataVersion,
-      normalizedData
-    };
-  }
-  const scaleX = tileOverride?.scaleX !== void 0 ? tileOverride.scaleX : (bounds.x1 - bounds.x0) / 2;
-  const scaleY = tileOverride?.scaleY !== void 0 ? tileOverride.scaleY : (bounds.y1 - bounds.y0) / 2;
-  const shiftX = tileOverride?.shiftX !== void 0 ? tileOverride.shiftX : (bounds.x0 + bounds.x1) / 2;
-  const shiftY = tileOverride?.shiftY !== void 0 ? tileOverride.shiftY : (bounds.y0 + bounds.y1) / 2;
-  gl.uniform1f(shaderProgram.scaleLoc, 0);
-  gl.uniform1f(shaderProgram.scaleXLoc, scaleX);
-  gl.uniform1f(shaderProgram.scaleYLoc, scaleY);
-  gl.uniform1f(shaderProgram.shiftXLoc, shiftX);
-  gl.uniform1f(shaderProgram.shiftYLoc, shiftY);
-  const overrideScale = tileOverride?.texScale ?? [1, 1];
-  const overrideOffset = tileOverride?.texOffset ?? [0, 0];
-  const texScale = [
-    baseTexScale[0] * overrideScale[0],
-    baseTexScale[1] * overrideScale[1]
-  ];
-  const texOffset = [
-    baseTexOffset[0] * overrideScale[0] + overrideOffset[0],
-    baseTexOffset[1] * overrideScale[1] + overrideOffset[1]
-  ];
-  gl.uniform2f(shaderProgram.texScaleLoc, texScale[0], texScale[1]);
-  gl.uniform2f(shaderProgram.texOffsetLoc, texOffset[0], texOffset[1]);
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-  if (!uploaded && !isRegionRender) {
-    gl.bufferData(gl.ARRAY_BUFFER, vertexArr, gl.STATIC_DRAW);
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, pixCoordBuffer);
-  if (!uploaded && !isRegionRender) {
-    gl.bufferData(gl.ARRAY_BUFFER, pixCoordArr, gl.STATIC_DRAW);
-    uploaded = true;
-  }
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.uniform1i(shaderProgram.texLoc, 0);
-  configureDataTexture(gl);
-  if (dataChanged && normalizedData) {
-    const { format, internalFormat } = getTextureFormats(gl, channels);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      internalFormat,
-      width,
-      height,
-      0,
-      format,
-      gl.FLOAT,
-      normalizedData
-    );
-    currentDataVersion = dataVersion;
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-  gl.enableVertexAttribArray(shaderProgram.vertexLoc);
-  gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0);
-  gl.bindBuffer(gl.ARRAY_BUFFER, pixCoordBuffer);
-  gl.enableVertexAttribArray(shaderProgram.pixCoordLoc);
-  gl.vertexAttribPointer(shaderProgram.pixCoordLoc, 2, gl.FLOAT, false, 0, 0);
-  const vertexCount = vertexArr.length / 2;
-  for (const worldOffset of worldOffsets) {
-    gl.uniform1f(shaderProgram.worldXOffsetLoc, worldOffset);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexCount);
-  }
-  return {
-    uploaded,
-    geometryVersion: currentGeometryVersion,
-    dataVersion: currentDataVersion,
-    normalizedData
-  };
-}
-
 // src/constants.ts
 var DEFAULT_TILE_SIZE = 128;
 var MAX_CACHED_TILES = 64;
@@ -6020,12 +5908,6 @@ function renderTiles(gl, shaderProgram, visibleTiles, worldOffsets, tileCache, t
 var ZarrRenderer = class _ZarrRenderer {
   constructor(gl, fragmentShaderSource, customShaderConfig) {
     this.shaderCache = /* @__PURE__ */ new Map();
-    this.singleImageState = {
-      uploaded: false,
-      geometryVersion: null,
-      dataVersion: null,
-      normalizedData: null
-    };
     this.customShaderConfig = null;
     this._gl = _ZarrRenderer.resolveGl(gl);
     this.fragmentShaderSource = fragmentShaderSource;
@@ -6150,26 +6032,12 @@ var ZarrRenderer = class _ZarrRenderer {
       tileTexOverrides
     );
   }
-  renderSingleImage(shaderProgram, worldOffsets, params, vertexArr, tileOverride) {
-    this.singleImageState = renderSingleImage(
-      this._gl,
-      shaderProgram,
-      worldOffsets,
-      params,
-      vertexArr,
-      this.singleImageState,
-      tileOverride
-    );
-  }
   dispose() {
     const gl = this._gl;
     for (const [, shader] of this.shaderCache) {
       gl.deleteProgram(shader.program);
     }
     this.shaderCache.clear();
-  }
-  resetSingleImageGeometry() {
-    this.singleImageState.uploaded = false;
   }
 };
 
@@ -7629,6 +7497,41 @@ var IDENTITY_MATRIX = new Float32Array([
   0,
   1
 ]);
+function drawRegion(params) {
+  const {
+    gl,
+    shaderProgram,
+    vertexBuffer,
+    pixCoordBuffer,
+    texture,
+    vertexArr,
+    scaleX,
+    scaleY,
+    shiftX,
+    shiftY,
+    texScale,
+    texOffset
+  } = params;
+  gl.uniform1f(shaderProgram.scaleLoc, 0);
+  gl.uniform1f(shaderProgram.scaleXLoc, scaleX);
+  gl.uniform1f(shaderProgram.scaleYLoc, scaleY);
+  gl.uniform1f(shaderProgram.shiftXLoc, shiftX);
+  gl.uniform1f(shaderProgram.shiftYLoc, shiftY);
+  gl.uniform2f(shaderProgram.texScaleLoc, texScale[0], texScale[1]);
+  gl.uniform2f(shaderProgram.texOffsetLoc, texOffset[0], texOffset[1]);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+  gl.enableVertexAttribArray(shaderProgram.vertexLoc);
+  gl.vertexAttribPointer(shaderProgram.vertexLoc, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, pixCoordBuffer);
+  gl.enableVertexAttribArray(shaderProgram.pixCoordLoc);
+  gl.vertexAttribPointer(shaderProgram.pixCoordLoc, 2, gl.FLOAT, false, 0, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.uniform1i(shaderProgram.texLoc, 0);
+  configureDataTexture(gl);
+  gl.uniform1f(shaderProgram.worldXOffsetLoc, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexArr.length / 2);
+}
 function createTileMatrix(tileX0, tileY0, tileX1, tileY1) {
   const x0 = Math.max(0, tileX0);
   const x1 = Math.min(1, tileX1);
@@ -7655,8 +7558,9 @@ function createTileMatrix(tileX0, tileY0, tileX1, tileY1) {
     1
   ]);
 }
-function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexArr, bounds, latIsAscending) {
+function renderRegionToTile(renderer, context, tileId, region) {
   const { colormapTexture, uniforms, customShaderConfig } = context;
+  const { bounds, vertexBuffer, pixCoordBuffer, texture, vertexArr } = region;
   const tilesPerSide = 2 ** tileId.z;
   const tileX0 = tileId.x / tilesPerSide;
   const tileX1 = (tileId.x + 1) / tilesPerSide;
@@ -7687,8 +7591,9 @@ function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexA
     tileMatrix,
     true
   );
-  const baseTexScale = singleImage.texScale ?? [1, 1];
-  const baseTexOffset = singleImage.texOffset ?? [0, 0];
+  const baseTexScale = region.texScale ?? [1, 1];
+  const baseTexOffset = region.texOffset ?? [0, 0];
+  const gl = renderer.gl;
   const isEquirectangular = bounds.latMin !== void 0 && bounds.latMax !== void 0;
   if (isEquirectangular) {
     const cropLatNorth = mercatorNormToLat(overlapY0);
@@ -7698,23 +7603,23 @@ function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexA
     const shiftX = (overlapX0 + overlapX1) / 2;
     const shiftY = (overlapY0 + overlapY1) / 2;
     if (shaderProgram.isEquirectangularLoc) {
-      renderer.gl.uniform1i(shaderProgram.isEquirectangularLoc, 1);
+      gl.uniform1i(shaderProgram.isEquirectangularLoc, 1);
     }
     if (shaderProgram.latMinLoc) {
-      renderer.gl.uniform1f(shaderProgram.latMinLoc, cropLatSouth);
+      gl.uniform1f(shaderProgram.latMinLoc, cropLatSouth);
     }
     if (shaderProgram.latMaxLoc) {
-      renderer.gl.uniform1f(shaderProgram.latMaxLoc, cropLatNorth);
+      gl.uniform1f(shaderProgram.latMaxLoc, cropLatNorth);
     }
     const fullLatRange = bounds.latMax - bounds.latMin;
     let vNorth;
     let vSouth;
-    if (latIsAscending) {
-      vNorth = (cropLatNorth - bounds.latMin) / fullLatRange;
-      vSouth = (cropLatSouth - bounds.latMin) / fullLatRange;
-    } else {
+    if (region.latIsAscending === false) {
       vNorth = (bounds.latMax - cropLatNorth) / fullLatRange;
       vSouth = (bounds.latMax - cropLatSouth) / fullLatRange;
+    } else {
+      vNorth = (cropLatNorth - bounds.latMin) / fullLatRange;
+      vSouth = (cropLatSouth - bounds.latMin) / fullLatRange;
     }
     const imgWidth = bounds.x1 - bounds.x0;
     const texScaleX = imgWidth > 0 ? (overlapX1 - overlapX0) / imgWidth : 1;
@@ -7725,7 +7630,13 @@ function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexA
       baseTexScale,
       baseTexOffset
     );
-    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
+    drawRegion({
+      gl,
+      shaderProgram,
+      vertexBuffer,
+      pixCoordBuffer,
+      texture,
+      vertexArr,
       scaleX,
       scaleY,
       shiftX,
@@ -7734,7 +7645,7 @@ function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexA
     });
   } else {
     if (shaderProgram.isEquirectangularLoc) {
-      renderer.gl.uniform1i(shaderProgram.isEquirectangularLoc, 0);
+      gl.uniform1i(shaderProgram.isEquirectangularLoc, 0);
     }
     const scaleX = (overlapX1 - overlapX0) / 2;
     const scaleY = (overlapY1 - overlapY0) / 2;
@@ -7752,7 +7663,13 @@ function renderSingleImageToTile(renderer, context, tileId, singleImage, vertexA
       baseTexScale,
       baseTexOffset
     );
-    renderer.renderSingleImage(shaderProgram, [0], singleImage, vertexArr, {
+    drawRegion({
+      gl,
+      shaderProgram,
+      vertexBuffer,
+      pixCoordBuffer,
+      texture,
+      vertexArr,
       scaleX,
       scaleY,
       shiftX,
@@ -7781,37 +7698,15 @@ function renderMapboxTile({
       const bounds = region.mercatorBounds;
       const intersects = bounds.x0 < tileX1 && bounds.x1 > tileX0 && bounds.y0 < tileY1 && bounds.y1 > tileY0;
       if (!intersects) continue;
-      const isAscending = region.latIsAscending !== false;
-      const baseTexScale = isAscending ? [1, -1] : [1, 1];
-      const baseTexOffset = isAscending ? [0, 1] : [0, 0];
       const linearBuffer = getLinearPixCoordBuffer(context.gl, region);
-      const regionParams = {
-        data: null,
-        // Already uploaded to texture
-        width: region.width,
-        height: region.height,
-        channels: region.channels,
-        bounds,
-        // Keep latMin/latMax for equirectangular shader
-        texture: region.texture,
+      renderRegionToTile(renderer, context, tileId, {
         vertexBuffer: region.vertexBuffer,
         pixCoordBuffer: linearBuffer,
-        geometryVersion: 0,
-        // Buffer already has correct data, no re-upload needed
-        dataVersion: 1,
-        // Already uploaded
-        texScale: baseTexScale,
-        texOffset: baseTexOffset,
-        clim: uniforms.clim
-      };
-      renderSingleImageToTile(
-        renderer,
-        context,
-        tileId,
-        regionParams,
-        region.vertexArr,
-        bounds
-      );
+        texture: region.texture,
+        vertexArr: region.vertexArr,
+        bounds,
+        latIsAscending: region.latIsAscending
+      });
       anyRendered = true;
     }
     return !anyRendered;
@@ -9961,7 +9856,6 @@ var ZarrLayer = class {
       this.projectionChangeHandler = () => {
         const isGlobe2 = this.isGlobeProjection();
         this.mode?.onProjectionChange(isGlobe2);
-        this.renderer?.resetSingleImageGeometry();
       };
       if (typeof map.on === "function" && this.projectionChangeHandler) {
         map.on("projectionchange", this.projectionChangeHandler);
