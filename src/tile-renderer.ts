@@ -12,21 +12,68 @@ import type { ShaderProgram } from './shader-program'
 import type { Tiles, TileData } from './tiles'
 import { setupBandTextureUniforms } from './render-helpers'
 import { renderRegion, type RenderableRegion } from './renderable-region'
+import { createLinearTexCoordsFromVertices } from './webgl-utils'
+
+// ============================================================================
+// Texture Coordinate Caching for Mapbox Globe Tiles
+// ============================================================================
 
 /**
- * Cache for Mapbox tile-specific warped buffers.
- * Key format: `${tileKey}_${boundsKey}` where boundsKey is the Mapbox tile bounds.
+ * Cache for warped texture coordinate buffers (Mapbox globe path only).
+ * Outer: tile identity, Inner: target bounds → buffer.
  */
-const mapboxWarpedBufferCache = new Map<string, WebGLBuffer>()
+const warpedBufferCache = new WeakMap<TileData, Map<string, WebGLBuffer>>()
+
+function boundsKey(bounds: { x0: number; y0: number; x1: number; y1: number }): string {
+  return `${bounds.x0},${bounds.y0},${bounds.x1},${bounds.y1}`
+}
 
 /**
- * Create a cache key for Mapbox warped buffers.
+ * Get or create a warped texture coordinate buffer for EPSG:4326 tile data.
+ * Used only for Mapbox globe tile rendering path.
  */
-function mapboxWarpedKey(
-  tileKey: string,
-  bounds: { x0: number; y0: number; x1: number; y1: number }
-): string {
-  return `${tileKey}_${bounds.x0},${bounds.y0},${bounds.x1},${bounds.y1}`
+function getWarpedBufferForTile(
+  gl: WebGL2RenderingContext,
+  tile: TileData,
+  vertexArr: Float32Array,
+  targetBounds: { x0: number; y0: number; x1: number; y1: number },
+  latIsAscending: boolean | null
+): WebGLBuffer {
+  const bKey = boundsKey(targetBounds)
+
+  let tileWarpCache = warpedBufferCache.get(tile)
+  if (!tileWarpCache) {
+    tileWarpCache = new Map()
+    warpedBufferCache.set(tile, tileWarpCache)
+  }
+
+  let buffer = tileWarpCache.get(bKey)
+  if (buffer) return buffer
+
+  const linearCoords = createLinearTexCoordsFromVertices(vertexArr)
+
+  // Warp for latitude reprojection
+  const warpedCoords = createWarpedTexCoords(
+    vertexArr,
+    linearCoords,
+    targetBounds,
+    { latMin: tile.latBounds!.min, latMax: tile.latBounds!.max },
+    latIsAscending
+  )
+
+  // Apply X cropping (bake into coords)
+  const sourceWidth = targetBounds.x1 - targetBounds.x0
+  if (sourceWidth > 0) {
+    // Note: for tiles, source bounds == target bounds, so no cropping needed
+    // This is just for consistency with the region path
+  }
+
+  buffer = gl.createBuffer()!
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+  gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
+  tileWarpCache.set(bKey, buffer)
+
+  return buffer
 }
 
 /**
@@ -34,12 +81,11 @@ function mapboxWarpedKey(
  * Handles both regular geometry and pre-warped coords for EPSG:4326.
  *
  * For flat map: uses tile's warpedPixCoordBuffer (warped for tile's own bounds)
- * For Mapbox tiles: computes warped coords for the specific Mapbox tile bounds
+ * For Mapbox tiles: uses cached per-target warped coords
  */
 function prepareTileGeometry(
   gl: WebGL2RenderingContext,
   tile: TileData,
-  tileKey: string,
   vertexArr: Float32Array,
   pixCoordArr: Float32Array,
   bounds: MercatorBounds | undefined,
@@ -62,33 +108,8 @@ function prepareTileGeometry(
 
   if (hasLatBounds) {
     if (isGlobeTileRender) {
-      // Mapbox tile rendering: warp for the specific Mapbox tile bounds
-      const cacheKey = mapboxWarpedKey(tileKey, bounds!)
-      let warpedBuffer = mapboxWarpedBufferCache.get(cacheKey)
-
-      if (!warpedBuffer) {
-        const warpedCoords = createWarpedTexCoords(
-          vertexArr,
-          pixCoordArr,
-          {
-            x0: bounds!.x0,
-            x1: bounds!.x1,
-            y0: bounds!.y0,
-            y1: bounds!.y1,
-          },
-          {
-            latMin: tile.latBounds!.min,
-            latMax: tile.latBounds!.max,
-          },
-          latIsAscending
-        )
-        warpedBuffer = gl.createBuffer()!
-        gl.bindBuffer(gl.ARRAY_BUFFER, warpedBuffer)
-        gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
-        mapboxWarpedBufferCache.set(cacheKey, warpedBuffer)
-      }
-
-      return warpedBuffer
+      // Mapbox tile rendering: use inlined warp logic with caching
+      return getWarpedBufferForTile(gl, tile, vertexArr, bounds!, latIsAscending)
     } else if (tile.warpedPixCoordBuffer) {
       // Flat map rendering: use tile's own warped buffer
       if (!tile.warpedGeometryUploaded) {
@@ -260,23 +281,22 @@ export function renderTiles(
                 bounds.latMin + ((localY + 1) / divisor) * latSpan
             }
 
-            const childTileKey = tileToKey([
-              child.childZ,
-              child.childX,
-              child.childY,
-            ])
-
             // Prepare geometry for this child tile (CPU warp baked into coords)
             const childPixCoordBuffer = prepareTileGeometry(
               gl,
               child.tile,
-              childTileKey,
               vertexArr,
               pixCoordArr,
               childBounds,
               latIsAscending,
               isGlobeTileRender
             )
+
+            const childTileKey = tileToKey([
+              child.childZ,
+              child.childX,
+              child.childY,
+            ])
 
             // Child uses full texture (texScale=1, texOffset=0)
             const childRenderable = tileToRenderable(
@@ -327,7 +347,6 @@ export function renderTiles(
     const pixCoordBuffer = prepareTileGeometry(
       gl,
       tileToRender,
-      renderTileKey,
       vertexArr,
       pixCoordArr,
       bounds,

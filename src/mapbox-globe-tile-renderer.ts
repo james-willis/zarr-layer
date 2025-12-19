@@ -23,6 +23,7 @@ import {
   parseLevelZoom,
   zoomToLevel,
   createWarpedTexCoords,
+  type MercatorBounds,
   type TileTuple,
   type XYLimits,
 } from './map-utils'
@@ -43,27 +44,9 @@ import {
   boundsIntersect,
 } from './mapbox-globe-utils'
 
-/**
- * Cache for warped texture coordinate buffers used in Mapbox globe rendering.
- * Outer WeakMap ensures buffers are garbage-collected when RegionRenderState is removed.
- * Inner Map caches per-tile warped buffers (keyed by tile bounds string).
- */
-const warpedBufferCache = new WeakMap<
-  RegionRenderState,
-  Map<string, WebGLBuffer>
->()
-
-/**
- * Create a cache key from tile bounds.
- */
-function tileBoundsKey(bounds: {
-  x0: number
-  y0: number
-  x1: number
-  y1: number
-}): string {
-  return `${bounds.x0},${bounds.y0},${bounds.x1},${bounds.y1}`
-}
+// ============================================================================
+// Texture Coordinate Utilities (Mapbox-specific)
+// ============================================================================
 
 interface TexCoordResult {
   buffer: WebGLBuffer
@@ -72,14 +55,47 @@ interface TexCoordResult {
 }
 
 /**
- * Cache for linear tex coord buffers (one per region, reused across tiles).
+ * Cache for linear texture coordinate buffers.
+ * One buffer per region, reused across all target tiles.
  */
 const linearBufferCache = new WeakMap<RegionRenderState, WebGLBuffer>()
 
 /**
- * Get or create a linear texture coordinate buffer for a region.
+ * Cache for warped texture coordinate buffers.
+ * Outer: region identity, Inner: target bounds → buffer.
+ * Needed because EPSG:4326 warp depends on target tile bounds.
  */
-function getOrCreateLinearBuffer(
+const warpedBufferCache = new WeakMap<RegionRenderState, Map<string, WebGLBuffer>>()
+
+function boundsKey(bounds: { x0: number; y0: number; x1: number; y1: number }): string {
+  return `${bounds.x0},${bounds.y0},${bounds.x1},${bounds.y1}`
+}
+
+/**
+ * Compute linear crop transform for EPSG:3857.
+ */
+function computeLinearCrop(
+  sourceBounds: MercatorBounds,
+  targetBounds: { x0: number; y0: number; x1: number; y1: number }
+): { texScale: [number, number]; texOffset: [number, number] } {
+  const sourceWidth = sourceBounds.x1 - sourceBounds.x0
+  const sourceHeight = sourceBounds.y1 - sourceBounds.y0
+  return {
+    texScale: [
+      sourceWidth > 0 ? (targetBounds.x1 - targetBounds.x0) / sourceWidth : 1,
+      sourceHeight > 0 ? (targetBounds.y1 - targetBounds.y0) / sourceHeight : 1,
+    ],
+    texOffset: [
+      sourceWidth > 0 ? (targetBounds.x0 - sourceBounds.x0) / sourceWidth : 0,
+      sourceHeight > 0 ? (targetBounds.y0 - sourceBounds.y0) / sourceHeight : 0,
+    ],
+  }
+}
+
+/**
+ * Get or create a linear texture coordinate buffer for EPSG:3857 regions.
+ */
+function getLinearBuffer(
   gl: WebGL2RenderingContext,
   region: RegionRenderState
 ): WebGLBuffer {
@@ -96,42 +112,15 @@ function getOrCreateLinearBuffer(
 }
 
 /**
- * Get texture coordinates and transform for rendering a region to a specific tile.
- *
- * For EPSG:4326: Returns warped buffer (CPU warp needed for non-linear lat→mercY)
- * For EPSG:3857: Returns linear buffer + texScale/texOffset (shader does linear crop)
+ * Get or create a warped texture coordinate buffer for EPSG:4326 regions.
+ * Cached by (region, targetBounds) pair.
  */
-function getTexCoordsForTile(
+function getWarpedBuffer(
   gl: WebGL2RenderingContext,
   region: RegionRenderState,
-  overlapBounds: { x0: number; y0: number; x1: number; y1: number }
-): TexCoordResult {
-  const bounds = region.mercatorBounds
-  const isEquirectangular =
-    bounds.latMin !== undefined && bounds.latMax !== undefined
-
-  if (!isEquirectangular) {
-    // EPSG:3857: Use linear buffer + shader transform (no CPU warp needed)
-    const buffer = getOrCreateLinearBuffer(gl, region)
-
-    const regionWidth = bounds.x1 - bounds.x0
-    const regionHeight = bounds.y1 - bounds.y0
-    const texScale: [number, number] = [
-      regionWidth > 0 ? (overlapBounds.x1 - overlapBounds.x0) / regionWidth : 1,
-      regionHeight > 0
-        ? (overlapBounds.y1 - overlapBounds.y0) / regionHeight
-        : 1,
-    ]
-    const texOffset: [number, number] = [
-      regionWidth > 0 ? (overlapBounds.x0 - bounds.x0) / regionWidth : 0,
-      regionHeight > 0 ? (overlapBounds.y0 - bounds.y0) / regionHeight : 0,
-    ]
-
-    return { buffer, texScale, texOffset }
-  }
-
-  // EPSG:4326: Need CPU warp for non-linear latitude reprojection
-  const boundsKey = tileBoundsKey(overlapBounds)
+  targetBounds: { x0: number; y0: number; x1: number; y1: number }
+): WebGLBuffer {
+  const bKey = boundsKey(targetBounds)
 
   let regionCache = warpedBufferCache.get(region)
   if (!regionCache) {
@@ -139,38 +128,66 @@ function getTexCoordsForTile(
     warpedBufferCache.set(region, regionCache)
   }
 
-  let buffer = regionCache.get(boundsKey)
-  if (!buffer) {
-    const linearCoords = createLinearTexCoordsFromVertices(region.vertexArr)
+  let buffer = regionCache.get(bKey)
+  if (buffer) return buffer
 
-    // Warp for latitude reprojection
-    const warpedCoords = createWarpedTexCoords(
-      region.vertexArr,
-      linearCoords,
-      overlapBounds,
-      { latMin: bounds.latMin!, latMax: bounds.latMax! },
-      region.latIsAscending ?? null
-    )
+  const bounds = region.mercatorBounds
+  const linearCoords = createLinearTexCoordsFromVertices(region.vertexArr)
 
-    // Apply X cropping (bake into coords since we're already creating a buffer)
-    const regionWidth = bounds.x1 - bounds.x0
-    if (regionWidth > 0) {
-      const texScaleX = (overlapBounds.x1 - overlapBounds.x0) / regionWidth
-      const texOffsetX = (overlapBounds.x0 - bounds.x0) / regionWidth
-      for (let i = 0; i < warpedCoords.length; i += 2) {
-        warpedCoords[i] = warpedCoords[i] * texScaleX + texOffsetX
-      }
+  // Warp for latitude reprojection
+  const warpedCoords = createWarpedTexCoords(
+    region.vertexArr,
+    linearCoords,
+    targetBounds,
+    { latMin: bounds.latMin!, latMax: bounds.latMax! },
+    region.latIsAscending ?? null
+  )
+
+  // Apply X cropping (bake into coords)
+  const sourceWidth = bounds.x1 - bounds.x0
+  if (sourceWidth > 0) {
+    const texScaleX = (targetBounds.x1 - targetBounds.x0) / sourceWidth
+    const texOffsetX = (targetBounds.x0 - bounds.x0) / sourceWidth
+    for (let i = 0; i < warpedCoords.length; i += 2) {
+      warpedCoords[i] = warpedCoords[i] * texScaleX + texOffsetX
     }
-
-    buffer = gl.createBuffer()!
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-    gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
-    regionCache.set(boundsKey, buffer)
   }
 
-  // Warp is baked in, use identity transform
+  buffer = gl.createBuffer()!
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+  gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
+  regionCache.set(bKey, buffer)
+
+  return buffer
+}
+
+/**
+ * Get texture coordinates for rendering a region to target bounds.
+ * Chooses strategy based on CRS (EPSG:4326 needs CPU warp, EPSG:3857 uses shader).
+ */
+function getTexCoordsForRegion(
+  gl: WebGL2RenderingContext,
+  region: RegionRenderState,
+  targetBounds: { x0: number; y0: number; x1: number; y1: number }
+): TexCoordResult {
+  const bounds = region.mercatorBounds
+  const isEquirectangular = bounds.latMin !== undefined && bounds.latMax !== undefined
+
+  if (!isEquirectangular) {
+    // EPSG:3857: Use linear buffer + shader transform
+    const buffer = getLinearBuffer(gl, region)
+    const { texScale, texOffset } = computeLinearCrop(bounds, targetBounds)
+    return { buffer, texScale, texOffset }
+  }
+
+  // EPSG:4326: Use warped buffer (warp baked in, identity transform)
+  const buffer = getWarpedBuffer(gl, region, targetBounds)
   return { buffer, texScale: [1, 1], texOffset: [0, 0] }
 }
+
+// ============================================================================
+// Main Rendering Functions
+// ============================================================================
 
 interface MapboxTileRenderParams {
   renderer: ZarrRenderer
@@ -266,7 +283,7 @@ function renderRegionsToTile(
     }
 
     // Get tex coords (CPU warp for 4326, shader transform for 3857)
-    const texCoords = getTexCoordsForTile(renderer.gl, region, overlapBounds)
+    const texCoords = getTexCoordsForRegion(renderer.gl, region, overlapBounds)
 
     // Create renderable region
     const renderable = createRenderableFromRegion(
