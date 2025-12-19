@@ -47,7 +47,7 @@ export interface TiledRenderState {
 export interface RegionRenderState {
   texture: WebGLTexture
   vertexBuffer: WebGLBuffer
-  /** Pre-warped coords with mercator distortion for flat map rendering */
+  /** Texture coordinate buffer for sampling resampled data */
   pixCoordBuffer: WebGLBuffer
   vertexArr: Float32Array
   mercatorBounds: MercatorBounds

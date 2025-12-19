@@ -15,6 +15,7 @@ import {
   mustCreateTexture,
   normalizeDataForTexture,
 } from './webgl-utils'
+import { resampleToMercator, needsResampling } from './resampler'
 
 /**
  * Tile cache entry containing raw data and WebGL resources.
@@ -35,8 +36,10 @@ export interface TileData {
   dataScale: number // Scale factor applied to data (1.0 = no normalization)
   bandDataScales: Map<string, number> // Scale factors per band
 
-  // Geographic bounds for coordinate warping (EPSG:4326 only)
+  // Geographic bounds for CPU resampling (EPSG:4326 only)
   latBounds: { min: number; max: number } | null
+  geoBounds: { west: number; south: number; east: number; north: number } | null
+  mercatorBounds: { x0: number; y0: number; x1: number; y1: number } | null
 
   // WebGL resources
   tileTexture: WebGLTexture | null
@@ -47,9 +50,7 @@ export interface TileData {
   textureConfigured: boolean
   vertexBuffer: WebGLBuffer | null
   pixCoordBuffer: WebGLBuffer | null
-  warpedPixCoordBuffer: WebGLBuffer | null // Pre-warped tex coords for EPSG:4326
   geometryUploaded: boolean
-  warpedGeometryUploaded: boolean // Track if warped coords have been uploaded
 }
 
 interface TilesOptions {
@@ -61,6 +62,7 @@ interface TilesOptions {
   coordinates: Record<string, (string | number)[]>
   maxCachedTiles?: number
   bandNames?: string[]
+  crs?: 'EPSG:4326' | 'EPSG:3857'
 }
 
 /**
@@ -78,6 +80,7 @@ export class Tiles {
   private tiles: Map<string, TileData> = new Map()
   private bandNames: string[]
   private gl: WebGL2RenderingContext | null = null
+  private crs: 'EPSG:4326' | 'EPSG:3857'
 
   constructor({
     store,
@@ -88,6 +91,7 @@ export class Tiles {
     coordinates,
     maxCachedTiles = 64,
     bandNames = [],
+    crs = 'EPSG:4326',
   }: TilesOptions) {
     this.store = store
     this.selector = selector
@@ -97,6 +101,7 @@ export class Tiles {
     this.coordinates = coordinates
     this.maxCachedTiles = maxCachedTiles
     this.bandNames = bandNames
+    this.crs = crs
   }
 
   /**
@@ -391,9 +396,63 @@ export class Tiles {
       bandData: Map<string, Float32Array>
     }
   ): void {
+    let dataToNormalize = sliced.data
+    const bandDataToNormalize = new Map(sliced.bandData)
+
+    // Resample EPSG:4326 data to Mercator space before normalization
+    // Must resample bands separately since they are single-channel arrays,
+    // then reconstruct interleaved data for multi-channel tiles
+    if (needsResampling(this.crs) && tile.geoBounds && tile.mercatorBounds) {
+      const tileSize = this.store.tileSize
+      const latIsAscending = this.store.latIsAscending ?? null
+      const resampleOpts = {
+        sourceSize: [tileSize, tileSize] as [number, number],
+        sourceBounds: [
+          tile.geoBounds.west,
+          tile.geoBounds.south,
+          tile.geoBounds.east,
+          tile.geoBounds.north,
+        ] as [number, number, number, number],
+        targetSize: [tileSize, tileSize] as [number, number],
+        targetMercatorBounds: [
+          tile.mercatorBounds.x0,
+          tile.mercatorBounds.y0,
+          tile.mercatorBounds.x1,
+          tile.mercatorBounds.y1,
+        ] as [number, number, number, number],
+        fillValue: this.fillValue,
+        latIsAscending,
+      }
+
+      // Resample each band separately (bands are already single-channel)
+      const resampledBands: Float32Array[] = []
+      for (const [bandName, bandData] of sliced.bandData) {
+        const resampled = resampleToMercator({
+          sourceData: bandData,
+          ...resampleOpts,
+        })
+        resampledBands.push(resampled)
+        bandDataToNormalize.set(bandName, resampled)
+      }
+
+      // Reconstruct interleaved data from resampled bands
+      if (sliced.channels > 1 && resampledBands.length === sliced.channels) {
+        const pixelCount = tileSize * tileSize
+        dataToNormalize = new Float32Array(pixelCount * sliced.channels)
+        for (let i = 0; i < pixelCount; i++) {
+          for (let c = 0; c < sliced.channels; c++) {
+            dataToNormalize[i * sliced.channels + c] = resampledBands[c][i]
+          }
+        }
+      } else if (resampledBands.length > 0) {
+        // Single channel - use first band directly
+        dataToNormalize = resampledBands[0]
+      }
+    }
+
     // Normalize main data using clim to determine scale
     const { normalized, scale } = normalizeDataForTexture(
-      sliced.data,
+      dataToNormalize,
       this.fillValue,
       this.clim
     )
@@ -410,7 +469,7 @@ export class Tiles {
     tile.bandData = new Map()
     tile.bandDataScales = new Map()
     tile.bandTexturesUploaded.clear()
-    for (const [bandName, bandData] of sliced.bandData) {
+    for (const [bandName, bandData] of bandDataToNormalize) {
       const bandResult = normalizeDataForTexture(
         bandData,
         this.fillValue,
@@ -480,6 +539,8 @@ export class Tiles {
       dataScale: 1.0,
       bandDataScales: new Map(),
       latBounds: null,
+      geoBounds: null,
+      mercatorBounds: null,
       tileTexture: this.gl ? mustCreateTexture(this.gl) : null,
       bandTextures: new Map(),
       bandTexturesUploaded: new Set(),
@@ -488,9 +549,7 @@ export class Tiles {
       textureConfigured: false,
       vertexBuffer: this.gl ? mustCreateBuffer(this.gl) : null,
       pixCoordBuffer: this.gl ? mustCreateBuffer(this.gl) : null,
-      warpedPixCoordBuffer: this.gl ? mustCreateBuffer(this.gl) : null,
       geometryUploaded: false,
-      warpedGeometryUploaded: false,
     }
     this.tiles.set(tileKey, tile)
     this.evictOldTiles()
@@ -517,8 +576,6 @@ export class Tiles {
         }
         if (tile.vertexBuffer) this.gl.deleteBuffer(tile.vertexBuffer)
         if (tile.pixCoordBuffer) this.gl.deleteBuffer(tile.pixCoordBuffer)
-        if (tile.warpedPixCoordBuffer)
-          this.gl.deleteBuffer(tile.warpedPixCoordBuffer)
       }
       this.tiles.delete(oldestKey)
     }
@@ -564,23 +621,53 @@ export class Tiles {
   }
 
   /**
-   * Set latitude bounds for a tile (used for coordinate warping in EPSG:4326 mode).
-   * If bounds change, marks warped geometry as needing re-upload.
+   * Set bounds for a tile (used for CPU resampling in EPSG:4326 mode).
    */
-  setTileLatBounds(
+  setTileBounds(
     tileKey: string,
-    latBounds: { min: number; max: number }
+    bounds: {
+      latMin: number
+      latMax: number
+      lonMin: number
+      lonMax: number
+      x0: number
+      y0: number
+      x1: number
+      y1: number
+    }
   ): void {
     const tile = this.tiles.get(tileKey)
     if (!tile) return
 
-    // Check if bounds changed
-    if (
+    const latBounds = { min: bounds.latMin, max: bounds.latMax }
+    const geoBounds = {
+      west: bounds.lonMin,
+      south: bounds.latMin,
+      east: bounds.lonMax,
+      north: bounds.latMax,
+    }
+    const mercatorBounds = {
+      x0: bounds.x0,
+      y0: bounds.y0,
+      x1: bounds.x1,
+      y1: bounds.y1,
+    }
+
+    // Check if any bounds changed
+    const boundsChanged =
       tile.latBounds?.min !== latBounds.min ||
-      tile.latBounds?.max !== latBounds.max
-    ) {
+      tile.latBounds?.max !== latBounds.max ||
+      tile.geoBounds?.west !== geoBounds.west ||
+      tile.geoBounds?.east !== geoBounds.east ||
+      tile.mercatorBounds?.x0 !== mercatorBounds.x0 ||
+      tile.mercatorBounds?.x1 !== mercatorBounds.x1 ||
+      tile.mercatorBounds?.y0 !== mercatorBounds.y0 ||
+      tile.mercatorBounds?.y1 !== mercatorBounds.y1
+
+    if (boundsChanged) {
       tile.latBounds = latBounds
-      tile.warpedGeometryUploaded = false
+      tile.geoBounds = geoBounds
+      tile.mercatorBounds = mercatorBounds
     }
   }
 
@@ -632,7 +719,17 @@ export class Tiles {
     tileTuple: TileTuple,
     selectorHash: string,
     version: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    bounds?: {
+      latMin: number
+      latMax: number
+      lonMin: number
+      lonMax: number
+      x0: number
+      y0: number
+      x1: number
+      y1: number
+    }
   ): Promise<TileData | null> {
     const [z] = tileTuple
     const levelPath = this.store.levels[z]
@@ -641,6 +738,23 @@ export class Tiles {
     const levelArray = await this.store.getLevelArray(levelPath)
     const tileKey = tileToKey(tileTuple)
     const tile = this.getOrCreateTile(tileKey)
+
+    // Store bounds if provided (for EPSG:4326 resampling)
+    if (bounds) {
+      tile.latBounds = { min: bounds.latMin, max: bounds.latMax }
+      tile.geoBounds = {
+        west: bounds.lonMin,
+        south: bounds.latMin,
+        east: bounds.lonMax,
+        north: bounds.latMax,
+      }
+      tile.mercatorBounds = {
+        x0: bounds.x0,
+        y0: bounds.y0,
+        x1: bounds.x1,
+        y1: bounds.y1,
+      }
+    }
 
     if (tile.data && tile.selectorHash === selectorHash) {
       return tile
@@ -721,7 +835,6 @@ export class Tiles {
   markGeometryDirty() {
     for (const tile of this.tiles.values()) {
       tile.geometryUploaded = false
-      tile.warpedGeometryUploaded = false
     }
   }
 
@@ -737,8 +850,6 @@ export class Tiles {
         }
         if (tile.vertexBuffer) this.gl.deleteBuffer(tile.vertexBuffer)
         if (tile.pixCoordBuffer) this.gl.deleteBuffer(tile.pixCoordBuffer)
-        if (tile.warpedPixCoordBuffer)
-          this.gl.deleteBuffer(tile.warpedPixCoordBuffer)
       }
     }
     this.tiles.clear()

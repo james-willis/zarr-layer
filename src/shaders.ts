@@ -72,7 +72,7 @@ void main() {
 }
 `
 
-// Fragment shader coordinate transform (texScale/texOffset applied to pre-warped coords)
+// Fragment shader coordinate transform (texScale/texOffset applied to texture coords)
 const FRAGMENT_SHADER_REPROJECT = `
   vec2 sample_coord = pix_coord * u_texScale + u_texOffset;
 `

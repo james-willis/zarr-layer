@@ -49,6 +49,8 @@ export interface MercatorBounds {
   y1: number
   latMin?: number
   latMax?: number
+  lonMin?: number
+  lonMax?: number
 }
 
 /**
@@ -647,69 +649,14 @@ export function chunkIndexToArrayRange(
   return [startIndex, endIndex]
 }
 
-// === Texture coordinate warping utilities ===
+// === Texture coordinate utilities ===
 
-/** Latitude bounds in degrees (for texture coordinate warping) */
+/** Latitude bounds in degrees */
 export interface LatBounds {
   latMin: number
   latMax: number
   lonMin?: number
   lonMax?: number
-}
-
-/**
- * Create warped texture coordinates for EPSG:4326 data displayed on a mercator map.
- *
- * The texture is in linear lat/lon space, but the geometry is in mercator space.
- * This function computes the texture V coordinate for each vertex based on the
- * mercator Y position, accounting for the non-linear relationship between
- * latitude and mercator Y.
- *
- * @param vertexArr - Subdivided quad vertices in [-1, 1] range
- * @param texCoordArr - Linear texture coordinates [0, 1] for each vertex
- * @param mercatorBounds - Mercator normalized bounds for the geometry
- * @param latBounds - Latitude bounds in degrees
- * @param latIsAscending - If false, texture row 0 is north (latMax); if true/null, row 0 is south
- */
-export function createWarpedTexCoords(
-  vertexArr: Float32Array,
-  texCoordArr: Float32Array,
-  mercatorBounds: MercatorBounds,
-  latBounds: LatBounds,
-  latIsAscending: boolean | null
-): Float32Array {
-  const warped = new Float32Array(texCoordArr.length)
-  const { y0, y1 } = mercatorBounds
-  const { latMin, latMax } = latBounds
-  const latRange = latMax - latMin
-
-  for (let i = 0; i < vertexArr.length; i += 2) {
-    const u = texCoordArr[i]
-    const normY = vertexArr[i + 1] // vertex Y in [-1, 1]
-
-    // Compute mercator Y for this vertex
-    // vertex y=-1 maps to y1 (south), y=1 maps to y0 (north)
-    const mercY = y0 + ((1 - normY) / 2) * (y1 - y0)
-
-    // Convert mercator Y to latitude
-    const lat = mercatorNormToLat(mercY)
-
-    // Compute texture V for this latitude
-    let v = (lat - latMin) / latRange
-
-    // Handle latIsAscending (only flip if explicitly false, not null)
-    if (latIsAscending === false) {
-      // Data row 0 = north (latMax), so flip V
-      v = 1 - v
-    }
-
-    // Clamp to valid range
-    v = Math.max(0, Math.min(1, v))
-
-    warped[i] = u
-    warped[i + 1] = v
-  }
-  return warped
 }
 
 /**

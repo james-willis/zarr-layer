@@ -45,6 +45,46 @@ import {
   zoomToLevel,
   type XYLimits,
 } from './map-utils'
+
+/** Full tile bounds with all required fields (lat/lon + mercator) */
+interface FullTileBounds {
+  latMin: number
+  latMax: number
+  lonMin: number
+  lonMax: number
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+/**
+ * Convert MercatorBounds to FullTileBounds if all lat/lon fields are present.
+ * Returns undefined if any required field is missing.
+ */
+function toFullBounds(
+  bounds: MercatorBounds | undefined
+): FullTileBounds | undefined {
+  if (
+    !bounds ||
+    bounds.latMin === undefined ||
+    bounds.latMax === undefined ||
+    bounds.lonMin === undefined ||
+    bounds.lonMax === undefined
+  ) {
+    return undefined
+  }
+  return {
+    latMin: bounds.latMin,
+    latMax: bounds.latMax,
+    lonMin: bounds.lonMin,
+    lonMax: bounds.lonMax,
+    x0: bounds.x0,
+    y0: bounds.y0,
+    x1: bounds.x1,
+    y1: bounds.y1,
+  }
+}
 import { getBands, normalizeSelector } from './zarr-utils'
 import { createSubdividedQuad } from './webgl-utils'
 import {
@@ -117,6 +157,7 @@ export class TiledMode implements ZarrMode {
         coordinates: desc.coordinates,
         maxCachedTiles: MAX_CACHED_TILES,
         bandNames,
+        crs: this.crs,
       })
 
       this.updateGeometryForProjection(false)
@@ -145,13 +186,11 @@ export class TiledMode implements ZarrMode {
       this.currentLevel = visibleInfo.pyramidLevel
     }
 
-    // Pass lat bounds to tile cache for coordinate warping (EPSG:4326 only)
-    for (const [tileKey, bounds] of Object.entries(this.tileBounds)) {
-      if (bounds.latMin !== undefined && bounds.latMax !== undefined) {
-        this.tileCache.setTileLatBounds(tileKey, {
-          min: bounds.latMin,
-          max: bounds.latMax,
-        })
+    // Pass bounds to tile cache for CPU resampling (EPSG:4326 only)
+    for (const [tileKey, mercBounds] of Object.entries(this.tileBounds)) {
+      const fullBounds = toFullBounds(mercBounds)
+      if (fullBounds) {
+        this.tileCache.setTileBounds(tileKey, fullBounds)
       }
     }
 
@@ -238,7 +277,6 @@ export class TiledMode implements ZarrMode {
       this.tileSize,
       this.vertexArr,
       this.pixCoordArr,
-      this.zarrStore.latIsAscending,
       Object.keys(this.tileBounds).length > 0 ? this.tileBounds : undefined,
       context.customShaderConfig,
       false,
@@ -343,7 +381,9 @@ export class TiledMode implements ZarrMode {
   }
 
   private updateGeometryForProjection(isGlobe: boolean) {
+    // Globe projections need subdivisions for the sphere curvature.
     const targetSubdivisions = isGlobe ? TILE_SUBDIVISIONS : 1
+
     if (this.currentSubdivisions === targetSubdivisions) return
 
     const subdivided = createSubdividedQuad(targetSubdivisions)
@@ -423,6 +463,8 @@ export class TiledMode implements ZarrMode {
         y1,
         latMin: latSouth,
         latMax: latNorth,
+        lonMin,
+        lonMax,
       }
     }
 
@@ -463,13 +505,17 @@ export class TiledMode implements ZarrMode {
 
     const tileKey = tileToKey(tileTuple)
 
+    // Get bounds for this tile (for EPSG:4326 resampling)
+    const bounds = toFullBounds(this.tileBounds[tileKey])
+
     try {
       // Unified cache handles both data fetching and WebGL resources
       const tile = await this.tileCache.fetchTile(
         tileTuple,
         selectorHash,
         version,
-        signal
+        signal,
+        bounds
       )
 
       this.pendingChunks.delete(tileKey)

@@ -1,5 +1,4 @@
 import {
-  createWarpedTexCoords,
   findBestParentTile,
   findBestChildTiles,
   tileToKey,
@@ -12,87 +11,19 @@ import type { ShaderProgram } from './shader-program'
 import type { Tiles, TileData } from './tiles'
 import { setupBandTextureUniforms } from './render-helpers'
 import { renderRegion, type RenderableRegion } from './renderable-region'
-import { createLinearTexCoordsFromVertices } from './webgl-utils'
-
-// ============================================================================
-// Texture Coordinate Caching for Mapbox Globe Tiles
-// ============================================================================
-
-/**
- * Cache for warped texture coordinate buffers (Mapbox globe path only).
- * Outer: tile identity, Inner: target bounds → buffer.
- */
-const warpedBufferCache = new WeakMap<TileData, Map<string, WebGLBuffer>>()
-
-function boundsKey(bounds: { x0: number; y0: number; x1: number; y1: number }): string {
-  return `${bounds.x0},${bounds.y0},${bounds.x1},${bounds.y1}`
-}
-
-/**
- * Get or create a warped texture coordinate buffer for EPSG:4326 tile data.
- * Used only for Mapbox globe tile rendering path.
- */
-function getWarpedBufferForTile(
-  gl: WebGL2RenderingContext,
-  tile: TileData,
-  vertexArr: Float32Array,
-  targetBounds: { x0: number; y0: number; x1: number; y1: number },
-  latIsAscending: boolean | null
-): WebGLBuffer {
-  const bKey = boundsKey(targetBounds)
-
-  let tileWarpCache = warpedBufferCache.get(tile)
-  if (!tileWarpCache) {
-    tileWarpCache = new Map()
-    warpedBufferCache.set(tile, tileWarpCache)
-  }
-
-  let buffer = tileWarpCache.get(bKey)
-  if (buffer) return buffer
-
-  const linearCoords = createLinearTexCoordsFromVertices(vertexArr)
-
-  // Warp for latitude reprojection
-  const warpedCoords = createWarpedTexCoords(
-    vertexArr,
-    linearCoords,
-    targetBounds,
-    { latMin: tile.latBounds!.min, latMax: tile.latBounds!.max },
-    latIsAscending
-  )
-
-  // Apply X cropping (bake into coords)
-  const sourceWidth = targetBounds.x1 - targetBounds.x0
-  if (sourceWidth > 0) {
-    // Note: for tiles, source bounds == target bounds, so no cropping needed
-    // This is just for consistency with the region path
-  }
-
-  buffer = gl.createBuffer()!
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
-  tileWarpCache.set(bKey, buffer)
-
-  return buffer
-}
 
 /**
  * Prepare tile geometry by uploading vertex and texture coordinate buffers.
- * Handles both regular geometry and pre-warped coords for EPSG:4326.
- *
- * For flat map: uses tile's warpedPixCoordBuffer (warped for tile's own bounds)
- * For Mapbox tiles: uses cached per-target warped coords
+ * All tile data is resampled to Mercator space on CPU before reaching here,
+ * so we always use linear texture coordinates.
  */
 function prepareTileGeometry(
   gl: WebGL2RenderingContext,
   tile: TileData,
   vertexArr: Float32Array,
-  pixCoordArr: Float32Array,
-  bounds: MercatorBounds | undefined,
-  latIsAscending: boolean | null,
-  isGlobeTileRender: boolean
+  pixCoordArr: Float32Array
 ): WebGLBuffer {
-  // Upload base geometry (vertex positions and linear tex coords)
+  // Upload geometry (vertex positions and linear tex coords)
   gl.bindBuffer(gl.ARRAY_BUFFER, tile.vertexBuffer!)
   if (!tile.geometryUploaded) {
     gl.bufferData(gl.ARRAY_BUFFER, vertexArr, gl.STATIC_DRAW)
@@ -103,40 +34,6 @@ function prepareTileGeometry(
     tile.geometryUploaded = true
   }
 
-  // For EPSG:4326 data, compute and use pre-warped tex coords
-  const hasLatBounds = tile.latBounds && bounds?.latMin !== undefined
-
-  if (hasLatBounds) {
-    if (isGlobeTileRender) {
-      // Mapbox tile rendering: use inlined warp logic with caching
-      return getWarpedBufferForTile(gl, tile, vertexArr, bounds!, latIsAscending)
-    } else if (tile.warpedPixCoordBuffer) {
-      // Flat map rendering: use tile's own warped buffer
-      if (!tile.warpedGeometryUploaded) {
-        const warpedCoords = createWarpedTexCoords(
-          vertexArr,
-          pixCoordArr,
-          {
-            x0: bounds!.x0,
-            x1: bounds!.x1,
-            y0: bounds!.y0,
-            y1: bounds!.y1,
-          },
-          {
-            latMin: tile.latBounds!.min,
-            latMax: tile.latBounds!.max,
-          },
-          latIsAscending
-        )
-        gl.bindBuffer(gl.ARRAY_BUFFER, tile.warpedPixCoordBuffer)
-        gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
-        tile.warpedGeometryUploaded = true
-      }
-      return tile.warpedPixCoordBuffer
-    }
-  }
-
-  // No warping needed (EPSG:3857 or no lat bounds)
   return tile.pixCoordBuffer!
 }
 
@@ -182,7 +79,6 @@ export function renderTiles(
   tileSize: number,
   vertexArr: Float32Array,
   pixCoordArr: Float32Array,
-  latIsAscending: boolean | null,
   tileBounds?: Record<string, MercatorBounds>,
   customShaderConfig?: CustomShaderConfig,
   isGlobeTileRender: boolean = false,
@@ -281,15 +177,12 @@ export function renderTiles(
                 bounds.latMin + ((localY + 1) / divisor) * latSpan
             }
 
-            // Prepare geometry for this child tile (CPU warp baked into coords)
+            // Prepare geometry for this child tile
             const childPixCoordBuffer = prepareTileGeometry(
               gl,
               child.tile,
               vertexArr,
-              pixCoordArr,
-              childBounds,
-              latIsAscending,
-              isGlobeTileRender
+              pixCoordArr
             )
 
             const childTileKey = tileToKey([
@@ -342,16 +235,12 @@ export function renderTiles(
       texOffset = override.texOffset
     }
 
-    // Prepare geometry (upload buffers, compute warped coords for EPSG:4326)
-    // CPU warp is baked into the coords, no shader reprojection needed
+    // Prepare geometry (upload buffers)
     const pixCoordBuffer = prepareTileGeometry(
       gl,
       tileToRender,
       vertexArr,
-      pixCoordArr,
-      bounds,
-      latIsAscending,
-      isGlobeTileRender
+      pixCoordArr
     )
 
     // Compute mercator bounds for this tile

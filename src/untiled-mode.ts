@@ -28,7 +28,6 @@ import type {
 import { ZarrStore } from './zarr-store'
 import {
   boundsToMercatorNorm,
-  createWarpedTexCoords,
   flipTexCoordV,
   type MercatorBounds,
   type XYLimits,
@@ -45,6 +44,7 @@ import {
 } from './query/query-utils'
 import { setObjectValues } from './query/selector-utils'
 import { geoToArrayIndex } from './map-utils'
+import { resampleToMercator, needsResampling } from './resampler'
 import {
   type ThrottleState,
   type RequestCanceller,
@@ -83,7 +83,7 @@ interface RegionState {
   pixCoordBuffer: WebGLBuffer | null
   // Geometry arrays for this region's quad
   vertexArr: Float32Array | null
-  pixCoordArr: Float32Array | null // Pre-warped for flat map mercator rendering
+  pixCoordArr: Float32Array | null // Texture coordinates for sampling resampled data
   // Mercator bounds for this region (for shader uniforms)
   mercatorBounds: MercatorBounds | null
   // Version tracking for selector changes
@@ -182,6 +182,12 @@ export class UntiledMode implements ZarrMode {
       this.crs = desc.crs
       this.xyLimits = desc.xyLimits
       this.latIsAscending = desc.latIsAscending ?? null
+
+      if (this.crs !== 'EPSG:4326' && this.crs !== 'EPSG:3857') {
+        console.warn(
+          `Unsupported CRS "${this.crs}" - rendering may be incorrect. Supported: EPSG:4326, EPSG:3857`
+        )
+      }
 
       // Check if this is a multi-level dataset
       if (desc.untiledLevels && desc.untiledLevels.length > 0) {
@@ -488,8 +494,8 @@ export class UntiledMode implements ZarrMode {
 
   /**
    * Create geometry (vertex positions and tex coords) for a region.
-   * Uses subdivided geometry for smooth globe rendering and pre-warped
-   * texture coordinates for mercator display.
+   * Uses subdivided geometry for smooth globe rendering.
+   * Data is resampled to Mercator on CPU, so linear texture coords are used.
    */
   private createRegionGeometry(
     regionX: number,
@@ -510,21 +516,18 @@ export class UntiledMode implements ZarrMode {
 
     region.vertexArr = subdivided.vertexArr
 
-    // Pre-warp texture coordinates to account for mercator distortion
-    // (Globe rendering computes linear coords from vertexArr on demand)
-    // For EPSG:4326 data, texture is in linear lat space but geometry is in mercator
+    // Determine texture coordinates based on CRS and data orientation
     if (this.crs === 'EPSG:4326') {
-      region.pixCoordArr = createWarpedTexCoords(
-        subdivided.vertexArr,
-        subdivided.texCoordArr,
-        mercBounds,
-        { latMin: geoBounds.yMin, latMax: geoBounds.yMax },
-        this.latIsAscending
-      )
+      // Resampled to Mercator on CPU - resampler handles latIsAscending internally
+      region.pixCoordArr = subdivided.texCoordArr
+    } else if (this.crs === 'EPSG:3857') {
+      // Already in Mercator space, no resampling - handle latIsAscending manually
+      // If latIsAscending (row 0 = south), flip V so V=0 samples north
+      region.pixCoordArr = this.latIsAscending
+        ? flipTexCoordV(subdivided.texCoordArr)
+        : subdivided.texCoordArr
     } else {
-      // EPSG:3857 - texture is already in mercator space, use linear coords
-      // If latIsAscending (row 0 = south), flip V so V=0 samples north (row N-1)
-      // If not ascending (row 0 = north), use coords as-is
+      // Fallback for other CRS - use linear coords with latIsAscending handling
       region.pixCoordArr = this.latIsAscending
         ? flipTexCoordV(subdivided.texCoordArr)
         : subdivided.texCoordArr
@@ -960,9 +963,62 @@ export class UntiledMode implements ZarrMode {
       region.selectorVersion = fetchSelectorVersion
       cancelOlderRequests(this.requestCanceller, requestId)
 
+      // Resample EPSG:4326 data to Mercator space before normalization
+      let dataToNormalize = packedData
+      const bandDataToNormalize = [...bandArrays]
+
+      if (needsResampling(this.crs) && this.xyLimits) {
+        const geoBounds = this.getRegionBounds(regionX, regionY)
+        const mercBounds = boundsToMercatorNorm(geoBounds, this.crs)
+
+        // Resample EPSG:4326 data to Mercator space
+        dataToNormalize = resampleToMercator({
+          sourceData: packedData,
+          sourceSize: [actualW, actualH],
+          sourceBounds: [
+            geoBounds.xMin,
+            geoBounds.yMin,
+            geoBounds.xMax,
+            geoBounds.yMax,
+          ],
+          targetSize: [actualW, actualH],
+          targetMercatorBounds: [
+            mercBounds.x0,
+            mercBounds.y0,
+            mercBounds.x1,
+            mercBounds.y1,
+          ],
+          fillValue: fillValue ?? 0,
+          latIsAscending: this.latIsAscending,
+        })
+
+        // Resample each band the same way
+        for (let c = 0; c < bandArrays.length; c++) {
+          bandDataToNormalize[c] = resampleToMercator({
+            sourceData: bandArrays[c],
+            sourceSize: [actualW, actualH],
+            sourceBounds: [
+              geoBounds.xMin,
+              geoBounds.yMin,
+              geoBounds.xMax,
+              geoBounds.yMax,
+            ],
+            targetSize: [actualW, actualH],
+            targetMercatorBounds: [
+              mercBounds.x0,
+              mercBounds.y0,
+              mercBounds.x1,
+              mercBounds.y1,
+            ],
+            fillValue: fillValue ?? 0,
+            latIsAscending: this.latIsAscending,
+          })
+        }
+      }
+
       // Normalize and store data
       const { normalized } = normalizeDataForTexture(
-        packedData,
+        dataToNormalize,
         fillValue,
         this.clim
       )
@@ -975,10 +1031,10 @@ export class UntiledMode implements ZarrMode {
       // Store band data with bandNames as keys
       region.bandData.clear()
       region.bandTexturesUploaded.clear()
-      for (let c = 0; c < bandArrays.length; c++) {
+      for (let c = 0; c < bandDataToNormalize.length; c++) {
         const bandName = this.bandNames[c] || `band_${c}`
         const { normalized: bandNormalized } = normalizeDataForTexture(
-          bandArrays[c],
+          bandDataToNormalize[c],
           fillValue,
           this.clim
         )

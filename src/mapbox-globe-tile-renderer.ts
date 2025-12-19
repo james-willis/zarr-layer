@@ -7,7 +7,7 @@
  * Mapbox's renderToTile() asks the custom layer to render individual tiles
  * to offscreen textures, requiring:
  * - Tile-specific transformation matrix (not camera matrix)
- * - Pre-warped texture coordinates (CPU-based reprojection, same as untiled mode)
+ * - Data resampled to Mercator space (CPU-based, done before reaching this module)
  */
 
 import {
@@ -22,7 +22,6 @@ import {
   mercatorNormToLon,
   parseLevelZoom,
   zoomToLevel,
-  createWarpedTexCoords,
   type MercatorBounds,
   type TileTuple,
   type XYLimits,
@@ -54,27 +53,13 @@ interface TexCoordResult {
   texOffset: [number, number]
 }
 
-/**
- * Cache for linear texture coordinate buffers.
- * One buffer per region, reused across all target tiles.
- */
+/** Cache for linear texture coordinate buffers. One buffer per region. */
 const linearBufferCache = new WeakMap<RegionRenderState, WebGLBuffer>()
 
 /**
- * Cache for warped texture coordinate buffers.
- * Outer: region identity, Inner: target bounds → buffer.
- * Needed because EPSG:4326 warp depends on target tile bounds.
+ * Compute texture crop transform for rendering a region to target bounds.
  */
-const warpedBufferCache = new WeakMap<RegionRenderState, Map<string, WebGLBuffer>>()
-
-function boundsKey(bounds: { x0: number; y0: number; x1: number; y1: number }): string {
-  return `${bounds.x0},${bounds.y0},${bounds.x1},${bounds.y1}`
-}
-
-/**
- * Compute linear crop transform for EPSG:3857.
- */
-function computeLinearCrop(
+function computeTextureCrop(
   sourceBounds: MercatorBounds,
   targetBounds: { x0: number; y0: number; x1: number; y1: number }
 ): { texScale: [number, number]; texOffset: [number, number] } {
@@ -93,7 +78,7 @@ function computeLinearCrop(
 }
 
 /**
- * Get or create a linear texture coordinate buffer for EPSG:3857 regions.
+ * Get or create a linear texture coordinate buffer for a region.
  */
 function getLinearBuffer(
   gl: WebGL2RenderingContext,
@@ -112,77 +97,20 @@ function getLinearBuffer(
 }
 
 /**
- * Get or create a warped texture coordinate buffer for EPSG:4326 regions.
- * Cached by (region, targetBounds) pair.
- */
-function getWarpedBuffer(
-  gl: WebGL2RenderingContext,
-  region: RegionRenderState,
-  targetBounds: { x0: number; y0: number; x1: number; y1: number }
-): WebGLBuffer {
-  const bKey = boundsKey(targetBounds)
-
-  let regionCache = warpedBufferCache.get(region)
-  if (!regionCache) {
-    regionCache = new Map()
-    warpedBufferCache.set(region, regionCache)
-  }
-
-  let buffer = regionCache.get(bKey)
-  if (buffer) return buffer
-
-  const bounds = region.mercatorBounds
-  const linearCoords = createLinearTexCoordsFromVertices(region.vertexArr)
-
-  // Warp for latitude reprojection
-  const warpedCoords = createWarpedTexCoords(
-    region.vertexArr,
-    linearCoords,
-    targetBounds,
-    { latMin: bounds.latMin!, latMax: bounds.latMax! },
-    region.latIsAscending ?? null
-  )
-
-  // Apply X cropping (bake into coords)
-  const sourceWidth = bounds.x1 - bounds.x0
-  if (sourceWidth > 0) {
-    const texScaleX = (targetBounds.x1 - targetBounds.x0) / sourceWidth
-    const texOffsetX = (targetBounds.x0 - bounds.x0) / sourceWidth
-    for (let i = 0; i < warpedCoords.length; i += 2) {
-      warpedCoords[i] = warpedCoords[i] * texScaleX + texOffsetX
-    }
-  }
-
-  buffer = gl.createBuffer()!
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  gl.bufferData(gl.ARRAY_BUFFER, warpedCoords, gl.STATIC_DRAW)
-  regionCache.set(bKey, buffer)
-
-  return buffer
-}
-
-/**
  * Get texture coordinates for rendering a region to target bounds.
- * Chooses strategy based on CRS (EPSG:4326 needs CPU warp, EPSG:3857 uses shader).
+ * All data is expected to be resampled to Mercator space before reaching here.
  */
 function getTexCoordsForRegion(
   gl: WebGL2RenderingContext,
   region: RegionRenderState,
   targetBounds: { x0: number; y0: number; x1: number; y1: number }
 ): TexCoordResult {
-  const bounds = region.mercatorBounds
-  const isEquirectangular = bounds.latMin !== undefined && bounds.latMax !== undefined
-
-  if (!isEquirectangular) {
-    // EPSG:3857: Use linear buffer + shader transform
-    const buffer = getLinearBuffer(gl, region)
-    const { texScale, texOffset } = computeLinearCrop(bounds, targetBounds)
-    return { buffer, texScale, texOffset }
-  }
-
-  // EPSG:4326: Use warped buffer (warp baked in, identity transform)
-  const buffer = getWarpedBuffer(gl, region, targetBounds)
-  return { buffer, texScale: [1, 1], texOffset: [0, 0] }
+  const buffer = getLinearBuffer(gl, region)
+  const { texScale, texOffset } = computeTextureCrop(
+    region.mercatorBounds,
+    targetBounds
+  )
+  return { buffer, texScale, texOffset }
 }
 
 // ============================================================================
@@ -282,7 +210,7 @@ function renderRegionsToTile(
       y1: Math.min(bounds.y1, tileBounds.y1),
     }
 
-    // Get tex coords (CPU warp for 4326, shader transform for 3857)
+    // Get texture coords with crop for overlap region
     const texCoords = getTexCoordsForRegion(renderer.gl, region, overlapBounds)
 
     // Create renderable region
@@ -445,8 +373,7 @@ function renderSingle4326Tile(
   xyLimits: XYLimits,
   datasetMaxZoom: number
 ): { rendered: boolean; missing: boolean } {
-  const { tileCache, vertexArr, pixCoordArr, tileSize, latIsAscending } =
-    tiledState
+  const { tileCache, vertexArr, pixCoordArr, tileSize } = tiledState
   const { colormapTexture, uniforms, customShaderConfig } = context
 
   const zarrTileKey = tileToKey(zarrTile)
@@ -526,6 +453,14 @@ function renderSingle4326Tile(
   const texOffsetX =
     zarrLonWidth > 0 ? (overlapWest - zarrGeoBounds.west) / zarrLonWidth : 0
 
+  // Compute Y texture scale/offset using Mercator coordinates directly
+  // (texture was resampled to Mercator space, so use Mercator bounds)
+  const zarrMercYRange = zarrMercY1 - zarrMercY0
+  const texScaleY =
+    zarrMercYRange > 0 ? (overlapY1 - overlapY0) / zarrMercYRange : 1
+  const texOffsetY =
+    zarrMercYRange > 0 ? (overlapY0 - zarrMercY0) / zarrMercYRange : 0
+
   const tileBoundsForRender = {
     [renderTileKey]: {
       x0: overlapX0,
@@ -560,15 +495,14 @@ function renderSingle4326Tile(
     tileSize,
     vertexArr,
     pixCoordArr,
-    latIsAscending,
     tileBoundsForRender,
     customShaderConfig,
     true,
     undefined,
     {
       [renderTileKey]: {
-        texScale: [texScaleX, 1.0],
-        texOffset: [texOffsetX, 0.0],
+        texScale: [texScaleX, texScaleY],
+        texOffset: [texOffsetX, texOffsetY],
       },
     }
   )
@@ -598,8 +532,7 @@ function renderChild4326Tile(
   context: RenderContext,
   xyLimits: XYLimits
 ): boolean {
-  const { tileCache, vertexArr, pixCoordArr, tileSize, latIsAscending } =
-    tiledState
+  const { tileCache, vertexArr, pixCoordArr, tileSize } = tiledState
   const { colormapTexture, uniforms, customShaderConfig } = context
 
   const childTileTuple: TileTuple = [child.childZ, child.childX, child.childY]
@@ -637,6 +570,16 @@ function renderChild4326Tile(
       ? (childOverlapWest - childGeoBounds.west) / childLonWidth
       : 0
 
+  // Compute Y texture scale/offset using Mercator coordinates directly
+  // (texture was resampled to Mercator space, so use Mercator bounds)
+  const childMercYRange = childMercY1 - childMercY0
+  const childTexScaleY =
+    childMercYRange > 0
+      ? (childOverlapY1 - childOverlapY0) / childMercYRange
+      : 1
+  const childTexOffsetY =
+    childMercYRange > 0 ? (childOverlapY0 - childMercY0) / childMercYRange : 0
+
   const childTileBoundsForRender = {
     [childTileKey]: {
       x0: childOverlapX0,
@@ -671,15 +614,14 @@ function renderChild4326Tile(
     tileSize,
     vertexArr,
     pixCoordArr,
-    latIsAscending,
     childTileBoundsForRender,
     customShaderConfig,
     true,
     undefined,
     {
       [childTileKey]: {
-        texScale: [childTexScaleX, 1.0],
-        texOffset: [childTexOffsetX, 0.0],
+        texScale: [childTexScaleX, childTexScaleY],
+        texOffset: [childTexOffsetX, childTexOffsetY],
       },
     }
   )
@@ -698,14 +640,7 @@ function render3857TiledToTile(
   context: RenderContext,
   tiledState: NonNullable<ReturnType<NonNullable<ZarrMode['getTiledState']>>>
 ): boolean {
-  const {
-    tileCache,
-    vertexArr,
-    pixCoordArr,
-    tileSize,
-    tileBounds,
-    latIsAscending,
-  } = tiledState
+  const { tileCache, vertexArr, pixCoordArr, tileSize, tileBounds } = tiledState
   const { colormapTexture, uniforms, customShaderConfig } = context
   const levels = mode.getLevels()
   const maxLevelIndex = mode.getMaxLevelIndex()
@@ -766,7 +701,6 @@ function render3857TiledToTile(
     tileSize,
     vertexArr,
     pixCoordArr,
-    latIsAscending,
     tileBoundsOverride,
     customShaderConfig,
     true,
