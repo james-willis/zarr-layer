@@ -649,6 +649,10 @@ export class ZarrStore {
     // Tiled pyramids use standard global extent (no coord array fetch needed)
     if (this.multiscaleType === 'tiled') {
       this.xyLimits = { xMin: -180, xMax: 180, yMin: -90, yMax: 90 }
+      // Tiled pyramids have descending latitude (north to south, row 0 = north)
+      if (this.latIsAscending === null) {
+        this.latIsAscending = false
+      }
       return
     }
 
