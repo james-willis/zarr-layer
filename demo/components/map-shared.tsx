@@ -388,7 +388,6 @@ export const Map = () => {
           right: 0,
           bottom: 0,
           left: sidebarWidth,
-          transition: 'left 0.2s',
         }}
       />
       <Box sx={{ position: 'absolute', top: '8px', left: sidebarWidth + 10 }}>
