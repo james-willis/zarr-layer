@@ -1388,6 +1388,7 @@ export class UntiledMode implements ZarrMode {
       this.width = newWidth
       this.height = newHeight
       this.regionSize = newRegionSize
+      this.computeGlobalMercatorGrid()
       this.lastViewportHash = '' // Force viewport recalculation
 
       // Build base slice args for non-spatial dimensions
