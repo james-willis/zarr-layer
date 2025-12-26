@@ -14,6 +14,7 @@ import { mercatorNormToLat, mercatorNormToLon } from './map-utils'
 import { MERCATOR_LAT_LIMIT } from './constants'
 import { createTransformer, sourceCRSToPixel } from './projection-utils'
 import type { Bounds } from './types'
+import { WEB_MERCATOR_EXTENT } from './constants'
 
 // Small epsilon for floating point comparisons at region boundaries
 // Using 1e-9 degrees is ~0.1mm at the equator - plenty of tolerance for fp errors
@@ -56,8 +57,6 @@ function nearestSample(
   const py = Math.max(0, Math.min(height - 1, Math.round(y)))
   return data[py * width + px]
 }
-
-import { WEB_MERCATOR_EXTENT } from './constants'
 
 /**
  * Convert normalized mercator [0,1] to Web Mercator meters.

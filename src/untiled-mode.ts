@@ -1533,6 +1533,8 @@ export class UntiledMode implements ZarrMode {
     this.clearRegionCache(gl)
     this.clearPreviousRegionCache(gl)
     this.regionSize = null
+    this.cachedMercatorTransformer = null
+    this.cachedWGS84Transformer = null
     this.loadingManager.chunksLoading = false
     this.emitLoadingState()
   }
