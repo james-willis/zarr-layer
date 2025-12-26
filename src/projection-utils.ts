@@ -52,6 +52,20 @@ export function createTransformer(
 }
 
 /**
+ * Validates that bounds have positive extent (max > min).
+ */
+function validateBounds(bounds: Bounds, fnName: string): boolean {
+  const [xMin, yMin, xMax, yMax] = bounds
+  if (xMax <= xMin || yMax <= yMin) {
+    console.warn(
+      `[zarr-layer] Invalid bounds in ${fnName}: max must be greater than min`
+    )
+    return false
+  }
+  return true
+}
+
+/**
  * Converts source CRS coordinates to pixel indices given grid shape and bounds.
  * Returns [xPixel, yPixel] as floating-point values for interpolation.
  *
@@ -65,6 +79,10 @@ export function sourceCRSToPixel(
   height: number,
   latIsAscending: boolean | null = true
 ): [number, number] {
+  if (!validateBounds(bounds, 'sourceCRSToPixel')) {
+    return [width / 2, height / 2]
+  }
+
   const [xMin, yMin, xMax, yMax] = bounds
 
   // Map source CRS coords to normalized [0, 1]
@@ -98,6 +116,10 @@ export function pixelToSourceCRS(
   latIsAscending: boolean | null = true
 ): [number, number] {
   const [xMin, yMin, xMax, yMax] = bounds
+
+  if (!validateBounds(bounds, 'pixelToSourceCRS')) {
+    return [(xMin + xMax) / 2, (yMin + yMax) / 2]
+  }
 
   // Convert pixel to normalized [0, 1]
   // Guard against single-pixel dimensions: map to center of bounds
