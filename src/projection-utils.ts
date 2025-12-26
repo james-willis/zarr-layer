@@ -4,6 +4,19 @@ import { WEB_MERCATOR_EXTENT } from './constants'
 import type { Bounds } from './types'
 
 /**
+ * Formats a proj4 error with helpful context.
+ */
+function formatProj4Error(proj4def: string, err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  return (
+    `[zarr-layer] Invalid proj4 string: "${proj4def.slice(0, 50)}${
+      proj4def.length > 50 ? '...' : ''
+    }". ` +
+    `Error: ${msg}. Check your dataset metadata or find CRS definitions at https://epsg.io/`
+  )
+}
+
+/**
  * A transformer for converting coordinates between source CRS and Web Mercator.
  */
 export interface ProjectionTransformer {
@@ -26,13 +39,7 @@ export function createTransformer(
   try {
     converter = proj4(proj4def, 'EPSG:3857')
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    throw new Error(
-      `[zarr-layer] Invalid proj4 string: "${proj4def.slice(0, 50)}${
-        proj4def.length > 50 ? '...' : ''
-      }". ` +
-        `Error: ${msg}. Check your dataset metadata or find CRS definitions at https://epsg.io/`
-    )
+    throw new Error(formatProj4Error(proj4def, err))
   }
 
   return {
@@ -124,13 +131,7 @@ export function createWGS84ToSourceTransformer(proj4def: string): {
   try {
     converter = proj4('EPSG:4326', proj4def)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    throw new Error(
-      `[zarr-layer] Invalid proj4 string: "${proj4def.slice(0, 50)}${
-        proj4def.length > 50 ? '...' : ''
-      }". ` +
-        `Error: ${msg}. Check your dataset metadata or find CRS definitions at https://epsg.io/`
-    )
+    throw new Error(formatProj4Error(proj4def, err))
   }
 
   return {
