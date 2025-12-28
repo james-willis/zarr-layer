@@ -111,6 +111,7 @@ export class ZarrLayer {
   private onLoadingStateChange: LoadingStateCallback | undefined
   private metadataLoading: boolean = false
   private chunksLoading: boolean = false
+  private initError: Error | null = null
   private throttleMs: number
   private proj4: string | undefined
 
@@ -213,6 +214,7 @@ export class ZarrLayer {
       loading: this.metadataLoading || this.chunksLoading,
       metadata: this.metadataLoading,
       chunks: this.chunksLoading,
+      error: this.initError,
     })
   }
 
@@ -263,6 +265,7 @@ export class ZarrLayer {
     this.emitLoadingState()
 
     try {
+      this.initError = null
       this.variable = variable
       if (this.zarrStore) {
         this.zarrStore.cleanup()
@@ -273,6 +276,17 @@ export class ZarrLayer {
       await this.initialize()
       await this.initializeMode()
       this.invalidate()
+    } catch (err) {
+      this.initError = err instanceof Error ? err : new Error(String(err))
+      console.error('[zarr-layer] Failed to reset:', this.initError.message)
+      if (this.mode && this.gl) {
+        this.mode.dispose(this.gl)
+        this.mode = null
+      }
+      if (this.zarrStore) {
+        this.zarrStore.cleanup()
+        this.zarrStore = null
+      }
     } finally {
       this.metadataLoading = false
       this.emitLoadingState()
@@ -315,6 +329,7 @@ export class ZarrLayer {
       if (map.triggerRepaint) map.triggerRepaint()
     }
 
+    this.initError = null
     this.metadataLoading = true
     this.emitLoadingState()
 
@@ -341,12 +356,21 @@ export class ZarrLayer {
       this.mode?.onProjectionChange(isGlobe)
 
       this.mode?.update(this.map, this.gl!)
+    } catch (err) {
+      this.initError = err instanceof Error ? err : new Error(String(err))
+      console.error(
+        `[zarr-layer] Failed to initialize: ${this.initError.message}. ` +
+          `Use onLoadingStateChange callback to handle errors and call map.removeLayer('${this.id}') to clean up.`
+      )
+      this._disposeResources(resolvedGl)
     } finally {
       this.metadataLoading = false
       this.emitLoadingState()
     }
 
-    this.invalidate()
+    if (!this.initError) {
+      this.invalidate()
+    }
   }
 
   private computeSelectorHash(selector: NormalizedSelector): string {
@@ -452,7 +476,11 @@ export class ZarrLayer {
         this.customShaderConfig = null
       }
     } catch (err) {
-      console.error('Failed to initialize Zarr layer:', err)
+      // Clean up partially-initialized store before re-throwing
+      if (this.zarrStore) {
+        this.zarrStore.cleanup()
+        this.zarrStore = null
+      }
       throw err
     }
   }
@@ -606,7 +634,11 @@ export class ZarrLayer {
     return needsRender
   }
 
-  onRemove(_map: MapLike, gl: WebGL2RenderingContext) {
+  /**
+   * Dispose all GL resources and internal state.
+   * Does NOT remove the layer from the map - call map.removeLayer(id) for that.
+   */
+  private _disposeResources(gl: WebGL2RenderingContext): void {
     this.isRemoved = true
 
     this.renderer?.dispose()
@@ -630,6 +662,10 @@ export class ZarrLayer {
       this.map.off('projectionchange', this.projectionChangeHandler)
       this.map.off('style.load', this.projectionChangeHandler)
     }
+  }
+
+  onRemove(_map: MapLike, gl: WebGL2RenderingContext) {
+    this._disposeResources(gl)
   }
 
   // ========== Query Interface ==========

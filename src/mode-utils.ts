@@ -197,6 +197,7 @@ export function emitLoadingState(manager: LoadingManager): void {
     loading: manager.metadataLoading || manager.chunksLoading,
     metadata: manager.metadataLoading,
     chunks: manager.chunksLoading,
+    error: null,
   }
   manager.callback(state)
 }

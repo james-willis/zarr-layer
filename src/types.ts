@@ -40,6 +40,7 @@ export interface LoadingState {
   loading: boolean
   metadata: boolean
   chunks: boolean
+  error?: Error | null
 }
 
 export type LoadingStateCallback = (state: LoadingState) => void
