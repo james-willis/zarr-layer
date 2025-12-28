@@ -739,8 +739,10 @@ export class ZarrStore {
       // Warn users to set explicit values to skip future coordinate fetches
       if (this.multiscaleType === 'untiled') {
         const hints: string[] = []
-        if (needsBounds) hints.push(`bounds: [${xMin}, ${yMin}, ${xMax}, ${yMax}]`)
-        if (needsLatAscending && !detectedLatAscending) hints.push('latIsAscending: false')
+        if (needsBounds)
+          hints.push(`bounds: [${xMin}, ${yMin}, ${xMax}, ${yMax}]`)
+        if (needsLatAscending && !detectedLatAscending)
+          hints.push('latIsAscending: false')
 
         if (hints.length > 0) {
           console.warn(

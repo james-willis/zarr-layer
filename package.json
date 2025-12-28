@@ -38,7 +38,8 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run build",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "prepare": "husky"
   },
   "peerDependencies": {
     "mapbox-gl": "*",
@@ -59,6 +60,7 @@
   "devDependencies": {
     "@carbonplan/prettier": "^1.2.0",
     "@types/proj4": "^2.5.6",
+    "husky": "^9.1.7",
     "prettier": "^2.2.1",
     "tsup": "^8.5.0",
     "typescript": "^5.6.3"
