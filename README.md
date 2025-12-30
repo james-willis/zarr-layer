@@ -15,7 +15,7 @@ See the [demo](https://zarr-layer.demo.carbonplan.org/) for a quick tour of capa
 
 ## data requirements
 
-Supports v2 and v3 zarr stores via [zarrita](https://github.com/manzt/zarrita.js). Native support for EPSG:4326 and EPSG:3857, with arbitrary CRS support via [proj4](https://github.com/proj4js/proj4js) reprojection.
+Supports v2 and v3 zarr stores via [zarrita](https://github.com/manzt/zarrita.js). Native support for EPSG:4326 and EPSG:3857, with arbitrary CRS support via [proj4](https://github.com/proj4js/proj4js) reprojection (experimental).
 
 For best performance, tiled data is preferred (see [ndpyramid](https://github.com/carbonplan/ndpyramid)). The library also supports datasets that are untiled and tries to load chunks efficiently based on viewport intersections. Support for the emerging [multiscales](https://github.com/zarr-conventions/multiscales) convention (non-slippy map conforming) is experimental!
 
