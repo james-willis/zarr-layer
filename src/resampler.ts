@@ -287,6 +287,13 @@ function resampleWithProj4(
 
   // Use REGION bounds for pixel mapping, not full grid bounds
   const [xMin, yMin, xMax, yMax] = regionBounds
+  // Expand bounds slightly to avoid edge clipping artifacts at region seams.
+  const xEps = (2 * (xMax - xMin)) / Math.max(1, srcW)
+  const yEps = (2 * (yMax - yMin)) / Math.max(1, srcH)
+  const xMinExpanded = xMin - xEps
+  const xMaxExpanded = xMax + xEps
+  const yMinExpanded = yMin - yEps
+  const yMaxExpanded = yMax + yEps
 
   for (let tgtY = 0; tgtY < tgtH; tgtY++) {
     for (let tgtX = 0; tgtX < tgtW; tgtX++) {
@@ -310,10 +317,10 @@ function resampleWithProj4(
 
       // Check if within REGION bounds (not full grid bounds)
       if (
-        srcCrsX < xMin ||
-        srcCrsX > xMax ||
-        srcCrsY < yMin ||
-        srcCrsY > yMax
+        srcCrsX < xMinExpanded ||
+        srcCrsX > xMaxExpanded ||
+        srcCrsY < yMinExpanded ||
+        srcCrsY > yMaxExpanded
       ) {
         continue // Leave as fill value
       }
