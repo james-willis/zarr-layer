@@ -68,6 +68,8 @@ const hurricane: Dataset<HurricaneState> = {
   info: 'Hurricane Florence (single image, 4D)',
   sourceInfo:
     'Single image Zarr v3 with time and level dimensions. Switch between surface pressure and wind velocity.',
+  center: [-65, 35],
+  zoom: 3,
   defaultState: {
     variable: 'surface_pressure',
     time: 0,

@@ -1,6 +1,7 @@
 import carbonplan4d from './carbonplan-4d'
 import hrrr from './hrrr'
 import hurricane from './hurricane'
+import sentinel2 from './sentinel-2'
 import { createSimpleDataset } from './simple'
 import { createTimeDataset } from './time'
 import untiled4326 from './untiled-4326'
@@ -49,6 +50,7 @@ export const DATASETS: Dataset<any>[] = [
     sourceInfo: 'v2 single image (global)',
   }),
   untiled4326,
+  sentinel2,
   createSimpleDataset({
     id: 'Burn Probability over CONUS',
     source:
@@ -60,6 +62,8 @@ export const DATASETS: Dataset<any>[] = [
     info: 'Burn Probability over CONUS',
     sourceInfo:
       '30m resolution untiled multiscale dataset created by resampling and reprojecting the "Wildfire Risk to Communities: Spatial datasets of landscape-wide wildfire risk components for the United States (2nd Edition)" dataset.',
+    center: [-98, 39],
+    zoom: 4,
   }),
 ]
 

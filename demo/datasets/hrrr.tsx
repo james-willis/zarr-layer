@@ -98,6 +98,8 @@ const hrrr: Dataset<HRRRState> = {
   },
   proj4: HRRR_PROJ4,
   bounds: HRRR_BOUNDS,
+  center: [-98, 39],
+  zoom: 3,
   defaultState: {
     variable: 'TMP',
   },

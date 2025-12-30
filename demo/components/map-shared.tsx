@@ -140,6 +140,7 @@ export const getMapConfig = (provider: MapProvider): MapConfig => {
 
 export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const zarrLayerRef = useRef<InstanceType<typeof ZarrLayer> | null>(null)
+  const prevDatasetIdRef = useRef<string | null>(null)
   const datasetId = useAppStore((state) => state.datasetId)
   const datasetModule = useAppStore((state) => state.getDatasetModule())
   const datasetState = useAppStore((state) => state.getDatasetState())
@@ -269,12 +270,14 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       zarrLayerRef.current = layer
       setZarrLayer(layer)
 
-      if (datasetModule.center) {
+      // Only fly to dataset center when dataset changes (not on variable/band change)
+      if (datasetModule.center && prevDatasetIdRef.current !== datasetId) {
         map.flyTo({
           center: datasetModule.center,
           zoom: datasetModule.zoom || 4,
         })
       }
+      prevDatasetIdRef.current = datasetId
     } catch (error) {
       console.error('Error creating ZarrLayer:', error)
     }
