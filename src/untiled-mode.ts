@@ -273,11 +273,13 @@ export class UntiledMode implements ZarrMode {
   }
 
   private async loadLevelMetadata(): Promise<void> {
-    // Filter to only levels that don't already have shapes from consolidated metadata
-    const levelsNeedingFetch = this.levels.filter((level) => !level.shape)
+    // Fetch metadata for levels that need shape OR per-level scale/offset
+    // (consolidated metadata has shape but not always scale_factor/add_offset)
+    const levelsNeedingFetch = this.levels.filter(
+      (level) => !level.shape || level.scaleFactor === undefined
+    )
 
     if (levelsNeedingFetch.length === 0) {
-      // All shapes pre-populated from consolidated metadata - no fetches needed
       return
     }
 
@@ -287,6 +289,10 @@ export class UntiledMode implements ZarrMode {
           const meta = await this.zarrStore.getUntiledLevelMetadata(level.asset)
           level.shape = meta.shape
           level.chunks = meta.chunks
+          level.scaleFactor = meta.scaleFactor
+          level.addOffset = meta.addOffset
+          level.fillValue = meta.fillValue
+          level.dtype = meta.dtype
         } catch (err) {
           console.warn(`Failed to load metadata for level ${level.asset}:`, err)
         }
@@ -523,6 +529,19 @@ export class UntiledMode implements ZarrMode {
       region.vertexArr &&
       region.mercatorBounds
     )
+  }
+
+  /**
+   * Get uniforms for rendering with scale/offset disabled.
+   * Untiled mode applies per-level scale/offset in JS (in fetchRegion),
+   * so we tell the shader to skip its scale/offset application.
+   */
+  private getUniformsForRender(contextUniforms: RenderContext['uniforms']) {
+    return {
+      ...contextUniforms,
+      scaleFactor: 1.0,
+      offset: 0.0,
+    }
   }
 
   /**
@@ -1021,7 +1040,9 @@ export class UntiledMode implements ZarrMode {
       baseSliceArgs[lonIdx] = zarr.slice(xStart, xEnd)
 
       const desc = this.zarrStore.describe()
-      const fillValue = desc.fill_value
+      // Use per-level metadata if available (for heterogeneous pyramids)
+      const currentLevel = this.levels[this.currentLevelIndex]
+      const fillValue = currentLevel?.fillValue ?? desc.fill_value
 
       const { combinations: channelCombinations } =
         this.buildChannelCombinations(this.baseMultiValueDims)
@@ -1136,6 +1157,11 @@ export class UntiledMode implements ZarrMode {
         )
       }
 
+      // Apply per-level scale/offset to convert raw values to physical units
+      // Fall back to dataset-level scale/offset for pyramids that only define them at the root
+      const scaleFactor = currentLevel?.scaleFactor ?? desc.scaleFactor
+      const addOffset = currentLevel?.addOffset ?? desc.addOffset
+
       // Normalize bands (single pass) and collect for interleaving
       region.bandData.clear()
       region.bandTexturesUploaded.clear()
@@ -1143,9 +1169,32 @@ export class UntiledMode implements ZarrMode {
 
       for (let c = 0; c < bandDataToProcess.length; c++) {
         const bandName = this.bandNames[c] || `band_${c}`
+        let bandData = bandDataToProcess[c]
+
+        // Apply scale/offset if needed (converts raw to physical values)
+        if (scaleFactor !== 1 || addOffset !== 0) {
+          const scaled = new Float32Array(bandData.length)
+          for (let i = 0; i < bandData.length; i++) {
+            const raw = bandData[i]
+            // Scale all values including fill - normalizeDataForTexture will filter by scaled fill
+            if (!Number.isFinite(raw)) {
+              scaled[i] = raw // Keep NaN/Inf as-is
+            } else {
+              scaled[i] = raw * scaleFactor + addOffset
+            }
+          }
+          bandData = scaled
+        }
+
+        // Compute the fill value in the same space as the data
+        const effectiveFillValue =
+          fillValue !== null && (scaleFactor !== 1 || addOffset !== 0)
+            ? fillValue * scaleFactor + addOffset
+            : fillValue
+
         const { normalized: bandNormalized } = normalizeDataForTexture(
-          bandDataToProcess[c],
-          fillValue,
+          bandData,
+          effectiveFillValue,
           this.clim
         )
         region.bandData.set(bandName, bandNormalized)
@@ -1427,7 +1476,7 @@ export class UntiledMode implements ZarrMode {
     renderer.applyCommonUniforms(
       shaderProgram,
       context.colormapTexture,
-      context.uniforms,
+      this.getUniformsForRender(context.uniforms),
       context.customShaderConfig,
       context.projectionData,
       context.mapboxGlobe,
@@ -1500,7 +1549,10 @@ export class UntiledMode implements ZarrMode {
       renderer,
       mode: this,
       tileId,
-      context,
+      context: {
+        ...context,
+        uniforms: this.getUniformsForRender(context.uniforms),
+      },
       regions: this.getRegionStates(),
     })
   }
@@ -1944,7 +1996,11 @@ export class UntiledMode implements ZarrMode {
       : this.selector
 
     const desc = this.zarrStore.describe()
-    const { scaleFactor, addOffset, fill_value } = desc
+    // Use per-level metadata if available (for heterogeneous pyramids)
+    const currentLevel = this.levels[this.currentLevelIndex]
+    const scaleFactor = currentLevel?.scaleFactor ?? desc.scaleFactor
+    const addOffset = currentLevel?.addOffset ?? desc.addOffset
+    const fill_value = currentLevel?.fillValue ?? desc.fill_value
 
     // Point geometries: use optimized single-chunk fetch
     if (geometry.type === 'Point') {
@@ -2191,9 +2247,9 @@ export class UntiledMode implements ZarrMode {
       fetched.multiValueDimNames,
       this.latIsAscending ?? undefined,
       {
-        scaleFactor: desc.scaleFactor,
-        addOffset: desc.addOffset,
-        fillValue: desc.fill_value,
+        scaleFactor,
+        addOffset,
+        fillValue: fill_value,
       },
       this.proj4def,
       subsetSourceBounds

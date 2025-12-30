@@ -103,6 +103,10 @@ export interface UntiledLevel {
   translation: [number, number]
   shape?: number[]
   chunks?: number[]
+  scaleFactor?: number
+  addOffset?: number
+  fillValue?: number | null
+  dtype?: string | null
 }
 
 export interface VisibleChunk {

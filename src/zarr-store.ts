@@ -338,16 +338,76 @@ export class ZarrStore {
   }
 
   /**
-   * Get metadata (shape, chunks) for a specific untiled level.
-   * Used by UntiledMode to determine chunk boundaries for viewport-based loading.
+   * Get metadata (shape, chunks, scale/offset/fill) for a specific untiled level.
+   * Used by UntiledMode to determine chunk boundaries and data transforms.
    */
-  async getUntiledLevelMetadata(
-    levelAsset: string
-  ): Promise<{ shape: number[]; chunks: number[] }> {
+  async getUntiledLevelMetadata(levelAsset: string): Promise<{
+    shape: number[]
+    chunks: number[]
+    scaleFactor: number
+    addOffset: number
+    fillValue: number | null
+    dtype: string | null
+  }> {
     const array = await this.getLevelArray(levelAsset)
+    const arrayKey = `${levelAsset}/${this.variable}`
+
+    // Try to get metadata from zarr.json for v3, or .zattrs for v2
+    let scaleFactor = 1
+    let addOffset = 0
+    let fillValue: number | null = null
+    let dtype: string | null = null
+
+    try {
+      if (this.version === 3) {
+        const meta = (await this._getJSON(`/${arrayKey}/zarr.json`)) as {
+          attributes?: Record<string, unknown>
+          fill_value?: unknown
+          data_type?: string
+        }
+        dtype = meta.data_type ?? null
+        fillValue = this.normalizeFillValue(meta.fill_value)
+
+        // Float types typically store physical values - skip scaling
+        // Integer types store raw values - apply scale/offset
+        const isFloatData =
+          dtype?.includes('float') || dtype === 'float32' || dtype === 'float64'
+
+        if (isFloatData) {
+          scaleFactor = 1
+          addOffset = 0
+        } else {
+          const attrs = meta.attributes
+          scaleFactor = (attrs?.scale_factor as number) ?? 1
+          addOffset = (attrs?.add_offset as number) ?? 0
+        }
+      } else {
+        const zattrs = (await this._getJSON(`/${arrayKey}/.zattrs`).catch(
+          () => ({})
+        )) as { scale_factor?: number; add_offset?: number }
+        const zarray = (await this._getJSON(`/${arrayKey}/.zarray`)) as {
+          fill_value?: unknown
+          dtype?: string
+        }
+        scaleFactor = zattrs.scale_factor ?? 1
+        addOffset = zattrs.add_offset ?? 0
+        fillValue = this.normalizeFillValue(zarray.fill_value)
+        dtype = zarray.dtype ?? null
+      }
+    } catch (err) {
+      console.warn(
+        `[ZarrStore] Failed to load per-level metadata for ${arrayKey}:`,
+        err
+      )
+    }
+
     return {
       shape: array.shape,
       chunks: array.chunks,
+      scaleFactor,
+      addOffset,
+      fillValue,
+      dtype,
     }
   }
 
