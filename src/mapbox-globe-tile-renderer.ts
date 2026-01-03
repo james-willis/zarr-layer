@@ -22,7 +22,6 @@ import {
   mercatorNormToLon,
   parseLevelZoom,
   zoomToLevel,
-  type MercatorBounds,
   type TileTuple,
   type XYLimits,
 } from './map-utils'
@@ -43,39 +42,8 @@ import {
   boundsIntersect,
 } from './mapbox-globe-utils'
 
-// ============================================================================
-// Texture Coordinate Utilities (Mapbox-specific)
-// ============================================================================
-
-interface TexCoordResult {
-  buffer: WebGLBuffer
-  texScale: [number, number]
-  texOffset: [number, number]
-}
-
 /** Cache for linear texture coordinate buffers. One buffer per region. */
 const linearBufferCache = new WeakMap<RegionRenderState, WebGLBuffer>()
-
-/**
- * Compute texture crop transform for rendering a region to target bounds.
- */
-function computeTextureCrop(
-  sourceBounds: MercatorBounds,
-  targetBounds: { x0: number; y0: number; x1: number; y1: number }
-): { texScale: [number, number]; texOffset: [number, number] } {
-  const sourceWidth = sourceBounds.x1 - sourceBounds.x0
-  const sourceHeight = sourceBounds.y1 - sourceBounds.y0
-  return {
-    texScale: [
-      sourceWidth > 0 ? (targetBounds.x1 - targetBounds.x0) / sourceWidth : 1,
-      sourceHeight > 0 ? (targetBounds.y1 - targetBounds.y0) / sourceHeight : 1,
-    ],
-    texOffset: [
-      sourceWidth > 0 ? (targetBounds.x0 - sourceBounds.x0) / sourceWidth : 0,
-      sourceHeight > 0 ? (targetBounds.y0 - sourceBounds.y0) / sourceHeight : 0,
-    ],
-  }
-}
 
 /**
  * Get or create a linear texture coordinate buffer for a region.
@@ -94,23 +62,6 @@ function getLinearBuffer(
 
   linearBufferCache.set(region, buffer)
   return buffer
-}
-
-/**
- * Get texture coordinates for rendering a region to target bounds.
- * All data is expected to be resampled to Mercator space before reaching here.
- */
-function getTexCoordsForRegion(
-  gl: WebGL2RenderingContext,
-  region: RegionRenderState,
-  targetBounds: { x0: number; y0: number; x1: number; y1: number }
-): TexCoordResult {
-  const buffer = getLinearBuffer(gl, region)
-  const { texScale, texOffset } = computeTextureCrop(
-    region.mercatorBounds,
-    targetBounds
-  )
-  return { buffer, texScale, texOffset }
 }
 
 // ============================================================================
@@ -202,23 +153,26 @@ function renderRegionsToTile(
     const bounds = region.mercatorBounds
     if (!boundsIntersect(bounds, tileBounds)) continue
 
-    // Calculate overlap bounds
-    const overlapBounds = {
-      x0: Math.max(bounds.x0, tileBounds.x0),
-      x1: Math.min(bounds.x1, tileBounds.x1),
-      y0: Math.max(bounds.y0, tileBounds.y0),
-      y1: Math.min(bounds.y1, tileBounds.y1),
+    // Get linear texture coordinates buffer (no crop needed - tileMatrix handles clipping)
+    const linearBuffer = getLinearBuffer(renderer.gl, region)
+
+    // Create renderable region using original bounds
+    // The tileMatrix clips geometry to tile bounds, and texture sampling
+    // is automatically correct through vertex interpolation
+    const renderable: RenderableRegion = {
+      mercatorBounds: bounds,
+      vertexBuffer: region.vertexBuffer,
+      pixCoordBuffer: linearBuffer,
+      vertexCount: region.vertexArr.length / 2,
+      texture: region.texture,
+      bandData: region.bandData ?? new Map(),
+      bandTextures: region.bandTextures ?? new Map(),
+      bandTexturesUploaded: region.bandTexturesUploaded ?? new Set(),
+      bandTexturesConfigured: region.bandTexturesConfigured ?? new Set(),
+      width: region.width,
+      height: region.height,
+      // No texScale/texOffset - identity transform
     }
-
-    // Get texture coords with crop for overlap region
-    const texCoords = getTexCoordsForRegion(renderer.gl, region, overlapBounds)
-
-    // Create renderable region
-    const renderable = createRenderableFromRegion(
-      region,
-      texCoords,
-      overlapBounds
-    )
 
     const rendered = renderRegion(
       renderer.gl,
@@ -235,31 +189,6 @@ function renderRegionsToTile(
 
   // Return true if any region still needs data (triggers re-render when loaded)
   return needsMoreData
-}
-
-/**
- * Create a RenderableRegion from a RegionRenderState for globe tile rendering.
- */
-function createRenderableFromRegion(
-  region: RegionRenderState,
-  texCoords: TexCoordResult,
-  overlapBounds: { x0: number; y0: number; x1: number; y1: number }
-): RenderableRegion {
-  return {
-    mercatorBounds: overlapBounds,
-    vertexBuffer: region.vertexBuffer,
-    pixCoordBuffer: texCoords.buffer,
-    vertexCount: region.vertexArr.length / 2,
-    texture: region.texture,
-    bandData: region.bandData ?? new Map(),
-    bandTextures: region.bandTextures ?? new Map(),
-    bandTexturesUploaded: region.bandTexturesUploaded ?? new Set(),
-    bandTexturesConfigured: region.bandTexturesConfigured ?? new Set(),
-    width: region.width,
-    height: region.height,
-    texScale: texCoords.texScale,
-    texOffset: texCoords.texOffset,
-  }
 }
 
 /**
@@ -341,7 +270,6 @@ function render4326TiledToTile(
       renderer,
       shaderProgram,
       zarrTile,
-      tileId,
       tileBounds,
       tileMatrix,
       tiledState,
@@ -365,7 +293,6 @@ function renderSingle4326Tile(
   renderer: ZarrRenderer,
   shaderProgram: ShaderProgram,
   zarrTile: TileTuple,
-  _tileId: TileId,
   tileBounds: { x0: number; y0: number; x1: number; y1: number },
   tileMatrix: Float32Array,
   tiledState: NonNullable<ReturnType<NonNullable<ZarrMode['getTiledState']>>>,

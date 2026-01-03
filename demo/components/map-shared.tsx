@@ -69,7 +69,7 @@ export interface MapInstance {
 export interface MapConfig {
   createMap: (
     container: HTMLDivElement,
-    globeProjection: boolean
+    globeProjection: boolean,
   ) => MapInstance
   setProjection: (map: MapInstance, globeProjection: boolean) => void
   getLayerBeforeId: (map: MapInstance) => string | undefined
@@ -103,7 +103,7 @@ const mapLibreConfig: MapConfig = {
   },
   setProjection: (map: MapInstance, globeProjection: boolean) => {
     ;(map as unknown as maplibregl.Map).setProjection(
-      globeProjection ? { type: 'globe' } : { type: 'mercator' }
+      globeProjection ? { type: 'globe' } : { type: 'mercator' },
     )
   },
   getLayerBeforeId: () => 'landuse_pedestrian',
@@ -115,21 +115,32 @@ const mapboxConfig: MapConfig = {
       mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
     }
 
-    return new mapboxgl.Map({
+    const map = new mapboxgl.Map({
       container,
       style: 'mapbox://styles/mapbox/dark-v11',
       center: [0, 20],
       zoom: 2,
       projection: globeProjection ? 'globe' : 'mercator',
-    }) as unknown as MapInstance
+    })
+
+    map.on('load', () => {
+      map.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize: 512,
+        maxzoom: 14,
+      })
+    })
+
+    return map as MapInstance
   },
   setProjection: (map: MapInstance, globeProjection: boolean) => {
-    ;(map as unknown as mapboxgl.Map).setProjection({
+    ;(map as mapboxgl.Map).setProjection({
       name: globeProjection ? 'globe' : 'mercator',
     } as mapboxgl.ProjectionSpecification)
   },
   getLayerBeforeId: (map: MapInstance) => {
-    const styleLayers = (map as unknown as mapboxgl.Map).getStyle().layers
+    const styleLayers = (map as mapboxgl.Map).getStyle().layers
     return styleLayers?.find((layer) => layer.type === 'symbol')?.id
   },
 }
@@ -155,7 +166,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
 
   const layerConfig: LayerProps = useMemo(
     () => datasetModule.buildLayerProps(datasetState as any),
-    [datasetModule, datasetState]
+    [datasetModule, datasetState],
   )
 
   const isCarbonplan4d = datasetModule.id === 'carbonplan_4d'
@@ -338,6 +349,7 @@ export const Map = () => {
   const sidebarWidth = useAppStore((state) => state.sidebarWidth)
   const mapProvider = useAppStore((state) => state.mapProvider)
   const globeProjection = useAppStore((state) => state.globeProjection)
+  const terrainEnabled = useAppStore((state) => state.terrainEnabled)
   const loadingState = useAppStore((state) => state.loadingState)
   const setMapInstance = useAppStore((state) => state.setMapInstance)
 
@@ -374,6 +386,21 @@ export const Map = () => {
     if (!map || !isMapLoaded) return
     mapConfig.setProjection(map, globeProjection)
   }, [map, isMapLoaded, globeProjection])
+
+  // Toggle terrain (Mapbox only - MapLibre doesn't support terrain draping for custom layers)
+  useEffect(() => {
+    if (!map || !isMapLoaded || mapProvider !== 'mapbox') return
+    const mapboxMap = map as mapboxgl.Map
+    try {
+      if (terrainEnabled) {
+        mapboxMap.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 })
+      } else {
+        mapboxMap.setTerrain(null)
+      }
+    } catch (e) {
+      console.warn('Error toggling terrain:', e)
+    }
+  }, [map, isMapLoaded, terrainEnabled, mapProvider])
 
   useEffect(() => {
     if (!map || !isMapLoaded) return
