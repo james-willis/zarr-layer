@@ -67,6 +67,7 @@ function validateBounds(bounds: Bounds, fnName: string): boolean {
 
 /**
  * Converts source CRS coordinates to pixel indices given grid shape and bounds.
+ * Bounds are edge-to-edge (xMin = left edge, xMax = right edge).
  * Returns [xPixel, yPixel] as floating-point values for interpolation.
  *
  * @param latIsAscending - If true/null, row 0 = yMin (south). If false, row 0 = yMax (north).
@@ -89,15 +90,17 @@ export function sourceCRSToPixel(
   const xNorm = (x - xMin) / (xMax - xMin)
   const yNorm = (y - yMin) / (yMax - yMin)
 
-  // Convert to pixel coordinates
-  // X: left to right (xMin → pixel 0, xMax → pixel width-1)
-  const xPixel = xNorm * (width - 1)
+  // Convert to pixel coordinates using edge-to-edge model.
+  // Inverse of pixelToSourceCRS: pixel = xNorm * width - 0.5
+  // This maps: xMin → -0.5 (left edge), xMax → width-0.5 (right edge)
+  // Pixel centers at xMin + halfCell → 0, xMax - halfCell → width-1
+  const xPixel = xNorm * width - 0.5
 
   // Y depends on data orientation:
-  // - latIsAscending true/null: row 0 = yMin (south), so yMin → pixel 0
-  // - latIsAscending false: row 0 = yMax (north), so yMax → pixel 0
+  // - latIsAscending true/null: row 0 = yMin (south), so yMin edge → -0.5
+  // - latIsAscending false: row 0 = yMax (north), so yMax edge → -0.5
   const yPixel =
-    latIsAscending === false ? (1 - yNorm) * (height - 1) : yNorm * (height - 1)
+    latIsAscending === false ? (1 - yNorm) * height - 0.5 : yNorm * height - 0.5
 
   return [xPixel, yPixel]
 }
