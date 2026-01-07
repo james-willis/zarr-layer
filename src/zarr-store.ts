@@ -953,15 +953,16 @@ export class ZarrStore {
       const yLen = yarr.shape[0]
 
       type ZarrResult = { data: ArrayLike<number> }
-      const [xFirst, xLast, yFirstTwo, yLast] = (await Promise.all([
-        zarr.get(xarr, [zarr.slice(0, 1)]),
+      const [xFirstTwo, xLast, yFirstTwo, yLast] = (await Promise.all([
+        zarr.get(xarr, [zarr.slice(0, 2)]),
         zarr.get(xarr, [zarr.slice(xLen - 1, xLen)]),
         zarr.get(yarr, [zarr.slice(0, 2)]),
         zarr.get(yarr, [zarr.slice(yLen - 1, yLen)]),
       ])) as ZarrResult[]
 
-      const x0 = xFirst.data[0]
-      const x1 = xLast.data[0]
+      const x0 = xFirstTwo.data[0]
+      const x1 = xFirstTwo.data[1] ?? x0
+      const xN = xLast.data[0]
       const y0 = yFirstTwo.data[0]
       const y1 = yFirstTwo.data[1]
       const yN = yLast.data[0]
@@ -972,11 +973,21 @@ export class ZarrStore {
         this.latIsAscending = detectedLatAscending
       }
 
-      // Compute bounds from coordinate extents
-      const xMin = Math.min(x0, x1)
-      const xMax = Math.max(x0, x1)
-      const yMin = Math.min(y0, yN)
-      const yMax = Math.max(y0, yN)
+      // Compute cell size from adjacent coordinates
+      const dx = Math.abs(x1 - x0)
+      const dy = Math.abs(y1 - y0)
+
+      // Coordinate extents (pixel centers)
+      const coordXMin = Math.min(x0, xN)
+      const coordXMax = Math.max(x0, xN)
+      const coordYMin = Math.min(y0, yN)
+      const coordYMax = Math.max(y0, yN)
+
+      // Edge bounds = expanded by half a cell for rendering/positioning
+      const xMin = coordXMin - (Number.isFinite(dx) ? dx / 2 : 0)
+      const xMax = coordXMax + (Number.isFinite(dx) ? dx / 2 : 0)
+      const yMin = coordYMin - (Number.isFinite(dy) ? dy / 2 : 0)
+      const yMax = coordYMax + (Number.isFinite(dy) ? dy / 2 : 0)
 
       if (needsBounds) {
         this.xyLimits = { xMin, xMax, yMin, yMax }

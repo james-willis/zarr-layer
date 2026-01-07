@@ -41,8 +41,8 @@ export interface ResampleOptions {
 
 /**
  * Nearest neighbor sampling at fractional coordinates.
- * Uses pixel-center model where coordinate 0 is the center of pixel 0.
- * Valid coordinate range is [-0.5, N-0.5] for N pixels.
+ * Uses edge-based pixel coordinates where 0 aligns with the first pixel edge.
+ * Valid coordinate range is [0, N-1] for N pixels.
  * Coordinates outside this range are clamped (CLAMP_TO_EDGE behavior).
  */
 function nearestSample(
@@ -52,7 +52,7 @@ function nearestSample(
   x: number,
   y: number
 ): number {
-  // Round to nearest pixel (pixel-center model)
+  // Round to nearest pixel
   const px = Math.max(0, Math.min(width - 1, Math.round(x)))
   const py = Math.max(0, Math.min(height - 1, Math.round(y)))
   return data[py * width + px]
@@ -131,12 +131,12 @@ export function resampleToMercator(
 
   for (let tgtY = 0; tgtY < tgtH; tgtY++) {
     for (let tgtX = 0; tgtX < tgtW; tgtX++) {
-      // Convert target pixel to normalized mercator [0,1]
-      // Use pixel-center model: pixel i covers [(i/N)*range, ((i+1)/N)*range]
-      // with center at ((i+0.5)/N)*range. This ensures the texture fully covers
-      // the mercator bounds when sampled with UV 0-1.
-      const normMercX = mercX0 + ((tgtX + 0.5) / tgtW) * (mercX1 - mercX0)
-      const normMercY = mercY0 + ((tgtY + 0.5) / tgtH) * (mercY1 - mercY0)
+      // Convert target pixel to normalized mercator [0,1] using edge-based coords.
+      // Pixel 0 maps to the left/top edge, pixel N-1 maps to the right/bottom edge.
+      const tgtDenomX = tgtW <= 1 ? 1 : tgtW - 1
+      const tgtDenomY = tgtH <= 1 ? 1 : tgtH - 1
+      const normMercX = mercX0 + (tgtX / tgtDenomX) * (mercX1 - mercX0)
+      const normMercY = mercY0 + (tgtY / tgtDenomY) * (mercY1 - mercY0)
 
       // Convert normalized mercator to lat/lon
       const lon = mercatorNormToLon(normMercX)
@@ -161,28 +161,26 @@ export function resampleToMercator(
         ) {
           continue // Leave as fill value
         }
-        // Compute source X in the adjusted space using pixel-center model
-        // Source pixel i is centered at ((i+0.5)/srcW) of the geographic range
+        // Compute source X in the adjusted space using edge-based coords
         const effectiveWest = west
         const effectiveEast = east + 360
         const srcX =
           ((adjustedLon - effectiveWest) / (effectiveEast - effectiveWest)) *
-            srcW -
-          0.5
+          (srcW <= 1 ? 1 : srcW - 1)
 
         // Check latitude bounds (with epsilon for floating point precision)
         if (lat < south - BOUNDS_EPSILON || lat > north + BOUNDS_EPSILON) {
           continue
         }
 
-        // Compute source Y based on latIsAscending using pixel-center model
+        // Compute source Y based on latIsAscending using edge-based coords
         let srcY: number
         if (latIsAscending === false) {
           // Row 0 = north (latMax), row N-1 = south (latMin)
-          srcY = ((north - lat) / latRange) * srcH - 0.5
+          srcY = ((north - lat) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
         } else {
           // Row 0 = south (latMin), row N-1 = north (latMax)
-          srcY = ((lat - south) / latRange) * srcH - 0.5
+          srcY = ((lat - south) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
         }
 
         result[tgtY * tgtW + tgtX] = nearestSample(
@@ -212,18 +210,17 @@ export function resampleToMercator(
           continue // Leave as fill value
         }
 
-        // Convert lon/lat to source pixel coordinates using pixel-center model
-        // Source pixel i is centered at ((i+0.5)/srcN) of the geographic range
-        const srcX = ((checkLon - west) / lonRange) * srcW - 0.5
+        // Convert lon/lat to source pixel coordinates using edge-based coords
+        const srcX = ((checkLon - west) / lonRange) * (srcW <= 1 ? 1 : srcW - 1)
 
         // Y coordinate depends on data orientation
         let srcY: number
         if (latIsAscending === false) {
           // Row 0 = north (latMax), row N-1 = south (latMin)
-          srcY = ((north - lat) / latRange) * srcH - 0.5
+          srcY = ((north - lat) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
         } else {
           // Row 0 = south (latMin), row N-1 = north (latMax) - default
-          srcY = ((lat - south) / latRange) * srcH - 0.5
+          srcY = ((lat - south) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
         }
 
         result[tgtY * tgtW + tgtX] = nearestSample(

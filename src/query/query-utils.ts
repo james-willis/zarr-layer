@@ -58,8 +58,7 @@ export function pixelToLatLon(
 
     let srcX: number, srcY: number
     if (centerPixel) {
-      // pixelToSourceCRS uses x/(width-1) normalization: pixel 0 → xMin, pixel width-1 → xMax
-      // This is correct for pixel centers
+      // pixelToSourceCRS uses (pixel+0.5)/width for pixel centers with edge-to-edge bounds
       ;[srcX, srcY] = pixelToSourceCRS(
         x,
         y,
@@ -69,33 +68,15 @@ export function pixelToLatLon(
         latIsAscending ?? null
       )
     } else {
-      // For corners, extend beyond pixel centers by half a pixel on each edge.
-      // sourceBounds represents center-to-center (pixel 0 center → pixel width-1 center),
-      // but corners need edge-to-edge coverage.
-      if (width <= 1 || height <= 1) {
-        srcX = (xMin + xMax) / 2
-        srcY = (yMin + yMax) / 2
-      } else {
-        const xPixelWidth = (xMax - xMin) / (width - 1)
-        const yPixelWidth = (yMax - yMin) / (height - 1)
-        const xHalfPixel = xPixelWidth / 2
-        const yHalfPixel = yPixelWidth / 2
-        // Map x in [0, width] to [xMin - halfPixel, xMax + halfPixel]
-        const xLeftEdge = xMin - xHalfPixel
-        const xFullExtent = xMax - xMin + xPixelWidth
-        srcX = xLeftEdge + (x / width) * xFullExtent
-        // Y handling depends on latIsAscending
-        const yFullExtent = yMax - yMin + yPixelWidth
-        if (latIsAscending === false) {
-          // row 0 = yMax (north), so y=0 → yMax + halfPixel, y=height → yMin - halfPixel
-          const yTopEdge = yMax + yHalfPixel
-          srcY = yTopEdge - (y / height) * yFullExtent
-        } else {
-          // row 0 = yMin (south), so y=0 → yMin - halfPixel, y=height → yMax + halfPixel
-          const yBottomEdge = yMin - yHalfPixel
-          srcY = yBottomEdge + (y / height) * yFullExtent
-        }
-      }
+      // For corners, use pixel/width directly (no +0.5 offset).
+      // sourceBounds are edge-to-edge, so this maps pixel edges to bound edges.
+      const xNorm = width <= 1 ? 0.5 : x / width
+      const yNorm = height <= 1 ? 0.5 : y / height
+      srcX = xMin + xNorm * (xMax - xMin)
+      srcY =
+        latIsAscending === false
+          ? yMax - yNorm * (yMax - yMin)
+          : yMin + yNorm * (yMax - yMin)
     }
 
     const [lon, lat] = transformer.inverse(srcX, srcY)

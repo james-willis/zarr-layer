@@ -104,6 +104,7 @@ export function sourceCRSToPixel(
 
 /**
  * Converts pixel indices to source CRS coordinates given grid shape and bounds.
+ * Bounds are edge-to-edge (xMin = left edge, xMax = right edge).
  *
  * @param latIsAscending - If true/null, row 0 = yMin (south). If false, row 0 = yMax (north).
  */
@@ -121,18 +122,18 @@ export function pixelToSourceCRS(
     return [(xMin + xMax) / 2, (yMin + yMax) / 2]
   }
 
-  // Convert pixel to normalized [0, 1]
-  // Guard against single-pixel dimensions: map to center of bounds
-  const xNorm = width <= 1 ? 0.5 : xPixel / (width - 1)
-  const yNorm = height <= 1 ? 0.5 : yPixel / (height - 1)
+  // Convert pixel to normalized [0, 1] using edge-to-edge model.
+  // Pixel centers are at (pixel + 0.5) / width within the bounds.
+  const xNorm = width <= 1 ? 0.5 : (xPixel + 0.5) / width
+  const yNorm = height <= 1 ? 0.5 : (yPixel + 0.5) / height
 
   // Map to source CRS
-  // X: left to right (pixel 0 → xMin, pixel width-1 → xMax)
+  // X: left to right (pixel 0 center → xMin + halfCell, pixel width-1 center → xMax - halfCell)
   const x = xMin + xNorm * (xMax - xMin)
 
   // Y depends on data orientation:
-  // - latIsAscending true/null: row 0 = yMin (south), so pixel 0 → yMin
-  // - latIsAscending false: row 0 = yMax (north), so pixel 0 → yMax
+  // - latIsAscending true/null: row 0 = yMin (south), so pixel 0 center → yMin + halfCell
+  // - latIsAscending false: row 0 = yMax (north), so pixel 0 center → yMax - halfCell
   const y =
     latIsAscending === false
       ? yMax - yNorm * (yMax - yMin)
