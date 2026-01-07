@@ -131,12 +131,10 @@ export function resampleToMercator(
 
   for (let tgtY = 0; tgtY < tgtH; tgtY++) {
     for (let tgtX = 0; tgtX < tgtW; tgtX++) {
-      // Convert target pixel to normalized mercator [0,1] using edge-based coords.
-      // Pixel 0 maps to the left/top edge, pixel N-1 maps to the right/bottom edge.
-      const tgtDenomX = tgtW <= 1 ? 1 : tgtW - 1
-      const tgtDenomY = tgtH <= 1 ? 1 : tgtH - 1
-      const normMercX = mercX0 + (tgtX / tgtDenomX) * (mercX1 - mercX0)
-      const normMercY = mercY0 + (tgtY / tgtDenomY) * (mercY1 - mercY0)
+      // Convert target pixel center to normalized mercator [0,1].
+      // Using edge-based model: pixel centers are at (pixel + 0.5) / width.
+      const normMercX = mercX0 + ((tgtX + 0.5) / tgtW) * (mercX1 - mercX0)
+      const normMercY = mercY0 + ((tgtY + 0.5) / tgtH) * (mercY1 - mercY0)
 
       // Convert normalized mercator to lat/lon
       const lon = mercatorNormToLon(normMercX)
@@ -161,26 +159,27 @@ export function resampleToMercator(
         ) {
           continue // Leave as fill value
         }
-        // Compute source X in the adjusted space using edge-based coords
+        // Compute source X in the adjusted space using edge-based model.
+        // Source bounds are edge-to-edge, so: srcX = norm * srcW - 0.5
         const effectiveWest = west
         const effectiveEast = east + 360
-        const srcX =
-          ((adjustedLon - effectiveWest) / (effectiveEast - effectiveWest)) *
-          (srcW <= 1 ? 1 : srcW - 1)
+        const srcXNorm =
+          (adjustedLon - effectiveWest) / (effectiveEast - effectiveWest)
+        const srcX = srcXNorm * srcW - 0.5
 
         // Check latitude bounds (with epsilon for floating point precision)
         if (lat < south - BOUNDS_EPSILON || lat > north + BOUNDS_EPSILON) {
           continue
         }
 
-        // Compute source Y based on latIsAscending using edge-based coords
+        // Compute source Y based on latIsAscending using edge-based model
         let srcY: number
         if (latIsAscending === false) {
           // Row 0 = north (latMax), row N-1 = south (latMin)
-          srcY = ((north - lat) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
+          srcY = ((north - lat) / latRange) * srcH - 0.5
         } else {
           // Row 0 = south (latMin), row N-1 = north (latMax)
-          srcY = ((lat - south) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
+          srcY = ((lat - south) / latRange) * srcH - 0.5
         }
 
         result[tgtY * tgtW + tgtX] = nearestSample(
@@ -210,17 +209,18 @@ export function resampleToMercator(
           continue // Leave as fill value
         }
 
-        // Convert lon/lat to source pixel coordinates using edge-based coords
-        const srcX = ((checkLon - west) / lonRange) * (srcW <= 1 ? 1 : srcW - 1)
+        // Convert lon/lat to source pixel coordinates using edge-based model.
+        // Source bounds are edge-to-edge, so: srcX = norm * srcW - 0.5
+        const srcX = ((checkLon - west) / lonRange) * srcW - 0.5
 
         // Y coordinate depends on data orientation
         let srcY: number
         if (latIsAscending === false) {
           // Row 0 = north (latMax), row N-1 = south (latMin)
-          srcY = ((north - lat) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
+          srcY = ((north - lat) / latRange) * srcH - 0.5
         } else {
           // Row 0 = south (latMin), row N-1 = north (latMax) - default
-          srcY = ((lat - south) / latRange) * (srcH <= 1 ? 1 : srcH - 1)
+          srcY = ((lat - south) / latRange) * srcH - 0.5
         }
 
         result[tgtY * tgtW + tgtX] = nearestSample(
