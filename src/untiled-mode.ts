@@ -1594,21 +1594,25 @@ export class UntiledMode implements ZarrMode {
       const mapZoom = map.getZoom?.() ?? 0
       const bestLevelIndex = this.selectLevelForZoom(mapZoom)
 
-      // Initial load or level switch needed
+      // Initial load
       if (this.currentLevelIndex === -1) {
-        // First time - load the appropriate level for current zoom
         this.initializeLevel(bestLevelIndex)
-        return
-      } else if (
-        bestLevelIndex !== this.currentLevelIndex &&
-        this.pendingLevelIndex === null
-      ) {
-        // Zoom changed enough to warrant level switch (and no switch in progress)
-        this.switchToLevel(bestLevelIndex)
         return
       }
 
-      // Update visible regions on viewport change (only if ready)
+      // Handle level switch (including retargeting)
+      if (bestLevelIndex !== this.currentLevelIndex) {
+        if (this.pendingLevelIndex === null) {
+          this.switchToLevel(bestLevelIndex)
+        } else if (this.pendingLevelIndex !== bestLevelIndex) {
+          this.pendingLevelIndex = bestLevelIndex
+          cancelAllRequests(this.requestCanceller)
+        }
+        // Defer region updates while switching
+        return
+      }
+
+      // Update regions for current level
       if (this.regionSize && this.baseSliceArgsReady) {
         this.updateVisibleRegions(map, gl)
       }
@@ -1793,6 +1797,13 @@ export class UntiledMode implements ZarrMode {
         newHeight,
         newWidth,
       ]
+
+      if (this.pendingLevelIndex !== newLevelIndex) {
+        // Target changed while loading; let update() kick off the new switch.
+        this.pendingLevelIndex = null
+        this.invalidate()
+        return
+      }
 
       // Update all level state atomically AFTER async work completes
       // This prevents race conditions where render sees new level index but old dimensions
