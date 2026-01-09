@@ -231,6 +231,7 @@ const Controls = () => {
   const clim = useAppStore((state) => state.clim)
   const colormap = useAppStore((state) => state.colormap)
   const globeProjection = useAppStore((state) => state.globeProjection)
+  const terrainEnabled = useAppStore((state) => state.terrainEnabled)
   const mapProvider = useAppStore((state) => state.mapProvider)
   const pointResult = useAppStore((state) => state.pointResult)
   const regionResult = useAppStore((state) => state.regionResult)
@@ -279,6 +280,7 @@ const Controls = () => {
   const setClim = useAppStore((state) => state.setClim)
   const setColormap = useAppStore((state) => state.setColormap)
   const setGlobeProjection = useAppStore((state) => state.setGlobeProjection)
+  const setTerrainEnabled = useAppStore((state) => state.setTerrainEnabled)
   const setMapProvider = useAppStore((state) => state.setMapProvider)
   const setActiveDatasetState = useAppStore(
     (state) => state.setActiveDatasetState
@@ -577,6 +579,27 @@ const Controls = () => {
               if (obj.globe) setGlobeProjection(true)
             }}
           />
+        </Column>
+      </Row>
+
+      <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline' }}>
+        <Column start={1} width={1} sx={subheadingSx}>
+          Terrain
+        </Column>
+        <Column start={2} width={3}>
+          {mapProvider === 'mapbox' ? (
+            <Filter
+              values={{ on: terrainEnabled, off: !terrainEnabled }}
+              setValues={(obj: Record<string, boolean>) => {
+                if (obj.off) setTerrainEnabled(false)
+                if (obj.on) setTerrainEnabled(true)
+              }}
+            />
+          ) : (
+            <Box sx={{ color: 'secondary', fontSize: 1 }}>
+              Not yet supported in MapLibre
+            </Box>
+          )}
         </Column>
       </Row>
     </Box>

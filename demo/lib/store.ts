@@ -15,6 +15,7 @@ interface AppState {
   clim: [number, number]
   colormap: string
   globeProjection: boolean
+  terrainEnabled: boolean
   mapProvider: MapProvider
   datasetState: Record<string, Record<string, unknown>>
   loadingState: LoadingState
@@ -28,6 +29,7 @@ interface AppState {
   setClim: (clim: [number, number]) => void
   setColormap: (colormap: string) => void
   setGlobeProjection: (globeProjection: boolean) => void
+  setTerrainEnabled: (terrainEnabled: boolean) => void
   setMapProvider: (provider: MapProvider) => void
   setActiveDatasetState: (updates: Record<string, unknown>) => void
   setLoadingState: (state: LoadingState) => void
@@ -48,6 +50,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   clim: defaultModule.clim,
   colormap: defaultModule.colormap,
   globeProjection: true,
+  terrainEnabled: false,
   mapProvider: 'maplibre',
   datasetState: {
     [DEFAULT_DATASET_ID]: { ...defaultModule.defaultState },
@@ -77,6 +80,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setClim: (clim) => set({ clim }),
   setColormap: (colormap) => set({ colormap }),
   setGlobeProjection: (globeProjection) => set({ globeProjection }),
+  setTerrainEnabled: (terrainEnabled) => set({ terrainEnabled }),
   setMapProvider: (mapProvider) => set({ mapProvider }),
   setActiveDatasetState: (updates) => {
     const id = get().datasetId
