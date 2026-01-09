@@ -1,5 +1,7 @@
 import carbonplan4d from './carbonplan-4d'
 import hrrr from './hrrr'
+import usgsdem from './usgs-dem'
+
 import hurricane from './hurricane'
 import sentinel2 from './sentinel-2'
 import { createSimpleDataset } from './simple'
@@ -49,6 +51,7 @@ export const DATASETS: Dataset<any>[] = [
     info: 'Delta FG CO2 (single image, global)',
     sourceInfo: 'v2 single image (global)',
   }),
+  usgsdem,
   untiled4326,
   sentinel2,
   createSimpleDataset({
