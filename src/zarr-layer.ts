@@ -527,7 +527,10 @@ export class ZarrLayer {
     return zoom >= this.minzoom && zoom <= this.maxzoom
   }
 
-  prerender(_gl: WebGL2RenderingContext, _params: unknown) {
+  prerender(
+    _gl: WebGL2RenderingContext | WebGLRenderingContext,
+    _params: unknown
+  ) {
     if (this.isRemoved || !this.gl || !this.mode || !this.map) return
     if (!this.isZoomInRange()) return
 
@@ -535,7 +538,7 @@ export class ZarrLayer {
   }
 
   render(
-    _gl: WebGL2RenderingContext,
+    _gl: WebGL2RenderingContext | WebGLRenderingContext,
     params: unknown,
     projection?: { name: string },
     projectionToMercatorMatrix?: number[] | Float32Array | Float64Array,
@@ -596,7 +599,7 @@ export class ZarrLayer {
   }
 
   renderToTile(
-    _gl: WebGL2RenderingContext,
+    _gl: WebGL2RenderingContext | WebGLRenderingContext,
     tileId: { z: number; x: number; y: number }
   ) {
     if (
