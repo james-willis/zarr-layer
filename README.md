@@ -76,7 +76,7 @@ map.on('load', () => {
 | fillValue | number | auto | No-data value (from metadata if not set) |
 | spatialDimensions | object | auto | Custom `{ lat, lon }` dim names |
 | proj4 | string | - | Proj4 definition string for CRS reprojection (`bounds` recommended, else derived from coordinates) |
-| bounds | array | auto | `[xMin, yMin, xMax, yMax]` in source CRS units (degrees for EPSG:4326, meters for EPSG:3857) |
+| bounds | array | auto | `[xMin, yMin, xMax, yMax]` in source CRS units (degrees for EPSG:4326, meters for EPSG:3857). These are interpreted as edge bounds (not center-to-center) |
 | latIsAscending | boolean | auto | Latitude orientation |
 | renderingMode | `'2d'` \| `'3d'` | `'3d'` | Custom layer rendering mode |
 | customFrag | string | - | Custom fragment shader |
@@ -177,7 +177,7 @@ new ZarrLayer({
   },
   proj4:
     '+proj=lcc +lat_1=38.5 +lat_2=38.5 +lat_0=38.5 +lon_0=-97.5 +x_0=0 +y_0=0 +R=6371229 +units=m +no_defs',
-  bounds: [-2697520, -1587306, 2697480, 1586694], // recommended: [xMin, yMin, xMax, yMax] in source CRS units
+  bounds: [-2697520, -1587306, 2697480, 1586694], // recommended: edge bounds [xMin, yMin, xMax, yMax] in source CRS units
 })
 ```
 
