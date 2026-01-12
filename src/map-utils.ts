@@ -54,10 +54,27 @@ export interface MercatorBounds {
 }
 
 /**
+ * Bounds in EPSG:4326 (WGS84) normalized to [0, 1].
+ * Used for the two-stage reprojection pipeline.
+ * lon: -180 → 0, 180 → 1
+ * lat: -90 → 0, 90 → 1
+ */
+export interface Wgs84Bounds {
+  /** Min longitude normalized [0, 1] where -180 → 0, 180 → 1 */
+  lon0: number
+  /** Min latitude normalized [0, 1] where -90 → 0, 90 → 1 */
+  lat0: number
+  /** Max longitude normalized [0, 1] */
+  lon1: number
+  /** Max latitude normalized [0, 1] */
+  lat1: number
+}
+
+/**
  * Converts longitude to tile X coordinate at a given zoom level.
  */
 export function lonToTile(lon: number, zoom: number): number {
-  return Math.floor(((lon + 180) / 360) * Math.pow(2, zoom))
+  return Math.floor(lonToMercatorNorm(lon) * Math.pow(2, zoom))
 }
 
 /**

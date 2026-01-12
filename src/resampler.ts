@@ -1,20 +1,15 @@
 /**
- * CPU-based texture resampling for CRS → EPSG:3857 conversion.
+ * CPU-based texture resampling for tiled EPSG:4326 → EPSG:3857 conversion.
  *
- * Resamples source tile data into Mercator space before GPU upload using
- * nearest neighbor sampling to preserve exact pixel values. This allows
- * simple linear texture coordinates to work correctly on Mercator maps.
+ * This module is ONLY used by TiledMode (tiles.ts) for tiled pyramid data.
+ * UntiledMode now uses GPU-based reprojection via the wgs84 shader.
  *
- * Supports:
- * - EPSG:4326 (lat/lon) → EPSG:3857 (Web Mercator)
- * - Arbitrary CRS via proj4 → EPSG:3857 (Web Mercator)
+ * TODO: Update TiledMode to use GPU reprojection as well, then delete this module.
  */
 
 import { mercatorNormToLat, mercatorNormToLon } from './map-utils'
 import { MERCATOR_LAT_LIMIT } from './constants'
-import { createTransformer, sourceCRSToPixel } from './projection-utils'
 import type { Bounds } from './types'
-import { WEB_MERCATOR_EXTENT } from './constants'
 
 // Small epsilon for floating point comparisons at region boundaries
 // Using 1e-9 degrees is ~0.1mm at the equator - plenty of tolerance for fp errors
@@ -35,8 +30,6 @@ export interface ResampleOptions {
   fillValue: number
   /** Whether source latitude is ascending (row 0 = south) */
   latIsAscending: boolean | null
-  /** Proj4 definition string for arbitrary CRS reprojection (optional) */
-  proj4?: string | null
 }
 
 /**
@@ -59,32 +52,13 @@ function nearestSample(
 }
 
 /**
- * Convert normalized mercator [0,1] to Web Mercator meters.
- * In normalized mercator: Y=0 is north (top), Y=1 is south (bottom)
- * In Web Mercator meters: positive Y is north, negative Y is south
- */
-function normMercatorToMeters(normX: number, normY: number): [number, number] {
-  const x = (normX - 0.5) * 2 * WEB_MERCATOR_EXTENT
-  // Invert Y: normY=0 (top/north) → +worldSize, normY=1 (bottom/south) → -worldSize
-  const y = (0.5 - normY) * 2 * WEB_MERCATOR_EXTENT
-  return [x, y]
-}
-
-/**
- * Resample source data into EPSG:3857 (Web Mercator) space.
+ * Resample EPSG:4326 source data into EPSG:3857 (Web Mercator) space.
  *
- * For EPSG:4326 source data:
+ * For each pixel in the target (mercator) space:
  * 1. Convert pixel coord → normalized Mercator [0,1]
  * 2. Convert normalized Mercator → lat/lon
  * 3. Convert lat/lon → source pixel coord
  * 4. Sample source with nearest neighbor
- *
- * For arbitrary CRS (via proj4):
- * 1. Convert pixel coord → normalized Mercator [0,1]
- * 2. Convert normalized Mercator → Web Mercator meters
- * 3. Use proj4 inverse to convert Web Mercator → source CRS
- * 4. Convert source CRS coords → source pixel coord
- * 5. Sample source with nearest neighbor
  */
 export function resampleToMercator(
   options: ResampleOptions
@@ -97,27 +71,7 @@ export function resampleToMercator(
     targetMercatorBounds: [mercX0, mercY0, mercX1, mercY1],
     fillValue,
     latIsAscending,
-    proj4: proj4def,
   } = options
-
-  // If proj4 is provided, use proj4-based reprojection
-  if (proj4def) {
-    return resampleWithProj4(
-      sourceData,
-      srcW,
-      srcH,
-      tgtW,
-      tgtH,
-      mercX0,
-      mercY0,
-      mercX1,
-      mercY1,
-      fillValue,
-      proj4def,
-      [west, south, east, north], // Pass region bounds in source CRS
-      latIsAscending
-    )
-  }
 
   const result = new Float32Array(tgtW * tgtH)
   result.fill(fillValue)
@@ -131,8 +85,7 @@ export function resampleToMercator(
 
   for (let tgtY = 0; tgtY < tgtH; tgtY++) {
     for (let tgtX = 0; tgtX < tgtW; tgtX++) {
-      // Convert target pixel center to normalized mercator [0,1].
-      // Using edge-based model: pixel centers are at (pixel + 0.5) / width.
+      // Convert target pixel to normalized mercator [0,1]
       const normMercX = mercX0 + ((tgtX + 0.5) / tgtW) * (mercX1 - mercX0)
       const normMercY = mercY0 + ((tgtY + 0.5) / tgtH) * (mercY1 - mercY0)
 
@@ -238,110 +191,13 @@ export function resampleToMercator(
 }
 
 /**
- * Check if resampling is needed for a given CRS.
- * Resampling is needed for:
- * - EPSG:4326 data (lat/lon needs Mercator correction)
- * - Any custom projection via proj4
- */
-export function needsResampling(
-  crs: string,
-  proj4def?: string | null
-): boolean {
-  if (proj4def) return true
-  return crs === 'EPSG:4326'
-}
-
-/**
- * Resample source data using proj4 for arbitrary CRS → Web Mercator conversion.
+ * Check if CPU resampling is needed for a given CRS.
  *
- * For each pixel in the target (mercator) space:
- * 1. Convert pixel coord → normalized Mercator [0,1]
- * 2. Convert normalized Mercator → Web Mercator meters
- * 3. Use proj4 inverse to convert Web Mercator → source CRS coords
- * 4. Map source CRS coords → source pixel indices (using REGION bounds)
- * 5. Sample source with nearest neighbor
+ * Returns true for EPSG:4326 data (lat/lon needs Mercator correction on CPU).
+ *
+ * Note: proj4 datasets are handled separately via GPU-based two-stage
+ * reprojection (adaptive mesh + wgs84 shader), not CPU resampling.
  */
-function resampleWithProj4(
-  sourceData: Float32Array,
-  srcW: number,
-  srcH: number,
-  tgtW: number,
-  tgtH: number,
-  mercX0: number,
-  mercY0: number,
-  mercX1: number,
-  mercY1: number,
-  fillValue: number,
-  proj4def: string,
-  regionBounds: Bounds, // Region bounds in source CRS
-  latIsAscending: boolean | null
-): Float32Array<ArrayBuffer> {
-  const result = new Float32Array(tgtW * tgtH)
-  result.fill(fillValue)
-
-  // Create proj4 transformer (source CRS ↔ Web Mercator)
-  const transformer = createTransformer(proj4def, regionBounds)
-
-  // Use REGION bounds for pixel mapping, not full grid bounds
-  const [xMin, yMin, xMax, yMax] = regionBounds
-  // Expand bounds slightly to avoid edge clipping artifacts at region seams.
-  const xEps = (2 * (xMax - xMin)) / Math.max(1, srcW)
-  const yEps = (2 * (yMax - yMin)) / Math.max(1, srcH)
-  const xMinExpanded = xMin - xEps
-  const xMaxExpanded = xMax + xEps
-  const yMinExpanded = yMin - yEps
-  const yMaxExpanded = yMax + yEps
-
-  for (let tgtY = 0; tgtY < tgtH; tgtY++) {
-    for (let tgtX = 0; tgtX < tgtW; tgtX++) {
-      // Convert target pixel to normalized mercator [0,1]
-      const normMercX = mercX0 + ((tgtX + 0.5) / tgtW) * (mercX1 - mercX0)
-      const normMercY = mercY0 + ((tgtY + 0.5) / tgtH) * (mercY1 - mercY0)
-
-      // Convert normalized mercator to Web Mercator meters
-      const [mercMetersX, mercMetersY] = normMercatorToMeters(
-        normMercX,
-        normMercY
-      )
-
-      // Transform Web Mercator → source CRS
-      const [srcCrsX, srcCrsY] = transformer.inverse(mercMetersX, mercMetersY)
-
-      // Guard against NaN/Infinity from proj4 inverse transforms
-      if (!isFinite(srcCrsX) || !isFinite(srcCrsY)) {
-        continue // Leave as fill value
-      }
-
-      // Check if within REGION bounds (not full grid bounds)
-      if (
-        srcCrsX < xMinExpanded ||
-        srcCrsX > xMaxExpanded ||
-        srcCrsY < yMinExpanded ||
-        srcCrsY > yMaxExpanded
-      ) {
-        continue // Leave as fill value
-      }
-
-      // Convert source CRS coords to pixel indices using REGION bounds
-      const [srcX, srcY] = sourceCRSToPixel(
-        srcCrsX,
-        srcCrsY,
-        regionBounds,
-        srcW,
-        srcH,
-        latIsAscending
-      )
-
-      // Sample source data
-      result[tgtY * tgtW + tgtX] = nearestSample(
-        sourceData,
-        srcW,
-        srcH,
-        srcX,
-        srcY
-      )
-    }
-  }
-
-  return result
+export function needsResampling(crs: string): boolean {
+  return crs === 'EPSG:4326'
 }

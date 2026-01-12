@@ -20,6 +20,7 @@ import {
   latToMercatorNorm,
   lonToMercatorNorm,
   mercatorNormToLon,
+  mercatorNormToLat,
   parseLevelZoom,
   zoomToLevel,
   type TileTuple,
@@ -32,7 +33,6 @@ import type {
   TileId,
   RegionRenderState,
 } from './zarr-mode'
-import { createLinearTexCoordsFromVertices } from './webgl-utils'
 import { setupBandTextureUniforms } from './render-helpers'
 import { renderRegion, type RenderableRegion } from './renderable-region'
 import {
@@ -41,28 +41,6 @@ import {
   getMapboxTileBounds,
   boundsIntersect,
 } from './mapbox-globe-utils'
-
-/** Cache for linear texture coordinate buffers. One buffer per region. */
-const linearBufferCache = new WeakMap<RegionRenderState, WebGLBuffer>()
-
-/**
- * Get or create a linear texture coordinate buffer for a region.
- */
-function getLinearBuffer(
-  gl: WebGL2RenderingContext,
-  region: RegionRenderState
-): WebGLBuffer {
-  let buffer = linearBufferCache.get(region)
-  if (buffer) return buffer
-
-  const linearCoords = createLinearTexCoordsFromVertices(region.vertexArr)
-  buffer = gl.createBuffer()!
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  gl.bufferData(gl.ARRAY_BUFFER, linearCoords, gl.STATIC_DRAW)
-
-  linearBufferCache.set(region, buffer)
-  return buffer
-}
 
 // ============================================================================
 // Main Rendering Functions
@@ -117,6 +95,18 @@ function renderRegionsToTile(
   if (regions.length === 0) return true // Still loading
 
   const tileBounds = getMapboxTileBounds(tileId)
+
+  // Convert tile bounds to WGS84 for intersection with wgs84Bounds regions
+  // Tile bounds are in normalized Mercator [0,1], convert to normalized WGS84 [0,1]
+  const tileWgs84Bounds = {
+    lon0: tileBounds.x0, // lon is same in both spaces (just x)
+    lon1: tileBounds.x1,
+    // Mercator Y needs conversion: y0 is north (smaller lat), y1 is south (larger lat)
+    // In normalized WGS84: lat0 is south, lat1 is north
+    lat0: (mercatorNormToLat(tileBounds.y1) + 90) / 180, // south edge
+    lat1: (mercatorNormToLat(tileBounds.y0) + 90) / 180, // north edge
+  }
+
   const tileMatrix = createMapboxTileMatrix(
     tileBounds.x0,
     tileBounds.y0,
@@ -125,10 +115,15 @@ function renderRegionsToTile(
   )
 
   const { colormapTexture, uniforms, customShaderConfig } = context
+
+  // Check if any region uses WGS84 (proj4 datasets or EPSG:4326)
+  const useWgs84 = regions.some((r) => !!r.wgs84Bounds)
+
   const shaderProgram = renderer.getProgram(
     context.shaderData,
     customShaderConfig,
-    true
+    true, // useMapboxGlobe
+    useWgs84
   )
   renderer.gl.useProgram(shaderProgram.program)
   renderer.applyCommonUniforms(
@@ -150,20 +145,33 @@ function renderRegionsToTile(
 
   let needsMoreData = false
   for (const region of regions) {
-    const bounds = region.mercatorBounds
-    if (!boundsIntersect(bounds, tileBounds)) continue
+    // For regions with wgs84Bounds, do intersection in WGS84 space
+    // This avoids the Mercator/WGS84 coordinate mismatch at low zoom
+    let intersects: boolean
+    if (region.wgs84Bounds) {
+      const w = region.wgs84Bounds
+      intersects =
+        w.lon0 < tileWgs84Bounds.lon1 &&
+        w.lon1 > tileWgs84Bounds.lon0 &&
+        w.lat0 < tileWgs84Bounds.lat1 &&
+        w.lat1 > tileWgs84Bounds.lat0
+    } else {
+      intersects = boundsIntersect(region.mercatorBounds, tileBounds)
+    }
+    if (!intersects) continue
 
-    // Get linear texture coordinates buffer (no crop needed - tileMatrix handles clipping)
-    const linearBuffer = getLinearBuffer(renderer.gl, region)
+    // For proj4 datasets: use indexed mesh with wgs84Bounds
+    // For EPSG:4326: use subdivided quad (not indexed) with wgs84Bounds
+    // Both use the mapbox-globe-wgs84 shader to convert WGS84 → Mercator
+    const useIndexedMesh = !!region.useIndexedMesh && !!region.indexBuffer
 
-    // Create renderable region using original bounds
-    // The tileMatrix clips geometry to tile bounds, and texture sampling
-    // is automatically correct through vertex interpolation
     const renderable: RenderableRegion = {
-      mercatorBounds: bounds,
+      mercatorBounds: region.mercatorBounds,
       vertexBuffer: region.vertexBuffer,
-      pixCoordBuffer: linearBuffer,
-      vertexCount: region.vertexArr.length / 2,
+      pixCoordBuffer: region.pixCoordBuffer,
+      vertexCount: useIndexedMesh
+        ? region.vertexCount ?? region.vertexArr.length / 2
+        : region.vertexArr.length / 2,
       texture: region.texture,
       bandData: region.bandData ?? new Map(),
       bandTextures: region.bandTextures ?? new Map(),
@@ -171,7 +179,11 @@ function renderRegionsToTile(
       bandTexturesConfigured: region.bandTexturesConfigured ?? new Set(),
       width: region.width,
       height: region.height,
-      // No texScale/texOffset - identity transform
+      // Include indexed mesh fields for proj4 datasets
+      indexBuffer: useIndexedMesh ? region.indexBuffer : undefined,
+      useIndexedMesh: useIndexedMesh,
+      // Include wgs84Bounds for both proj4 and EPSG:4326 datasets
+      wgs84Bounds: region.wgs84Bounds,
     }
 
     const rendered = renderRegion(

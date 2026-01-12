@@ -61,6 +61,14 @@ export interface RegionRenderState {
   bandTextures?: Map<string, WebGLTexture>
   bandTexturesUploaded?: Set<string>
   bandTexturesConfigured?: Set<string>
+  /** Index buffer for adaptive mesh (proj4 datasets) */
+  indexBuffer?: WebGLBuffer
+  /** Number of vertices/indices to draw */
+  vertexCount?: number
+  /** Whether to use indexed mesh rendering (gl.drawElements) */
+  useIndexedMesh?: boolean
+  /** WGS84 bounds for two-stage reprojection */
+  wgs84Bounds?: import('./map-utils').Wgs84Bounds
 }
 
 export interface ZarrMode {

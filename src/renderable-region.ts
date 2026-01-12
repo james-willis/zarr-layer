@@ -6,7 +6,7 @@
  * for a single render path.
  */
 
-import type { MercatorBounds } from './map-utils'
+import type { MercatorBounds, Wgs84Bounds } from './map-utils'
 import type { CustomShaderConfig } from './renderer-types'
 import type { ShaderProgram } from './shader-program'
 import { bindBandTextures, bindGeometryBuffers } from './render-helpers'
@@ -23,6 +23,13 @@ export interface RenderableRegion {
   vertexBuffer: WebGLBuffer
   pixCoordBuffer: WebGLBuffer
   vertexCount: number
+
+  // Indexed mesh support (for adaptive mesh with proj4 datasets)
+  indexBuffer?: WebGLBuffer | null
+  useIndexedMesh?: boolean
+
+  // WGS84 bounds for two-stage reprojection (proj4 datasets)
+  wgs84Bounds?: Wgs84Bounds | null
 
   // Main texture (pre-uploaded)
   texture: WebGLTexture
@@ -61,13 +68,26 @@ export function renderRegion(
   worldOffsets: number[],
   customShaderConfig?: CustomShaderConfig
 ): boolean {
-  const bounds = region.mercatorBounds
+  // Determine bounds for scale/shift uniforms
+  // For wgs84 shader (two-stage reprojection), use wgs84Bounds
+  // Otherwise use mercatorBounds
+  const wgs84Bounds = region.wgs84Bounds ?? null
 
-  // Set position uniforms from mercator bounds
-  const scaleX = (bounds.x1 - bounds.x0) / 2
-  const scaleY = (bounds.y1 - bounds.y0) / 2
-  const shiftX = (bounds.x0 + bounds.x1) / 2
-  const shiftY = (bounds.y0 + bounds.y1) / 2
+  // Set position uniforms
+  // For wgs84: bounds are in normalized 4326 [0,1], shader transforms to Mercator
+  // For mercator: bounds are in normalized Mercator [0,1]
+  let scaleX: number, scaleY: number, shiftX: number, shiftY: number
+  if (wgs84Bounds) {
+    scaleX = (wgs84Bounds.lon1 - wgs84Bounds.lon0) / 2
+    scaleY = (wgs84Bounds.lat1 - wgs84Bounds.lat0) / 2
+    shiftX = (wgs84Bounds.lon0 + wgs84Bounds.lon1) / 2
+    shiftY = (wgs84Bounds.lat0 + wgs84Bounds.lat1) / 2
+  } else {
+    scaleX = (region.mercatorBounds.x1 - region.mercatorBounds.x0) / 2
+    scaleY = (region.mercatorBounds.y1 - region.mercatorBounds.y0) / 2
+    shiftX = (region.mercatorBounds.x0 + region.mercatorBounds.x1) / 2
+    shiftY = (region.mercatorBounds.y0 + region.mercatorBounds.y1) / 2
+  }
 
   gl.uniform1f(shaderProgram.scaleLoc, 0)
   gl.uniform1f(shaderProgram.scaleXLoc, scaleX)
@@ -88,6 +108,11 @@ export function renderRegion(
     region.vertexBuffer,
     region.pixCoordBuffer
   )
+
+  // Bind index buffer for indexed mesh
+  if (region.useIndexedMesh && region.indexBuffer) {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, region.indexBuffer)
+  }
 
   // Bind textures (upload happens at fetch time for both tiles and regions)
   if (shaderProgram.useCustomShader && customShaderConfig) {
@@ -115,7 +140,11 @@ export function renderRegion(
   // Draw for each world offset (map wrapping)
   for (const worldOffset of worldOffsets) {
     gl.uniform1f(shaderProgram.worldXOffsetLoc, worldOffset)
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, region.vertexCount)
+    if (region.useIndexedMesh && region.indexBuffer) {
+      gl.drawElements(gl.TRIANGLES, region.vertexCount, gl.UNSIGNED_INT, 0)
+    } else {
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, region.vertexCount)
+    }
   }
 
   return true
