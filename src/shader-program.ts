@@ -51,6 +51,10 @@ export interface ShaderProgram {
   globeTransitionLoc?: WebGLUniformLocation | null
   tileRenderLoc?: WebGLUniformLocation | null
   dataScaleLoc: WebGLUniformLocation | null
+  // EPSG:4326 reprojection uniforms
+  reprojectLoc: WebGLUniformLocation | null
+  latBoundsLoc: WebGLUniformLocation | null
+  latIsAscendingLoc: WebGLUniformLocation | null
 }
 
 export function resolveProjectionMode(
@@ -238,6 +242,10 @@ export function createShaderProgram(
     globeTransitionLoc: mapboxUniform('u_globe_transition'),
     tileRenderLoc: mapboxUniform('u_tile_render'),
     dataScaleLoc: gl.getUniformLocation(program, 'u_dataScale'),
+    // EPSG:4326 reprojection uniforms
+    reprojectLoc: gl.getUniformLocation(program, 'u_reproject'),
+    latBoundsLoc: gl.getUniformLocation(program, 'u_latBounds'),
+    latIsAscendingLoc: gl.getUniformLocation(program, 'u_latIsAscending'),
   }
 
   gl.deleteShader(vertexShader)

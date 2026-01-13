@@ -31,6 +31,10 @@ export interface RenderableRegion {
   // WGS84 bounds for two-stage reprojection (proj4 datasets)
   wgs84Bounds?: Wgs84Bounds | null
 
+  // Data orientation for fragment shader reprojection (EPSG:4326)
+  // true = row 0 is south (latitude ascending), false = row 0 is north
+  latIsAscending?: boolean
+
   // Main texture (pre-uploaded)
   texture: WebGLTexture
 
@@ -100,6 +104,33 @@ export function renderRegion(
   const texOffset = region.texOffset ?? [0, 0]
   gl.uniform2f(shaderProgram.texScaleLoc, texScale[0], texScale[1])
   gl.uniform2f(shaderProgram.texOffsetLoc, texOffset[0], texOffset[1])
+
+  // Set EPSG:4326 reprojection uniforms for fragment shader reprojection
+  // This is used when mercatorBounds has lat bounds but we're NOT using wgs84 vertex shader
+  const hasLatBounds =
+    region.mercatorBounds.latMin !== undefined &&
+    region.mercatorBounds.latMax !== undefined
+  const useFragmentReproject = hasLatBounds && !wgs84Bounds
+
+  if (shaderProgram.reprojectLoc !== null) {
+    gl.uniform1i(shaderProgram.reprojectLoc, useFragmentReproject ? 1 : 0)
+  }
+  if (
+    useFragmentReproject &&
+    shaderProgram.latBoundsLoc !== null &&
+    hasLatBounds
+  ) {
+    gl.uniform2f(
+      shaderProgram.latBoundsLoc,
+      region.mercatorBounds.latMin!,
+      region.mercatorBounds.latMax!
+    )
+  }
+  if (useFragmentReproject && shaderProgram.latIsAscendingLoc !== null) {
+    // Use region's latIsAscending if provided, otherwise assume descending (row 0 = north)
+    const isAscending = region.latIsAscending ?? false
+    gl.uniform1i(shaderProgram.latIsAscendingLoc, isAscending ? 1 : 0)
+  }
 
   // Bind geometry
   bindGeometryBuffers(

@@ -524,39 +524,6 @@ export function findBestChildTiles<T extends TileDataLike>(
 }
 
 /**
- * Check if a tile key has an overlapping ancestor in the rendered keys list.
- * Used to prevent rendering both a parent tile AND its children at the same location.
- *
- * @param childKey - The child tile key to check
- * @param renderedKeys - Array of tile keys currently being rendered
- * @returns The overlapping ancestor key if found, null otherwise
- */
-export function getOverlappingAncestor(
-  childKey: string,
-  renderedKeys: string[]
-): string | null {
-  const [childX, childY, childZ] = keyToTile(childKey)
-
-  for (const parentKey of renderedKeys) {
-    const [parentX, parentY, parentZ] = keyToTile(parentKey)
-
-    // Can't be an ancestor if at same or higher zoom level
-    if (childZ <= parentZ) continue
-
-    // Check if parent covers the child
-    const factor = Math.pow(2, childZ - parentZ)
-    const coversX = Math.floor(childX / factor) === parentX
-    const coversY = Math.floor(childY / factor) === parentY
-
-    if (coversX && coversY) {
-      return parentKey
-    }
-  }
-
-  return null
-}
-
-/**
  * Converts geographic bounds to normalized Web Mercator bounds [0, 1].
  * Handles both EPSG:4326 (lat/lon) and EPSG:3857 (already mercator) coordinate systems.
  * @param xyLimits - Geographic bounds { xMin, xMax, yMin, yMax }.
@@ -617,63 +584,7 @@ export function geoToArrayIndex(
   )
 }
 
-/**
- * Convert an array index to a geographic coordinate.
- * Used for computing chunk bounds in geographic space.
- * @param index - Array index.
- * @param geoMin - Minimum geographic extent.
- * @param geoMax - Maximum geographic extent.
- * @param arraySize - Size of the array in this dimension.
- * @returns Geographic coordinate value.
- */
-export function arrayIndexToGeo(
-  index: number,
-  geoMin: number,
-  geoMax: number,
-  arraySize: number
-): number {
-  return geoMin + (index / arraySize) * (geoMax - geoMin)
-}
-
-/**
- * Convert an array index to a chunk index.
- * @param arrayIndex - Array index.
- * @param chunkSize - Size of each chunk.
- * @returns Chunk index.
- */
-export function arrayIndexToChunkIndex(
-  arrayIndex: number,
-  chunkSize: number
-): number {
-  return Math.floor(arrayIndex / chunkSize)
-}
-
-/**
- * Get the array index range covered by a chunk.
- * @param chunkIndex - Chunk index.
- * @param chunkSize - Size of each chunk.
- * @param arraySize - Total size of the array.
- * @returns [startIndex, endIndex] (exclusive end).
- */
-export function chunkIndexToArrayRange(
-  chunkIndex: number,
-  chunkSize: number,
-  arraySize: number
-): [number, number] {
-  const startIndex = chunkIndex * chunkSize
-  const endIndex = Math.min((chunkIndex + 1) * chunkSize, arraySize)
-  return [startIndex, endIndex]
-}
-
 // === Texture coordinate utilities ===
-
-/** Latitude bounds in degrees */
-export interface LatBounds {
-  latMin: number
-  latMax: number
-  lonMin?: number
-  lonMax?: number
-}
 
 /**
  * Flip texture V coordinates (for EPSG:3857 data with latIsAscending=true).

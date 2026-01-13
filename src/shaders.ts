@@ -48,7 +48,8 @@ const INPUTS_OUTPUTS = `
 in vec2 pix_coord_in;
 in vec2 vertex;
 
-out vec2 pix_coord;`
+out vec2 pix_coord;
+out vec2 v_mercatorPos;`
 
 /** Scale handling (shared by all shaders) */
 const SCALE_HANDLING = `
@@ -221,6 +222,7 @@ ${SCALE_HANDLING}
 ${coordTransform}
 ${projectionOutput}
   pix_coord = pix_coord_in;
+  v_mercatorPos = merc;
 }
 `
 }
@@ -275,14 +277,52 @@ export function createMapboxGlobeWgs84VertexShaderSource(): string {
 // Fragment Shaders
 // ============================================================================
 
-// Fragment shader coordinate transform (texScale/texOffset applied to texture coords)
+// Fragment shader constants
+const FRAG_CONST_PI = `const float PI = 3.14159265358979323846;`
+
+/** Inverse Mercator projection: (x, y) in radians -> (lon, lat) in degrees */
+const FUNC_MERCATOR_INVERT = `
+vec2 mercatorInvert(float x, float y) {
+  float lambda = x;
+  float phi = 2.0 * atan(exp(y)) - PI / 2.0;
+  return vec2(degrees(lambda), degrees(phi));
+}
+`
+
+/** Fragment shader reprojection logic for EPSG:4326 data */
 const FRAGMENT_SHADER_REPROJECT = `
-  vec2 sample_coord = pix_coord * u_texScale + u_texOffset;
+  vec2 sample_coord;
+
+  if (u_reproject == 1) {
+    // EPSG:4326 reprojection: invert Mercator to lat/lon for texture lookup
+    // v_mercatorPos is normalized [0,1] where y=0 is north, y=1 is south
+    // Convert to Mercator radians: y=0 -> PI (north), y=1 -> -PI (south)
+    float mercY = PI * (1.0 - 2.0 * v_mercatorPos.y);
+    vec2 lonLat = mercatorInvert(0.0, mercY);
+    float lat = lonLat.y;
+
+    // Map latitude to texture V coordinate based on data orientation
+    float latRange = u_latBounds.y - u_latBounds.x;
+    float texV;
+    if (u_latIsAscending == 1) {
+      // Row 0 = south (latMin), row N = north (latMax)
+      texV = (lat - u_latBounds.x) / latRange;
+    } else {
+      // Row 0 = north (latMax), row N = south (latMin)
+      texV = (u_latBounds.y - lat) / latRange;
+    }
+
+    // X coordinate is linear (longitude)
+    sample_coord = vec2(pix_coord.x, texV) * u_texScale + u_texOffset;
+  } else {
+    // Standard linear texture lookup
+    sample_coord = pix_coord * u_texScale + u_texOffset;
+  }
 `
 
 /**
  * Fragment shader for tile rendering with colormap and fillValue handling.
- * Mirrors carbonplan/maps approach with clim (vec2) and single fillValue.
+ * Supports EPSG:4326 reprojection via Mercator inversion in fragment shader.
  */
 export const maplibreFragmentShaderSource = `#version 300 es
 precision highp float;
@@ -296,15 +336,23 @@ uniform float u_dataScale;
 uniform vec2 u_texScale;
 uniform vec2 u_texOffset;
 
+// EPSG:4326 reprojection uniforms
+uniform int u_reproject;      // 0 = no reprojection, 1 = Mercator inversion
+uniform vec2 u_latBounds;     // (latMin, latMax) in degrees
+uniform int u_latIsAscending; // 1 = row 0 is south, 0 = row 0 is north
+
 uniform sampler2D tex;
 uniform sampler2D cmap;
 
 in vec2 pix_coord;
+in vec2 v_mercatorPos;
 out vec4 color;
+
+${FRAG_CONST_PI}
+${FUNC_MERCATOR_INVERT}
 
 void main() {
 ${FRAGMENT_SHADER_REPROJECT}
-
   float texVal = texture(tex, sample_coord).r;
 
   // NaN check (fill values converted to NaN during normalization)
@@ -400,6 +448,11 @@ uniform float u_dataScale;
 uniform vec2 u_texScale;
 uniform vec2 u_texOffset;
 
+// EPSG:4326 reprojection uniforms
+uniform int u_reproject;      // 0 = no reprojection, 1 = Mercator inversion
+uniform vec2 u_latBounds;     // (latMin, latMax) in degrees
+uniform int u_latIsAscending; // 1 = row 0 is south, 0 = row 0 is north
+
 uniform sampler2D colormap;
 
 ${bandSamplers}
@@ -407,7 +460,11 @@ ${customUniformDecls}
 ${extraUniformsDecl}
 
 in vec2 pix_coord;
+in vec2 v_mercatorPos;
 out vec4 fragColor;
+
+${FRAG_CONST_PI}
+${FUNC_MERCATOR_INVERT}
 
 void main() {
 ${FRAGMENT_SHADER_REPROJECT}

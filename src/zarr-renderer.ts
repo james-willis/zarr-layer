@@ -186,7 +186,8 @@ export class ZarrRenderer {
     tileTexOverrides?: Record<
       string,
       { texScale: [number, number]; texOffset: [number, number] }
-    >
+    >,
+    latIsAscending?: boolean | null
   ): void {
     renderTiles(
       this.gl,
@@ -201,7 +202,8 @@ export class ZarrRenderer {
       customShaderConfig,
       isGlobeTileRender,
       datasetMaxZoom,
-      tileTexOverrides
+      tileTexOverrides,
+      latIsAscending
     )
   }
 

@@ -108,6 +108,8 @@ interface RegionState {
   mercatorBounds: MercatorBounds | null
   // WGS84 bounds for two-stage reprojection (proj4 datasets)
   wgs84Bounds: Wgs84Bounds | null
+  // Data orientation for fragment shader reprojection (EPSG:4326)
+  latIsAscending?: boolean
   // Version tracking for selector changes
   selectorVersion: number
   // Multi-band support
@@ -833,7 +835,11 @@ export class UntiledMode implements ZarrMode {
   /**
    * Create geometry (vertex positions and tex coords) for a region.
    * Uses subdivided geometry for smooth globe rendering.
-   * Data is resampled to Mercator on CPU, so linear texture coords are used.
+   *
+   * Three rendering paths based on CRS:
+   * - Proj4 datasets: Adaptive mesh with WGS84 vertices, GPU transforms to Mercator in vertex shader
+   * - EPSG:4326: Subdivided quad in Mercator space, fragment shader inverts Mercator → lat for texture lookup
+   * - EPSG:3857: Subdivided quad with linear texture coords (data already in Mercator)
    */
   private createRegionGeometry(
     regionX: number,
@@ -871,44 +877,32 @@ export class UntiledMode implements ZarrMode {
       region.useIndexedMesh = true
       region.vertexCount = adaptive.indices.length
     } else if (this.crs === 'EPSG:4326') {
-      // EPSG:4326 datasets: use subdivided quad + wgs84 shader
-      // Data is already in 4326, shader transforms to Mercator
+      // EPSG:4326 datasets: use fragment shader reprojection
+      // Mesh is in Mercator space, fragment shader inverts Mercator → lat for texture lookup
       const subdivided = createSubdividedQuad(subdivisions)
       region.vertexArr = subdivided.vertexArr
       region.useIndexedMesh = false
       region.vertexCount = subdivided.vertexArr.length / 2
 
-      // Normalize geoBounds to [0,1] for wgs84Bounds
+      // Compute Mercator bounds for vertex positioning
       // geoBounds for 4326 data: xMin/xMax = lon, yMin/yMax = lat
-      // Use lonToMercatorNorm to handle 0-360 longitude convention
-      const wgs84Bounds = {
-        lon0: lonToMercatorNorm(geoBounds.xMin),
-        lon1: lonToMercatorNorm(geoBounds.xMax),
-        lat0: (geoBounds.yMin + 90) / 180,
-        lat1: (geoBounds.yMax + 90) / 180,
-      }
-      region.wgs84Bounds = wgs84Bounds
-
-      // Compute mercatorBounds from wgs84Bounds for consistent bounds intersection checks
-      // This ensures mercatorBounds and wgs84Bounds are always consistent
-      const latMin = wgs84Bounds.lat0 * 180 - 90
-      const latMax = wgs84Bounds.lat1 * 180 - 90
+      const latMin = geoBounds.yMin
+      const latMax = geoBounds.yMax
       region.mercatorBounds = {
-        x0: wgs84Bounds.lon0,
-        x1: wgs84Bounds.lon1,
+        x0: lonToMercatorNorm(geoBounds.xMin),
+        x1: lonToMercatorNorm(geoBounds.xMax),
         y0: latToMercatorNorm(latMax),
         y1: latToMercatorNorm(latMin),
+        // Include lat bounds for fragment shader reprojection
         latMin,
         latMax,
       }
 
-      // Texture coords: V=0 samples first row of data, V=1 samples last row
-      // Quad has: top (Y=+1, north) → V=0, bottom (Y=-1, south) → V=1
-      // If latIsAscending (first row = south), south needs V=0 → FLIP
-      // If not latIsAscending (first row = north), north needs V=0 → no flip
-      region.pixCoordArr = this.latIsAscending
-        ? flipTexCoordV(subdivided.texCoordArr)
-        : subdivided.texCoordArr
+      // Store data orientation for fragment shader
+      region.latIsAscending = this.latIsAscending ?? false
+
+      // Use linear texture coords - fragment shader handles orientation via latIsAscending
+      region.pixCoordArr = subdivided.texCoordArr
     } else {
       // EPSG:3857 and other Mercator-compatible CRS: use subdivided quad + mercator shader
       const subdivided = createSubdividedQuad(subdivisions)
@@ -1807,12 +1801,9 @@ export class UntiledMode implements ZarrMode {
 
   render(renderer: ZarrRenderer, context: RenderContext): void {
     const useMapboxGlobe = !!context.mapboxGlobe
-    // Use wgs84 shader for non-Mercator datasets (GPU reprojection)
-    // - Proj4 datasets: adaptive mesh + wgs84 shader
-    // - EPSG:4326 datasets: subdivided quad + wgs84 shader
-    const useWgs84 =
-      (!!this.proj4def && !!this.cached4326Transformer) ||
-      this.crs === 'EPSG:4326'
+    // Use wgs84 shader only for proj4 datasets (vertex shader reprojection)
+    // EPSG:4326 uses fragment shader reprojection instead
+    const useWgs84 = !!this.proj4def && !!this.cached4326Transformer
     const shaderProgram = renderer.getProgram(
       context.shaderData,
       context.customShaderConfig,
@@ -1856,6 +1847,7 @@ export class UntiledMode implements ZarrMode {
       indexBuffer: region.indexBuffer,
       useIndexedMesh: region.useIndexedMesh,
       wgs84Bounds: region.wgs84Bounds ?? undefined,
+      latIsAscending: region.latIsAscending,
       texture: region.texture!,
       bandData: region.bandData,
       bandTextures: region.bandTextures,
@@ -1937,7 +1929,6 @@ export class UntiledMode implements ZarrMode {
       width: region.width,
       height: region.height,
       channels: this.channels,
-      latIsAscending: this.latIsAscending ?? undefined,
       bandData: region.bandData,
       bandTextures: region.bandTextures,
       bandTexturesUploaded: region.bandTexturesUploaded,
@@ -1947,6 +1938,7 @@ export class UntiledMode implements ZarrMode {
       vertexCount: region.vertexCount,
       useIndexedMesh: region.useIndexedMesh,
       wgs84Bounds: region.wgs84Bounds ?? undefined,
+      latIsAscending: region.latIsAscending,
     }))
   }
 
