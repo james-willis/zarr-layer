@@ -41,7 +41,7 @@ export interface TiledRenderState {
   vertexArr: Float32Array
   pixCoordArr: Float32Array
   tileBounds?: Record<string, MercatorBounds>
-  latIsAscending: boolean | null
+  latIsAscending: boolean
 }
 
 export interface RegionRenderState {
@@ -54,8 +54,8 @@ export interface RegionRenderState {
   width: number
   height: number
   channels: number
-  /** Whether latitude increases with array index (needed for globe tile coordinate calculation) */
-  latIsAscending?: boolean
+  /** Data orientation: true = row 0 is south */
+  latIsAscending: boolean
   /** Band textures for multi-band custom shaders */
   bandData?: Map<string, Float32Array>
   bandTextures?: Map<string, WebGLTexture>

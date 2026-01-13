@@ -31,9 +31,9 @@ export interface RenderableRegion {
   // WGS84 bounds for two-stage reprojection (proj4 datasets)
   wgs84Bounds?: Wgs84Bounds | null
 
-  // Data orientation for fragment shader reprojection (EPSG:4326)
-  // true = row 0 is south (latitude ascending), false = row 0 is north
-  latIsAscending?: boolean
+  // Data orientation: true = row 0 is south (latitude ascending)
+  // Resolved by ZarrStore during init
+  latIsAscending: boolean
 
   // Main texture (pre-uploaded)
   texture: WebGLTexture
@@ -127,9 +127,7 @@ export function renderRegion(
     )
   }
   if (useFragmentReproject && shaderProgram.latIsAscendingLoc !== null) {
-    // Use region's latIsAscending if provided, otherwise assume descending (row 0 = north)
-    const isAscending = region.latIsAscending ?? false
-    gl.uniform1i(shaderProgram.latIsAscendingLoc, isAscending ? 1 : 0)
+    gl.uniform1i(shaderProgram.latIsAscendingLoc, region.latIsAscending ? 1 : 0)
   }
 
   // Bind geometry

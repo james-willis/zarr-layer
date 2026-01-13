@@ -50,7 +50,7 @@ function tileToRenderable(
   texOffset: [number, number],
   tileCache: Tiles,
   renderTileKey: string,
-  latIsAscending?: boolean | null
+  latIsAscending: boolean
 ): RenderableRegion {
   return {
     mercatorBounds: bounds,
@@ -68,7 +68,7 @@ function tileToRenderable(
     texOffset,
     ensureBandTexture: (bandName) =>
       tileCache.ensureBandTexture(renderTileKey, bandName),
-    latIsAscending: latIsAscending ?? undefined,
+    latIsAscending,
   }
 }
 
@@ -89,7 +89,7 @@ export function renderTiles(
     string,
     { texScale: [number, number]; texOffset: [number, number] }
   >,
-  latIsAscending?: boolean | null
+  latIsAscending: boolean = true
 ) {
   // Set up band texture uniforms once per frame
   setupBandTextureUniforms(gl, shaderProgram, customShaderConfig)

@@ -26,7 +26,7 @@ export interface AdaptiveMeshOptions {
   width: number
   height: number
   transformer: ProjectionTransformer
-  latIsAscending: boolean | null
+  latIsAscending: boolean
   maxError?: number
 }
 

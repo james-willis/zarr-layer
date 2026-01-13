@@ -187,7 +187,7 @@ export class ZarrRenderer {
       string,
       { texScale: [number, number]; texOffset: [number, number] }
     >,
-    latIsAscending?: boolean | null
+    latIsAscending: boolean = true
   ): void {
     renderTiles(
       this.gl,

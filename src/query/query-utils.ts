@@ -67,7 +67,7 @@ export function pixelToLatLon(
       sourceBounds,
       width,
       height,
-      latIsAscending ?? null
+      latIsAscending
     )
 
     const [lon, lat] = transformer.inverse(srcX, srcY)
@@ -306,7 +306,7 @@ export function computePixelBoundsFromGeometry(
         sourceBounds,
         width,
         height,
-        latIsAscending ?? null
+        latIsAscending
       )
       minX = Math.min(minX, xPixel)
       maxX = Math.max(maxX, xPixel)
@@ -754,7 +754,7 @@ export function mercatorBoundsToPixel(
       sourceBounds,
       width,
       height,
-      latIsAscending ?? null
+      latIsAscending
     )
 
     const x = Math.floor(xPixel)

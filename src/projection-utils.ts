@@ -109,7 +109,7 @@ function validateBounds(bounds: Bounds, fnName: string): boolean {
  * Uses edge-based model: xMin → 0, xMax → width (consistent with getRegionBounds).
  * For pixel centers, the result will be at integer + 0.5 positions.
  *
- * @param latIsAscending - If true/null, row 0 = yMin (south). If false, row 0 = yMax (north).
+ * @param latIsAscending - If true, row 0 = yMin (south). If false, row 0 = yMax (north).
  */
 export function sourceCRSToPixel(
   x: number,
@@ -117,7 +117,7 @@ export function sourceCRSToPixel(
   bounds: Bounds,
   width: number,
   height: number,
-  latIsAscending: boolean | null = true
+  latIsAscending: boolean = true
 ): [number, number] {
   if (!validateBounds(bounds, 'sourceCRSToPixel')) {
     return [width / 2, height / 2]
@@ -129,15 +129,13 @@ export function sourceCRSToPixel(
   const xNorm = (x - xMin) / (xMax - xMin)
   const yNorm = (y - yMin) / (yMax - yMin)
 
-  // Convert to pixel coordinates using edge-to-edge model.
-  // xMin → 0, xMax → width (consistent with getRegionBounds)
+  // Convert to pixel coordinates using edge-to-edge model
   const xPixel = xNorm * width
 
   // Y depends on data orientation:
-  // - latIsAscending true/null: row 0 = yMin (south), so yMin → 0
-  // - latIsAscending false: row 0 = yMax (north), so yMax → 0
-  const yPixel =
-    latIsAscending === false ? (1 - yNorm) * height : yNorm * height
+  // - latIsAscending true: row 0 = yMin (south)
+  // - latIsAscending false: row 0 = yMax (north)
+  const yPixel = latIsAscending ? yNorm * height : (1 - yNorm) * height
 
   return [xPixel, yPixel]
 }
@@ -149,7 +147,7 @@ export function sourceCRSToPixel(
  * Uses edge-based model: pixel 0 → xMin, pixel width → xMax.
  * For pixel centers, pass pixel + 0.5 (e.g., 0.5 for center of first pixel).
  *
- * @param latIsAscending - If true/null, row 0 = yMin (south). If false, row 0 = yMax (north).
+ * @param latIsAscending - If true, row 0 = yMin (south). If false, row 0 = yMax (north).
  */
 export function pixelToSourceCRS(
   xPixel: number,
@@ -157,7 +155,7 @@ export function pixelToSourceCRS(
   bounds: Bounds,
   width: number,
   height: number,
-  latIsAscending: boolean | null = true
+  latIsAscending: boolean = true
 ): [number, number] {
   const [xMin, yMin, xMax, yMax] = bounds
 
@@ -165,8 +163,7 @@ export function pixelToSourceCRS(
     return [(xMin + xMax) / 2, (yMin + yMax) / 2]
   }
 
-  // Convert pixel to normalized [0, 1] using edge-to-edge model.
-  // pixel 0 → 0 → xMin, pixel width → 1 → xMax
+  // Convert pixel to normalized [0, 1] using edge-to-edge model
   const xNorm = width <= 1 ? 0.5 : xPixel / width
   const yNorm = height <= 1 ? 0.5 : yPixel / height
 
@@ -174,12 +171,11 @@ export function pixelToSourceCRS(
   const x = xMin + xNorm * (xMax - xMin)
 
   // Y depends on data orientation:
-  // - latIsAscending true/null: row 0 = yMin (south)
+  // - latIsAscending true: row 0 = yMin (south)
   // - latIsAscending false: row 0 = yMax (north)
-  const y =
-    latIsAscending === false
-      ? yMax - yNorm * (yMax - yMin)
-      : yMin + yNorm * (yMax - yMin)
+  const y = latIsAscending
+    ? yMin + yNorm * (yMax - yMin)
+    : yMax - yNorm * (yMax - yMin)
 
   return [x, y]
 }

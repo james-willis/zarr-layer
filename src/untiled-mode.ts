@@ -108,8 +108,8 @@ interface RegionState {
   mercatorBounds: MercatorBounds | null
   // WGS84 bounds for two-stage reprojection (proj4 datasets)
   wgs84Bounds: Wgs84Bounds | null
-  // Data orientation for fragment shader reprojection (EPSG:4326)
-  latIsAscending?: boolean
+  // Data orientation: true = row 0 is south
+  latIsAscending: boolean
   // Version tracking for selector changes
   selectorVersion: number
   // Multi-band support
@@ -160,7 +160,7 @@ export class UntiledMode implements ZarrMode {
   private xyLimits: XYLimits | null = null
   private crs: CRS = 'EPSG:4326'
   private zarrArray: zarr.Array<zarr.DataType> | null = null
-  private latIsAscending: boolean | null = null
+  private latIsAscending: boolean = true
 
   // Multi-level support
   private levels: UntiledLevel[] = []
@@ -248,7 +248,7 @@ export class UntiledMode implements ZarrMode {
       this.dimIndices = desc.dimIndices
       this.crs = desc.crs
       this.xyLimits = desc.xyLimits
-      this.latIsAscending = desc.latIsAscending ?? null
+      this.latIsAscending = desc.latIsAscending
       this.proj4def = desc.proj4 ?? null
 
       // Cache transformers once for reuse (major performance optimization)
@@ -647,6 +647,7 @@ export class UntiledMode implements ZarrMode {
       useIndexedMesh: false,
       mercatorBounds: null,
       wgs84Bounds: null,
+      latIsAscending: this.latIsAscending,
       selectorVersion: this.selectorVersion,
       bandData: new Map(),
       bandTextures: new Map(),
@@ -824,7 +825,6 @@ export class UntiledMode implements ZarrMode {
       geoYMin = yMax - (pxYEnd / this.height) * (yMax - yMin)
     } else {
       // Data has lat increasing with array index: pixel 0 = south (yMin)
-      // This is also the default when latIsAscending is null/unknown
       geoYMin = yMin + (pxYStart / this.height) * (yMax - yMin)
       geoYMax = yMin + (pxYEnd / this.height) * (yMax - yMin)
     }
@@ -899,7 +899,7 @@ export class UntiledMode implements ZarrMode {
       }
 
       // Store data orientation for fragment shader
-      region.latIsAscending = this.latIsAscending ?? false
+      region.latIsAscending = this.latIsAscending
 
       // Use linear texture coords - fragment shader handles orientation via latIsAscending
       region.pixCoordArr = subdivided.texCoordArr
@@ -2293,7 +2293,7 @@ export class UntiledMode implements ZarrMode {
         this.width,
         this.height,
         this.crs ?? 'EPSG:4326',
-        this.latIsAscending ?? undefined,
+        this.latIsAscending,
         this.proj4def,
         sourceBounds,
         this.cachedWGS84Transformer ?? undefined
@@ -2418,7 +2418,7 @@ export class UntiledMode implements ZarrMode {
       this.width,
       this.height,
       this.crs ?? 'EPSG:4326',
-      this.latIsAscending ?? undefined,
+      this.latIsAscending,
       this.proj4def,
       sourceBounds,
       this.cachedWGS84Transformer ?? undefined
@@ -2485,7 +2485,7 @@ export class UntiledMode implements ZarrMode {
         sourceBounds,
         this.width,
         this.height,
-        this.latIsAscending ?? null
+        this.latIsAscending
       )
       const [xMax, yMax] = pixelToSourceCRS(
         maxX, // exclusive end maps to right edge
@@ -2493,7 +2493,7 @@ export class UntiledMode implements ZarrMode {
         sourceBounds,
         this.width,
         this.height,
-        this.latIsAscending ?? null
+        this.latIsAscending
       )
       // Create subset bounds in source CRS
       subsetSourceBounds = [
@@ -2518,7 +2518,7 @@ export class UntiledMode implements ZarrMode {
       fetched.channels,
       fetched.channelLabels,
       fetched.multiValueDimNames,
-      this.latIsAscending ?? undefined,
+      this.latIsAscending,
       {
         scaleFactor,
         addOffset,

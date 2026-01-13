@@ -181,7 +181,6 @@ function renderRegionsToTile(
       useIndexedMesh: useIndexedMesh,
       // Include wgs84Bounds for both proj4 and EPSG:4326 datasets
       wgs84Bounds: region.wgs84Bounds,
-      // Include latIsAscending for fragment shader reprojection (EPSG:4326)
       latIsAscending: region.latIsAscending,
     }
 
