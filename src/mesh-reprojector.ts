@@ -55,8 +55,8 @@ export function createAdaptiveMesh(
   // The reprojector converts UV [0,1] → pixel [0, width-1] internally.
   // Our edge-based pixelToSourceCRS expects [0, width] → [xMin, xMax].
   // We scale the pixel values to bridge this: scaledPx = px * width / (width - 1)
-  const scaleX = width / (width - 1)
-  const scaleY = height / (height - 1)
+  const scaleX = width > 1 ? width / (width - 1) : 1
+  const scaleY = height > 1 ? height / (height - 1) : 1
 
   const reprojector = new RasterReprojector(
     {
