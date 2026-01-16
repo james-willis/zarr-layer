@@ -2,6 +2,7 @@ import carbonplan4d from './carbonplan-4d'
 import hrrr from './hrrr'
 import hurricane from './hurricane'
 import polar from './polar'
+import usgsdem from './usgs-dem'
 import sentinel2 from './sentinel-2'
 import { createSimpleDataset } from './simple'
 import { createTimeDataset } from './time'
@@ -51,6 +52,7 @@ export const DATASETS: Dataset<any>[] = [
     sourceInfo: 'v2 single image (global)',
     latIsAscending: true,
   }),
+  usgsdem,
   untiled4326,
   sentinel2,
   polar,
