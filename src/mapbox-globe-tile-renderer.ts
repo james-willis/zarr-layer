@@ -40,6 +40,101 @@ import {
 } from './mapbox-globe-utils'
 
 // ============================================================================
+// Helper Functions
+// ============================================================================
+
+/** Extended MercatorBounds with lat/lon for EPSG:4326 tiles */
+interface TileMercatorBounds {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+  latMin?: number
+  latMax?: number
+  lonMin?: number
+  lonMax?: number
+}
+
+/** Result of computing tile bounds and texture coordinates */
+interface TileBoundsAndTexCoords {
+  overlap: { x0: number; y0: number; x1: number; y1: number }
+  latBounds: { min: number; max: number }
+  texScale: [number, number]
+  texOffset: [number, number]
+}
+
+/**
+ * Get or compute mercator bounds for a 4326 tile.
+ * Uses pre-computed bounds if available, otherwise computes from tile coordinates.
+ */
+function getTileMercatorBounds(
+  z: number,
+  x: number,
+  y: number,
+  tileBoundsMap: Record<string, TileMercatorBounds> | undefined,
+  xyLimits: XYLimits
+): TileMercatorBounds {
+  const tileKey = tileToKey([z, x, y])
+  const precomputed = tileBoundsMap?.[tileKey]
+  if (precomputed) return precomputed
+
+  const geoBounds = get4326TileGeoBounds(z, x, y, xyLimits)
+  return {
+    x0: lonToMercatorNorm(geoBounds.west),
+    x1: lonToMercatorNorm(geoBounds.east),
+    y0: latToMercatorNorm(geoBounds.north),
+    y1: latToMercatorNorm(geoBounds.south),
+    latMin: geoBounds.south,
+    latMax: geoBounds.north,
+    lonMin: geoBounds.west,
+    lonMax: geoBounds.east,
+  }
+}
+
+/**
+ * Compute tile overlap and texture coordinates for EPSG:4326 rendering.
+ * Returns null if the tile doesn't overlap with the mapbox tile bounds.
+ */
+function computeTileBoundsAndTexCoords(
+  zarrBounds: TileMercatorBounds,
+  mapboxTileBounds: { x0: number; y0: number; x1: number; y1: number }
+): TileBoundsAndTexCoords | null {
+  // Compute overlap in Mercator space
+  const overlapX0 = Math.max(zarrBounds.x0, mapboxTileBounds.x0)
+  const overlapX1 = Math.min(zarrBounds.x1, mapboxTileBounds.x1)
+  const overlapY0 = Math.max(zarrBounds.y0, mapboxTileBounds.y0)
+  const overlapY1 = Math.min(zarrBounds.y1, mapboxTileBounds.y1)
+
+  if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) {
+    return null
+  }
+
+  // Get lat/lon bounds (required for fragment shader reprojection)
+  const lonMin = zarrBounds.lonMin ?? mercatorNormToLon(zarrBounds.x0)
+  const lonMax = zarrBounds.lonMax ?? mercatorNormToLon(zarrBounds.x1)
+  const latMin = zarrBounds.latMin ?? mercatorNormToLat(zarrBounds.y1)
+  const latMax = zarrBounds.latMax ?? mercatorNormToLat(zarrBounds.y0)
+
+  // Compute texture coordinates for X
+  const lonWidth = lonMax - lonMin
+  const overlapWest = mercatorNormToLon(overlapX0)
+  const overlapEast = mercatorNormToLon(overlapX1)
+  const texScaleX = lonWidth > 0 ? (overlapEast - overlapWest) / lonWidth : 1
+  const texOffsetX = lonWidth > 0 ? (overlapWest - lonMin) / lonWidth : 0
+
+  // Y texture coords: shader handles lat→texV mapping via u_latBounds
+  const texScaleY = 1
+  const texOffsetY = 0
+
+  return {
+    overlap: { x0: overlapX0, y0: overlapY0, x1: overlapX1, y1: overlapY1 },
+    latBounds: { min: latMin, max: latMax },
+    texScale: [texScaleX, texScaleY],
+    texOffset: [texOffsetX, texOffsetY],
+  }
+}
+
+// ============================================================================
 // Main Rendering Functions
 // ============================================================================
 
@@ -389,66 +484,37 @@ function renderSingle4326Tile(
   }
 
   // Render the tile (either original or parent fallback)
+  const [z, tx, ty] = renderTileTuple
   const renderTileKey = tileToKey(renderTileTuple)
 
-  // Use pre-computed bounds from TiledMode if available, otherwise compute
-  let zarrBounds = zarrTileBoundsMap?.[renderTileKey]
-  if (!zarrBounds) {
-    // Fallback: compute bounds (needed for parent tile fallback)
-    const [z, tx, ty] = renderTileTuple
-    const zarrGeoBounds = get4326TileGeoBounds(z, tx, ty, xyLimits)
-    zarrBounds = {
-      x0: lonToMercatorNorm(zarrGeoBounds.west),
-      x1: lonToMercatorNorm(zarrGeoBounds.east),
-      y0: latToMercatorNorm(zarrGeoBounds.north),
-      y1: latToMercatorNorm(zarrGeoBounds.south),
-      latMin: zarrGeoBounds.south,
-      latMax: zarrGeoBounds.north,
-      lonMin: zarrGeoBounds.west,
-      lonMax: zarrGeoBounds.east,
-    }
-  }
+  // Get or compute bounds for this tile
+  const zarrBounds = getTileMercatorBounds(
+    z,
+    tx,
+    ty,
+    zarrTileBoundsMap,
+    xyLimits
+  )
 
-  // Use pre-computed Mercator bounds from zarrBounds
-  const overlapX0 = Math.max(zarrBounds.x0, mapboxTileBounds.x0)
-  const overlapX1 = Math.min(zarrBounds.x1, mapboxTileBounds.x1)
-  const overlapY0 = Math.max(zarrBounds.y0, mapboxTileBounds.y0)
-  const overlapY1 = Math.min(zarrBounds.y1, mapboxTileBounds.y1)
-
-  if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) {
+  // Compute overlap and texture coordinates
+  const boundsAndTex = computeTileBoundsAndTexCoords(
+    zarrBounds,
+    mapboxTileBounds
+  )
+  if (!boundsAndTex) {
     return { rendered: false, missing }
   }
 
-  // Get lat/lon bounds (required for fragment shader reprojection)
-  const zarrLonMin = zarrBounds.lonMin ?? mercatorNormToLon(zarrBounds.x0)
-  const zarrLonMax = zarrBounds.lonMax ?? mercatorNormToLon(zarrBounds.x1)
-  const zarrLatMin = zarrBounds.latMin ?? mercatorNormToLat(zarrBounds.y1)
-  const zarrLatMax = zarrBounds.latMax ?? mercatorNormToLat(zarrBounds.y0)
-
-  const zarrLonWidth = zarrLonMax - zarrLonMin
-  const overlapWest = mercatorNormToLon(overlapX0)
-  const overlapEast = mercatorNormToLon(overlapX1)
-  const texScaleX =
-    zarrLonWidth > 0 ? (overlapEast - overlapWest) / zarrLonWidth : 1
-  const texOffsetX =
-    zarrLonWidth > 0 ? (overlapWest - zarrLonMin) / zarrLonWidth : 0
-
-  // For Y texture coordinates with fragment shader reprojection:
-  // The shader already maps latitude to texV using u_latBounds.
-  // pix_coord.x needs texScale/texOffset (X uses pix_coord directly),
-  // but texV is computed from screen position → latitude → texture coord.
-  // So texScaleY=1, texOffsetY=0 - the shader handles the mapping.
-  const texScaleY = 1
-  const texOffsetY = 0
+  const { overlap, latBounds, texScale, texOffset } = boundsAndTex
 
   const tileBoundsForRender = {
     [renderTileKey]: {
-      x0: overlapX0,
-      y0: overlapY0,
-      x1: overlapX1,
-      y1: overlapY1,
-      latMin: zarrLatMin,
-      latMax: zarrLatMax,
+      x0: overlap.x0,
+      y0: overlap.y0,
+      x1: overlap.x1,
+      y1: overlap.y1,
+      latMin: latBounds.min,
+      latMax: latBounds.max,
     },
   }
 
@@ -481,8 +547,8 @@ function renderSingle4326Tile(
     undefined,
     {
       [renderTileKey]: {
-        texScale: [texScaleX, texScaleY],
-        texOffset: [texOffsetX, texOffsetY],
+        texScale,
+        texOffset,
       },
     },
     tiledState.latIsAscending
@@ -525,66 +591,34 @@ function renderChild4326Tile(
   const childTileTuple: TileTuple = [child.childZ, child.childX, child.childY]
   const childTileKey = tileToKey(childTileTuple)
 
-  // Use pre-computed bounds from TiledMode if available, otherwise compute
-  let childBounds = zarrTileBoundsMap?.[childTileKey]
-  if (!childBounds) {
-    const childGeoBounds = get4326TileGeoBounds(
-      child.childZ,
-      child.childX,
-      child.childY,
-      xyLimits
-    )
-    childBounds = {
-      x0: lonToMercatorNorm(childGeoBounds.west),
-      x1: lonToMercatorNorm(childGeoBounds.east),
-      y0: latToMercatorNorm(childGeoBounds.north),
-      y1: latToMercatorNorm(childGeoBounds.south),
-      latMin: childGeoBounds.south,
-      latMax: childGeoBounds.north,
-      lonMin: childGeoBounds.west,
-      lonMax: childGeoBounds.east,
-    }
-  }
+  // Get or compute bounds for this child tile
+  const childBounds = getTileMercatorBounds(
+    child.childZ,
+    child.childX,
+    child.childY,
+    zarrTileBoundsMap,
+    xyLimits
+  )
 
-  const childOverlapX0 = Math.max(childBounds.x0, mapboxTileBounds.x0)
-  const childOverlapX1 = Math.min(childBounds.x1, mapboxTileBounds.x1)
-  const childOverlapY0 = Math.max(childBounds.y0, mapboxTileBounds.y0)
-  const childOverlapY1 = Math.min(childBounds.y1, mapboxTileBounds.y1)
-
-  if (childOverlapX1 <= childOverlapX0 || childOverlapY1 <= childOverlapY0) {
+  // Compute overlap and texture coordinates
+  const boundsAndTex = computeTileBoundsAndTexCoords(
+    childBounds,
+    mapboxTileBounds
+  )
+  if (!boundsAndTex) {
     return false
   }
 
-  // Get lat/lon bounds (required for fragment shader reprojection)
-  const childLonMin = childBounds.lonMin ?? mercatorNormToLon(childBounds.x0)
-  const childLonMax = childBounds.lonMax ?? mercatorNormToLon(childBounds.x1)
-  const childLatMin = childBounds.latMin ?? mercatorNormToLat(childBounds.y1)
-  const childLatMax = childBounds.latMax ?? mercatorNormToLat(childBounds.y0)
-
-  const childLonWidth = childLonMax - childLonMin
-  const childOverlapWest = mercatorNormToLon(childOverlapX0)
-  const childOverlapEast = mercatorNormToLon(childOverlapX1)
-  const childTexScaleX =
-    childLonWidth > 0
-      ? (childOverlapEast - childOverlapWest) / childLonWidth
-      : 1
-  const childTexOffsetX =
-    childLonWidth > 0 ? (childOverlapWest - childLonMin) / childLonWidth : 0
-
-  // For Y texture coordinates with fragment shader reprojection:
-  // The shader already maps latitude to texV using u_latBounds.
-  // So texScaleY=1, texOffsetY=0 - the shader handles the mapping.
-  const childTexScaleY = 1
-  const childTexOffsetY = 0
+  const { overlap, latBounds, texScale, texOffset } = boundsAndTex
 
   const childTileBoundsForRender = {
     [childTileKey]: {
-      x0: childOverlapX0,
-      y0: childOverlapY0,
-      x1: childOverlapX1,
-      y1: childOverlapY1,
-      latMin: childLatMin,
-      latMax: childLatMax,
+      x0: overlap.x0,
+      y0: overlap.y0,
+      x1: overlap.x1,
+      y1: overlap.y1,
+      latMin: latBounds.min,
+      latMax: latBounds.max,
     },
   }
 
@@ -617,8 +651,8 @@ function renderChild4326Tile(
     undefined,
     {
       [childTileKey]: {
-        texScale: [childTexScaleX, childTexScaleY],
-        texOffset: [childTexOffsetX, childTexOffsetY],
+        texScale,
+        texOffset,
       },
     },
     tiledState.latIsAscending

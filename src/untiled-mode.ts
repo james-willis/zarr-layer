@@ -9,7 +9,11 @@
  */
 
 import * as zarr from 'zarrita'
-import { WEB_MERCATOR_EXTENT } from './constants'
+import {
+  WEB_MERCATOR_EXTENT,
+  MIN_SUBDIVISIONS,
+  MAX_SUBDIVISIONS,
+} from './constants'
 import type {
   ZarrMode,
   RenderContext,
@@ -466,6 +470,7 @@ export class UntiledMode implements ZarrMode {
     if (region.texture) gl.deleteTexture(region.texture)
     if (region.vertexBuffer) gl.deleteBuffer(region.vertexBuffer)
     if (region.pixCoordBuffer) gl.deleteBuffer(region.pixCoordBuffer)
+    if (region.indexBuffer) gl.deleteBuffer(region.indexBuffer)
     for (const tex of region.bandTextures.values()) {
       gl.deleteTexture(tex)
     }
@@ -857,7 +862,10 @@ export class UntiledMode implements ZarrMode {
 
     // Subdivisions for smooth globe tessellation - more for larger regions
     const latSpan = Math.abs(geoBounds.yMax - geoBounds.yMin)
-    const subdivisions = Math.max(16, Math.min(128, Math.ceil(latSpan)))
+    const subdivisions = Math.max(
+      MIN_SUBDIVISIONS,
+      Math.min(MAX_SUBDIVISIONS, Math.ceil(latSpan))
+    )
 
     if (this.proj4def && this.cached4326Transformer) {
       // Proj4 datasets: use adaptive mesh with 4326 coords

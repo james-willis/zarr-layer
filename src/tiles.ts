@@ -36,7 +36,7 @@ export interface TileData {
   dataScale: number // Scale factor applied to data (1.0 = no normalization)
   bandDataScales: Map<string, number> // Scale factors per band
 
-  // Geographic bounds for CPU resampling (EPSG:4326 only)
+  // Geographic bounds for fragment shader reprojection (EPSG:4326 only)
   latBounds: { min: number; max: number } | null
   geoBounds: { west: number; south: number; east: number; north: number } | null
   mercatorBounds: { x0: number; y0: number; x1: number; y1: number } | null
@@ -557,7 +557,7 @@ export class Tiles {
   }
 
   /**
-   * Set bounds for a tile (used for CPU resampling in EPSG:4326 mode).
+   * Set bounds for a tile (used for fragment shader reprojection in EPSG:4326 mode).
    */
   setTileBounds(
     tileKey: string,

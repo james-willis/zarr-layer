@@ -186,7 +186,7 @@ export class TiledMode implements ZarrMode {
       this.currentLevel = visibleInfo.pyramidLevel
     }
 
-    // Pass bounds to tile cache for CPU resampling (EPSG:4326 only)
+    // Pass bounds to tile cache for fragment shader reprojection (EPSG:4326 only)
     for (const [tileKey, mercBounds] of Object.entries(this.tileBounds)) {
       const fullBounds = toFullBounds(mercBounds)
       if (fullBounds) {

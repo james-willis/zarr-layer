@@ -2,9 +2,7 @@
  * Polar Antarctic Dataset (EPSG:3031)
  *
  * Subset of Antarctica InSync ice velocity data covering Thwaites Glacier.
- * Created from: https://discourse-earthcode.eox.at/t/antartica-insync-data-cubes/107
- *
- * To regenerate: see /tmp/polar-test/polar-subset.zarr
+ * Source: https://discourse-earthcode.eox.at/t/antartica-insync-data-cubes/107
  */
 
 import { createSimpleDataset } from './simple'

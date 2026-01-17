@@ -13,6 +13,7 @@ import {
   sourceCRSToPixel,
   type ProjectionTransformer,
 } from './projection-utils'
+import { DEFAULT_MESH_MAX_ERROR } from './constants'
 
 export interface AdaptiveMeshResult {
   positions: Float32Array // Normalized 4326 coords [-1,1] for shader
@@ -35,7 +36,7 @@ export interface AdaptiveMeshOptions {
  * Outputs normalized EPSG:4326 coordinates for two-stage GPU reprojection.
  *
  * This is more efficient than uniform grid subdivision - it only adds vertices
- * where reprojection error exceeds the threshold (default 0.125 pixels).
+ * where reprojection error exceeds the threshold.
  */
 export function createAdaptiveMesh(
   options: AdaptiveMeshOptions
@@ -46,7 +47,7 @@ export function createAdaptiveMesh(
     height,
     transformer,
     latIsAscending,
-    maxError = 0.125,
+    maxError = DEFAULT_MESH_MAX_ERROR,
   } = options
   const { xMin, xMax, yMin, yMax } = geoBounds
   const bounds: [number, number, number, number] = [xMin, yMin, xMax, yMax]
