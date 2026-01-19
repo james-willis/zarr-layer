@@ -864,27 +864,6 @@ export class UntiledMode implements ZarrMode {
       region.mercatorBounds ?? boundsToMercatorNorm(geoBounds, this.crs)
     region.mercatorBounds = mercBounds
 
-    // Subdivisions: high for globe (smooth curvature), minimal for mercator (flat)
-    // Use latitude span in degrees - lat is the primary driver of globe curvature
-    let latSpanDegrees: number
-    if (this.crs === 'EPSG:3857') {
-      // 3857 bounds are in meters - convert to degrees
-      const yMinNorm = 0.5 - geoBounds.yMin / (2 * WEB_MERCATOR_EXTENT)
-      const yMaxNorm = 0.5 - geoBounds.yMax / (2 * WEB_MERCATOR_EXTENT)
-      latSpanDegrees = Math.abs(
-        mercatorNormToLat(yMaxNorm) - mercatorNormToLat(yMinNorm)
-      )
-    } else {
-      // 4326 bounds are already in degrees, proj4 uses adaptive mesh (doesn't use this)
-      latSpanDegrees = Math.abs(geoBounds.yMax - geoBounds.yMin)
-    }
-    const subdivisions = this.isGlobeProjection
-      ? Math.max(
-          MIN_SUBDIVISIONS,
-          Math.min(MAX_SUBDIVISIONS, Math.ceil(latSpanDegrees))
-        )
-      : MERCATOR_SUBDIVISIONS
-
     if (this.proj4def && this.cached4326Transformer) {
       // Proj4 datasets: compute WGS84 vertex positions via proj4.
       // Stage 1 (CPU): transform vertices from source CRS to WGS84.
@@ -933,44 +912,66 @@ export class UntiledMode implements ZarrMode {
       region.wgs84Bounds = meshResult.wgs84Bounds
       region.useIndexedMesh = true
       region.vertexCount = region.indexArr!.length
-    } else if (this.crs === 'EPSG:4326') {
-      // EPSG:4326 datasets: use fragment shader reprojection
-      // Mesh is in Mercator space, fragment shader inverts Mercator → lat for texture lookup
-      const subdivided = createSubdividedQuad(subdivisions)
-      region.vertexArr = subdivided.vertexArr
-      region.useIndexedMesh = false
-      region.vertexCount = subdivided.vertexArr.length / 2
-
-      // Compute Mercator bounds for vertex positioning
-      // geoBounds for 4326 data: xMin/xMax = lon, yMin/yMax = lat
-      const latMin = geoBounds.yMin
-      const latMax = geoBounds.yMax
-      region.mercatorBounds = {
-        x0: lonToMercatorNorm(geoBounds.xMin),
-        x1: lonToMercatorNorm(geoBounds.xMax),
-        y0: latToMercatorNorm(latMax),
-        y1: latToMercatorNorm(latMin),
-        // Include lat bounds for fragment shader reprojection
-        latMin,
-        latMax,
-      }
-
-      // Store data orientation for fragment shader
-      region.latIsAscending = this.latIsAscending
-
-      // Use linear texture coords - fragment shader handles orientation via latIsAscending
-      region.pixCoordArr = subdivided.texCoordArr
     } else {
-      // EPSG:3857 and other Mercator-compatible CRS: use subdivided quad
+      // Non-proj4 paths: EPSG:4326 and EPSG:3857
+      // Compute subdivisions once based on CRS
+
+      // Subdivisions: high for globe (smooth curvature), minimal for mercator (flat)
+      // Use latitude span in degrees - lat is the primary driver of globe curvature
+      let latSpanDegrees: number
+      if (this.crs === 'EPSG:3857') {
+        // 3857 bounds are in meters - convert to degrees
+        const yMinNorm = 0.5 - geoBounds.yMin / (2 * WEB_MERCATOR_EXTENT)
+        const yMaxNorm = 0.5 - geoBounds.yMax / (2 * WEB_MERCATOR_EXTENT)
+        latSpanDegrees = Math.abs(
+          mercatorNormToLat(yMaxNorm) - mercatorNormToLat(yMinNorm)
+        )
+      } else {
+        // 4326 bounds are already in degrees
+        latSpanDegrees = Math.abs(geoBounds.yMax - geoBounds.yMin)
+      }
+      const subdivisions = this.isGlobeProjection
+        ? Math.max(
+            MIN_SUBDIVISIONS,
+            Math.min(MAX_SUBDIVISIONS, Math.ceil(latSpanDegrees))
+          )
+        : MERCATOR_SUBDIVISIONS
+
       const subdivided = createSubdividedQuad(subdivisions)
       region.vertexArr = subdivided.vertexArr
       region.useIndexedMesh = false
       region.vertexCount = subdivided.vertexArr.length / 2
 
-      // Texture coords need V-flip if latitude is ascending
-      region.pixCoordArr = this.latIsAscending
-        ? flipTexCoordV(subdivided.texCoordArr)
-        : subdivided.texCoordArr
+      if (this.crs === 'EPSG:4326') {
+        // EPSG:4326 datasets: use fragment shader reprojection
+        // Mesh is in Mercator space, fragment shader inverts Mercator → lat for texture lookup
+
+        // Compute Mercator bounds for vertex positioning
+        // geoBounds for 4326 data: xMin/xMax = lon, yMin/yMax = lat
+        const latMin = geoBounds.yMin
+        const latMax = geoBounds.yMax
+        region.mercatorBounds = {
+          x0: lonToMercatorNorm(geoBounds.xMin),
+          x1: lonToMercatorNorm(geoBounds.xMax),
+          y0: latToMercatorNorm(latMax),
+          y1: latToMercatorNorm(latMin),
+          // Include lat bounds for fragment shader reprojection
+          latMin,
+          latMax,
+        }
+
+        // Store data orientation for fragment shader
+        region.latIsAscending = this.latIsAscending
+
+        // Use linear texture coords - fragment shader handles orientation via latIsAscending
+        region.pixCoordArr = subdivided.texCoordArr
+      } else {
+        // EPSG:3857 and other Mercator-compatible CRS
+        // Texture coords need V-flip if latitude is ascending
+        region.pixCoordArr = this.latIsAscending
+          ? flipTexCoordV(subdivided.texCoordArr)
+          : subdivided.texCoordArr
+      }
     }
 
     // Create/update buffers
