@@ -908,26 +908,58 @@ export class ZarrStore {
   }
 
   /**
-   * Find the highest resolution level for untiled bounds detection.
-   * Coarse levels have larger pixels, so padding offsets are more significant.
-   * Trade-off is higher bandwidth. Users can provide explicit `bounds` to skip.
+   * Find the highest resolution level using consolidated metadata (no network requests).
+   * Falls back to network requests only if metadata doesn't have shape info.
+   * Users can provide explicit `bounds` to skip this detection entirely.
    */
   private async _findBoundsLevel(): Promise<string | undefined> {
     if (this.levels.length === 0 || !this.root) return undefined
     if (this.levels.length === 1) return this.levels[0]
 
-    const openArray = (loc: zarr.Location<Readable>) => {
-      if (this.version === 2) {
-        return zarr.open.v2(loc, { kind: 'array' })
-      } else if (this.version === 3) {
-        return zarr.open.v3(loc, { kind: 'array' })
+    // Try to get shapes from consolidated metadata first (no network requests)
+    const getShapeFromMetadata = (level: string): number[] | null => {
+      const key = `${level}/${this.variable}`
+
+      // V2 metadata
+      const v2Meta = this.metadata as ZarrV2ConsolidatedMetadata
+      if (v2Meta?.metadata?.[`${key}/.zarray`]) {
+        const arrayMeta = v2Meta.metadata[`${key}/.zarray`] as {
+          shape?: number[]
+        }
+        return arrayMeta.shape ?? null
       }
-      return zarr.open(loc, { kind: 'array' })
+
+      // V3 metadata
+      const v3Meta = this.metadata as ZarrV3GroupMetadata
+      if (v3Meta?.consolidated_metadata?.metadata?.[key]) {
+        const arrayMeta = v3Meta.consolidated_metadata.metadata[key] as {
+          shape?: number[]
+        }
+        return arrayMeta.shape ?? null
+      }
+
+      return null
     }
 
-    // Compare first and last levels to determine which has higher resolution
     const firstLevel = this.levels[0]
     const lastLevel = this.levels[this.levels.length - 1]
+
+    // Try metadata first
+    const firstShape = getShapeFromMetadata(firstLevel)
+    const lastShape = getShapeFromMetadata(lastLevel)
+
+    if (firstShape && lastShape) {
+      const firstSize = firstShape.reduce((a, b) => a * b, 1)
+      const lastSize = lastShape.reduce((a, b) => a * b, 1)
+      return firstSize >= lastSize ? firstLevel : lastLevel
+    }
+
+    // Fallback: network requests if metadata doesn't have shapes
+    const openArray = (loc: zarr.Location<Readable>) => {
+      if (this.version === 2) return zarr.open.v2(loc, { kind: 'array' })
+      if (this.version === 3) return zarr.open.v3(loc, { kind: 'array' })
+      return zarr.open(loc, { kind: 'array' })
+    }
 
     try {
       const firstArray = await openArray(
@@ -937,13 +969,10 @@ export class ZarrStore {
         this.root.resolve(`${lastLevel}/${this.variable}`)
       )
 
-      // Compare total pixels (product of dimensions)
       const firstSize = firstArray.shape.reduce((a, b) => a * b, 1)
       const lastSize = lastArray.shape.reduce((a, b) => a * b, 1)
-
       return firstSize >= lastSize ? firstLevel : lastLevel
     } catch {
-      // If we can't determine, default to first level
       return firstLevel
     }
   }
@@ -995,10 +1024,13 @@ export class ZarrStore {
       const lonName = this.spatialDimensions.lon ?? this.dimIndices.lon.name
       const latName = this.spatialDimensions.lat ?? this.dimIndices.lat.name
 
-      // Find coordinate array paths from consolidated metadata
-      // This handles datasets where coords are at different levels (e.g., HRRR)
+      // Find the HIGHEST RESOLUTION coordinate array path from consolidated metadata.
+      // This ensures we get the most accurate bounds regardless of level naming conventions.
       const findCoordPath = (dimName: string): string | null => {
         if (!this.metadata) return null
+
+        type CoordCandidate = { path: string; size: number }
+        const candidates: CoordCandidate[] = []
 
         // V2: keys are like "lat/.zarray" or "surface/lat/.zarray"
         const v2Meta = this.metadata as ZarrV2ConsolidatedMetadata
@@ -1007,7 +1039,12 @@ export class ZarrStore {
           const rootKey = `${dimName}/.zarray`
           for (const key of Object.keys(v2Meta.metadata)) {
             if (key === rootKey || key.endsWith(suffix)) {
-              return key.slice(0, -'/.zarray'.length)
+              const meta = v2Meta.metadata[key] as { shape?: number[] }
+              const size = meta.shape?.[0] ?? 0
+              candidates.push({
+                path: key.slice(0, -'/.zarray'.length),
+                size,
+              })
             }
           }
         }
@@ -1023,23 +1060,28 @@ export class ZarrStore {
               (key === dimName || key.endsWith(suffix)) &&
               value.node_type === 'array'
             ) {
-              return key
+              const size = (value as { shape?: number[] }).shape?.[0] ?? 0
+              candidates.push({ path: key, size })
             }
           }
         }
 
-        return null
+        // Return the highest resolution (largest size) coordinate array
+        if (candidates.length === 0) return null
+        candidates.sort((a, b) => b.size - a.size)
+        return candidates[0].path
       }
 
+      // Find highest resolution coordinate arrays from metadata (handles all multiscale conventions)
       const xPath = findCoordPath(lonName)
       const yPath = findCoordPath(latName)
 
-      // Use found paths or fall back to levelRoot-relative paths
+      // Open coord arrays: use metadata path if found, otherwise try levelRoot
       const xarr = await openArray(
-        xPath ? this.root.resolve(xPath) : levelRoot.resolve(lonName)
+        xPath ? this.root!.resolve(xPath) : levelRoot.resolve(lonName)
       )
       const yarr = await openArray(
-        yPath ? this.root.resolve(yPath) : levelRoot.resolve(latName)
+        yPath ? this.root!.resolve(yPath) : levelRoot.resolve(latName)
       )
 
       const xLen = xarr.shape[0]
@@ -1066,17 +1108,18 @@ export class ZarrStore {
         this.latIsAscending = detectedLatAscending
       }
 
-      // Compute cell size from adjacent coordinates
-      const dx = Math.abs(x1 - x0)
-      const dy = Math.abs(y1 - y0)
-
-      // Coordinate extents (pixel centers)
+      // Coordinate extents from coordinate arrays (these are pixel centers)
       const coordXMin = Math.min(x0, xN)
       const coordXMax = Math.max(x0, xN)
       const coordYMin = Math.min(y0, yN)
       const coordYMax = Math.max(y0, yN)
 
-      // Edge bounds = expanded by half a cell for rendering/positioning
+      // Use coordinate array's own spacing for half-pixel expansion.
+      // Coords represent pixel centers; extent is [first - halfPixel, last + halfPixel]
+      const dx = Math.abs(x1 - x0)
+      const dy = Math.abs(y1 - y0)
+
+      // Apply half-pixel expansion (coords are pixel centers, we need edge bounds)
       const xMin = coordXMin - (Number.isFinite(dx) ? dx / 2 : 0)
       const xMax = coordXMax + (Number.isFinite(dx) ? dx / 2 : 0)
       const yMin = coordYMin - (Number.isFinite(dy) ? dy / 2 : 0)
