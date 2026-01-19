@@ -16,6 +16,113 @@ import {
 } from './projection-utils'
 import { DEFAULT_MESH_MAX_ERROR } from './constants'
 
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+interface ReprojectorConfig {
+  bounds: [number, number, number, number]
+  width: number
+  height: number
+  latIsAscending: boolean
+  transformer: ProjectionTransformer
+}
+
+/**
+ * Create a configured RasterReprojector with proper pixel-to-CRS transforms.
+ */
+function createReprojector(config: ReprojectorConfig): RasterReprojector {
+  const { bounds, width, height, latIsAscending, transformer } = config
+
+  // The reprojector converts UV [0,1] → pixel [0, width-1] internally.
+  // Our edge-based pixelToSourceCRS expects [0, width] → [xMin, xMax].
+  // We scale the pixel values to bridge this: scaledPx = px * width / (width - 1)
+  const scaleX = width > 1 ? width / (width - 1) : 1
+  const scaleY = height > 1 ? height / (height - 1) : 1
+
+  return new RasterReprojector(
+    {
+      // Pixel coords [0, width-1] → source CRS coords (scaled to edge-based model)
+      forwardTransform: (px: number, py: number) =>
+        pixelToSourceCRS(
+          px * scaleX,
+          py * scaleY,
+          bounds,
+          width,
+          height,
+          latIsAscending
+        ),
+      // Source CRS coords → pixel coords [0, width-1] (unscale from edge-based model)
+      inverseTransform: (x: number, y: number) => {
+        const [scaledPx, scaledPy] = sourceCRSToPixel(
+          x,
+          y,
+          bounds,
+          width,
+          height,
+          latIsAscending
+        )
+        return [scaledPx / scaleX, scaledPy / scaleY]
+      },
+      // Source CRS → EPSG:4326 (lon, lat)
+      forwardReproject: (x: number, y: number) => transformer.forward(x, y),
+      // EPSG:4326 → source CRS
+      inverseReproject: (lon: number, lat: number) =>
+        transformer.inverse(lon, lat),
+    },
+    width,
+    height
+  )
+}
+
+/**
+ * Compute normalized WGS84 bounds from min/max lon/lat values.
+ */
+function computeWgs84Bounds(
+  minLon: number,
+  maxLon: number,
+  minLat: number,
+  maxLat: number
+): Wgs84Bounds {
+  return {
+    lon0: lonToMercatorNorm(minLon),
+    lat0: (minLat + 90) / 180,
+    lon1: lonToMercatorNorm(maxLon),
+    lat1: (maxLat + 90) / 180,
+  }
+}
+
+/**
+ * Normalize lon/lat positions to local [-1, 1] coordinates.
+ * This matches the standard mercator path where createSubdividedQuad outputs [-1, 1].
+ */
+function normalizeToLocalCoords(
+  positions: ArrayLike<number>,
+  minLon: number,
+  maxLon: number,
+  minLat: number,
+  maxLat: number
+): Float32Array {
+  const numVerts = positions.length / 2
+  const normalized = new Float32Array(numVerts * 2)
+  const lonRange = maxLon - minLon || 1
+  const latRange = maxLat - minLat || 1
+
+  for (let i = 0; i < numVerts; i++) {
+    const lon = positions[i * 2]
+    const lat = positions[i * 2 + 1]
+    // Map [minLon, maxLon] → [-1, 1] and [minLat, maxLat] → [-1, 1]
+    normalized[i * 2] = ((lon - minLon) / lonRange) * 2 - 1
+    normalized[i * 2 + 1] = ((lat - minLat) / latRange) * 2 - 1
+  }
+
+  return normalized
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
 export interface AdaptiveMeshResult {
   positions: Float32Array // Normalized 4326 coords [-1,1] for shader
   texCoords: Float32Array // UVs for texture sampling
@@ -53,46 +160,13 @@ export function createAdaptiveMesh(
   const { xMin, xMax, yMin, yMax } = geoBounds
   const bounds: [number, number, number, number] = [xMin, yMin, xMax, yMax]
 
-  // Set up reprojection functions for RasterReprojector.
-  // The reprojector converts UV [0,1] → pixel [0, width-1] internally.
-  // Our edge-based pixelToSourceCRS expects [0, width] → [xMin, xMax].
-  // We scale the pixel values to bridge this: scaledPx = px * width / (width - 1)
-  const scaleX = width > 1 ? width / (width - 1) : 1
-  const scaleY = height > 1 ? height / (height - 1) : 1
-
-  const reprojector = new RasterReprojector(
-    {
-      // Pixel coords [0, width-1] → source CRS coords (scaled to edge-based model)
-      forwardTransform: (px: number, py: number) =>
-        pixelToSourceCRS(
-          px * scaleX,
-          py * scaleY,
-          bounds,
-          width,
-          height,
-          latIsAscending
-        ),
-      // Source CRS coords → pixel coords [0, width-1] (unscale from edge-based model)
-      inverseTransform: (x: number, y: number) => {
-        const [scaledPx, scaledPy] = sourceCRSToPixel(
-          x,
-          y,
-          bounds,
-          width,
-          height,
-          latIsAscending
-        )
-        return [scaledPx / scaleX, scaledPy / scaleY]
-      },
-      // Source CRS → EPSG:4326 (lon, lat)
-      forwardReproject: (x: number, y: number) => transformer.forward(x, y),
-      // EPSG:4326 → source CRS
-      inverseReproject: (lon: number, lat: number) =>
-        transformer.inverse(lon, lat),
-    },
+  const reprojector = createReprojector({
+    bounds,
     width,
-    height
-  )
+    height,
+    latIsAscending,
+    transformer,
+  })
 
   // Run adaptive refinement until error < threshold
   reprojector.run(maxError)
@@ -139,30 +213,14 @@ export function createAdaptiveMesh(
     maxLat = Math.max(maxLat, lat)
   }
 
-  // Compute normalized WGS84 bounds
-  // Use lonToMercatorNorm for consistency (handles wraparound if needed)
-  const wgs84Bounds: Wgs84Bounds = {
-    lon0: lonToMercatorNorm(minLon),
-    lat0: (minLat + 90) / 180,
-    lon1: lonToMercatorNorm(maxLon),
-    lat1: (maxLat + 90) / 180,
-  }
-
-  // Second pass: convert to local [-1, 1] coordinates
-  // This matches the standard mercator path where createSubdividedQuad outputs [-1, 1]
-  // The scale/shift uniforms will transform these to absolute normalized 4326 [0,1]
-  const positions = new Float32Array(numVerts * 2)
-  const lonRange = maxLon - minLon || 1
-  const latRange = maxLat - minLat || 1
-
-  for (let i = 0; i < numVerts; i++) {
-    const lon = reprojector.exactOutputPositions[i * 2]
-    const lat = reprojector.exactOutputPositions[i * 2 + 1]
-
-    // Map [minLon, maxLon] → [-1, 1] and [minLat, maxLat] → [-1, 1]
-    positions[i * 2] = ((lon - minLon) / lonRange) * 2 - 1
-    positions[i * 2 + 1] = ((lat - minLat) / latRange) * 2 - 1
-  }
+  const wgs84Bounds = computeWgs84Bounds(minLon, maxLon, minLat, maxLat)
+  const positions = normalizeToLocalCoords(
+    reprojector.exactOutputPositions,
+    minLon,
+    maxLon,
+    minLat,
+    maxLat
+  )
 
   // UVs remain unchanged (for texture sampling)
   const texCoords = new Float32Array(reprojector.uvs)
@@ -208,39 +266,13 @@ export function createHybridMesh(
   const { xMin, xMax, yMin, yMax } = geoBounds
   const bounds: [number, number, number, number] = [xMin, yMin, xMax, yMax]
 
-  // Set up reprojection functions for RasterReprojector
-  const scaleX = width > 1 ? width / (width - 1) : 1
-  const scaleY = height > 1 ? height / (height - 1) : 1
-
-  const reprojector = new RasterReprojector(
-    {
-      forwardTransform: (px: number, py: number) =>
-        pixelToSourceCRS(
-          px * scaleX,
-          py * scaleY,
-          bounds,
-          width,
-          height,
-          latIsAscending
-        ),
-      inverseTransform: (x: number, y: number) => {
-        const [scaledPx, scaledPy] = sourceCRSToPixel(
-          x,
-          y,
-          bounds,
-          width,
-          height,
-          latIsAscending
-        )
-        return [scaledPx / scaleX, scaledPy / scaleY]
-      },
-      forwardReproject: (x: number, y: number) => transformer.forward(x, y),
-      inverseReproject: (lon: number, lat: number) =>
-        transformer.inverse(lon, lat),
-    },
+  const reprojector = createReprojector({
+    bounds,
     width,
-    height
-  )
+    height,
+    latIsAscending,
+    transformer,
+  })
 
   // Run adaptive refinement
   reprojector.run(maxError)
@@ -248,18 +280,19 @@ export function createHybridMesh(
   // Collect adaptive mesh UVs
   const adaptiveUVs = reprojector.uvs // [u0, v0, u1, v1, ...]
 
-  // Generate uniform grid UVs
-  const uniformUVs: number[] = []
+  // Merge adaptive + uniform grid UVs directly into pre-sized array
+  // (duplicates are harmless for Delaunator)
+  const uniformCount = (subdivisions + 1) ** 2 * 2
+  const mergedUVs = new Float64Array(adaptiveUVs.length + uniformCount)
+  mergedUVs.set(adaptiveUVs)
+
+  let offset = adaptiveUVs.length
   for (let row = 0; row <= subdivisions; row++) {
     for (let col = 0; col <= subdivisions; col++) {
-      uniformUVs.push(col / subdivisions, row / subdivisions)
+      mergedUVs[offset++] = col / subdivisions
+      mergedUVs[offset++] = row / subdivisions
     }
   }
-
-  // Merge adaptive + uniform UVs (duplicates are harmless for Delaunator)
-  const mergedUVs = new Float64Array(adaptiveUVs.length + uniformUVs.length)
-  mergedUVs.set(adaptiveUVs)
-  mergedUVs.set(uniformUVs, adaptiveUVs.length)
 
   // Triangulate merged UVs with Delaunator
   const delaunay = new Delaunator(mergedUVs)
@@ -267,7 +300,7 @@ export function createHybridMesh(
 
   // Transform all UVs to WGS84 and compute bounds
   const numVerts = mergedUVs.length / 2
-  const wgs84Positions: number[] = []
+  const wgs84Positions = new Float64Array(numVerts * 2)
   let minLon = Infinity,
     maxLon = -Infinity
   let minLat = Infinity,
@@ -285,7 +318,8 @@ export function createHybridMesh(
 
     // Source CRS → WGS84
     const [lon, lat] = transformer.forward(srcX, srcY)
-    wgs84Positions.push(lon, lat)
+    wgs84Positions[i * 2] = lon
+    wgs84Positions[i * 2 + 1] = lat
 
     if (isFinite(lon) && isFinite(lat)) {
       minLon = Math.min(minLon, lon)
@@ -295,25 +329,14 @@ export function createHybridMesh(
     }
   }
 
-  // Compute normalized WGS84 bounds
-  const wgs84Bounds: Wgs84Bounds = {
-    lon0: lonToMercatorNorm(minLon),
-    lat0: (minLat + 90) / 180,
-    lon1: lonToMercatorNorm(maxLon),
-    lat1: (maxLat + 90) / 180,
-  }
-
-  // Normalize positions to [-1, 1]
-  const positions = new Float32Array(numVerts * 2)
-  const lonRange = maxLon - minLon || 1
-  const latRange = maxLat - minLat || 1
-
-  for (let i = 0; i < numVerts; i++) {
-    const lon = wgs84Positions[i * 2]
-    const lat = wgs84Positions[i * 2 + 1]
-    positions[i * 2] = ((lon - minLon) / lonRange) * 2 - 1
-    positions[i * 2 + 1] = ((lat - minLat) / latRange) * 2 - 1
-  }
+  const wgs84Bounds = computeWgs84Bounds(minLon, maxLon, minLat, maxLat)
+  const positions = normalizeToLocalCoords(
+    wgs84Positions,
+    minLon,
+    maxLon,
+    minLat,
+    maxLat
+  )
 
   // Create texCoords from merged UVs
   const texCoords = new Float32Array(mergedUVs)
