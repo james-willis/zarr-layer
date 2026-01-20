@@ -63,7 +63,7 @@ import {
   pixelToSourceCRS,
   sampleEdgesToMercatorBounds,
 } from './projection-utils'
-import { createAdaptiveMesh, createHybridMesh } from './mesh-reprojector'
+import { createHybridMesh } from './mesh-reprojector'
 import { setObjectValues } from './query/selector-utils'
 import { geoToArrayIndex } from './map-utils'
 import {
@@ -900,43 +900,39 @@ export class UntiledMode implements ZarrMode {
       // Stage 1 (CPU): transform vertices from source CRS to WGS84.
       // Stage 2 (GPU): transform WGS84 → Mercator in the wgs84 shader.
 
-      // Calculate subdivisions for globe mode based on latSpan
-      let globeSubdivisions: number | undefined
-      if (this.isGlobeProjection) {
-        const corners = [
-          this.cached4326Transformer.forward(geoBounds.xMin, geoBounds.yMin),
-          this.cached4326Transformer.forward(geoBounds.xMax, geoBounds.yMax),
-        ]
-        const latSpan = Math.abs(corners[1][1] - corners[0][1])
-        globeSubdivisions = Math.max(
-          MIN_SUBDIVISIONS,
-          Math.min(MAX_SUBDIVISIONS, Math.ceil(latSpan))
-        )
-      }
+      // Calculate subdivisions based on latSpan.
+      // For polar projections, the pole is at the CENTER, not corners, so sample
+      // the center point to get the true latitude span.
+      const centerX = (geoBounds.xMin + geoBounds.xMax) / 2
+      const centerY = (geoBounds.yMin + geoBounds.yMax) / 2
+      const samplePoints = [
+        this.cached4326Transformer.forward(geoBounds.xMin, geoBounds.yMin),
+        this.cached4326Transformer.forward(geoBounds.xMax, geoBounds.yMin),
+        this.cached4326Transformer.forward(geoBounds.xMin, geoBounds.yMax),
+        this.cached4326Transformer.forward(geoBounds.xMax, geoBounds.yMax),
+        this.cached4326Transformer.forward(centerX, centerY), // Center point (pole for polar projections)
+      ]
+      const validLats = samplePoints
+        .map((p) => p[1])
+        .filter((lat) => isFinite(lat))
+      const latSpan =
+        validLats.length > 0
+          ? Math.max(...validLats) - Math.min(...validLats)
+          : 0
+      const meshSubdivisions = Math.max(
+        MIN_SUBDIVISIONS,
+        Math.min(MAX_SUBDIVISIONS, Math.ceil(latSpan))
+      )
 
-      // For globe mode, use hybrid mesh (adaptive + uniform grid) for both
-      // accurate reprojection and proper globe curvature.
-      // For flat map mode, use adaptive mesh for efficiency.
-      let meshResult
-      if (globeSubdivisions) {
-        meshResult = createHybridMesh({
-          geoBounds,
-          width: region.width,
-          height: region.height,
-          subdivisions: globeSubdivisions,
-          transformer: this.cached4326Transformer!,
-          latIsAscending: this.latIsAscending,
-        })
-      } else {
-        meshResult = createAdaptiveMesh({
-          geoBounds,
-          width: region.width,
-          height: region.height,
-          transformer: this.cached4326Transformer!,
-          latIsAscending: this.latIsAscending,
-        })
-      }
-
+      // Always use hybrid mesh (adaptive + uniform grid) for proj4 data.
+      const meshResult = createHybridMesh({
+        geoBounds,
+        width: region.width,
+        height: region.height,
+        subdivisions: meshSubdivisions,
+        transformer: this.cached4326Transformer!,
+        latIsAscending: this.latIsAscending,
+      })
       region.vertexArr = meshResult.positions
       region.pixCoordArr = meshResult.texCoords
       region.indexArr = meshResult.indices
@@ -1903,14 +1899,15 @@ export class UntiledMode implements ZarrMode {
   }
 
   render(renderer: ZarrRenderer, context: RenderContext): void {
-    const useMapboxGlobe = !!context.mapboxGlobe
+    const useMapbox = !!context.mapbox
     // Use wgs84 shader only for proj4 datasets (vertex shader reprojection)
     // EPSG:4326 uses fragment shader reprojection instead
     const useWgs84 = !!this.proj4def && !!this.cached4326Transformer
+
     const shaderProgram = renderer.getProgram(
       context.shaderData,
       context.customShaderConfig,
-      useMapboxGlobe,
+      useMapbox,
       useWgs84
     )
 
@@ -1922,7 +1919,7 @@ export class UntiledMode implements ZarrMode {
       this.getUniformsForRender(context.uniforms),
       context.customShaderConfig,
       context.projectionData,
-      context.mapboxGlobe,
+      context.mapbox,
       context.matrix,
       false
     )

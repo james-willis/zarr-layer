@@ -69,6 +69,8 @@ export interface Wgs84Bounds {
   lon1: number
   /** Max latitude normalized [0, 1] */
   lat1: number
+  /** True if bounds cross the antimeridian (lon0 > lon1 in degrees) */
+  crossesAntimeridian?: boolean
 }
 
 /**
