@@ -1,13 +1,7 @@
 import antarcticEra5 from './antarctic-era5'
-import antarcticFull from './antarctic-full'
 import carbonplan4d from './carbonplan-4d'
 import hrrr from './hrrr'
-import hurricane from './hurricane'
-import hurricaneLcc from './hurricane-lcc'
-import hurricaneMercator from './hurricane-mercator'
-import narrowDateline from './narrow-dateline'
 import polar from './polar'
-import singleChunkPolar from './single-chunk-polar'
 import usgsdem from './usgs-dem'
 import sentinel2 from './sentinel-2'
 import { createSimpleDataset } from './simple'
@@ -29,9 +23,6 @@ export const DATASETS: Dataset<any>[] = [
     info: 'Ocean temperature (v3 pyramid, EPSG:3857)',
     sourceInfo: 'v3 pyramid (EPSG:3857)',
   }),
-  hurricane,
-  hurricaneLcc,
-  hurricaneMercator,
   createTimeDataset({
     id: 'tasmax_pyramid_4326',
     source:
@@ -65,9 +56,6 @@ export const DATASETS: Dataset<any>[] = [
   sentinel2,
   polar,
   antarcticEra5,
-  antarcticFull,
-  singleChunkPolar,
-  narrowDateline,
   createSimpleDataset({
     id: 'Burn Probability over CONUS',
     source:

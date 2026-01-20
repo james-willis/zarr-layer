@@ -60,7 +60,7 @@
     "zarrita": "^0.5.4"
   },
   "lint-staged": {
-    "*.{js,ts,json,md}": "prettier --write"
+    "*.{js,ts,tsx,json,md}": "prettier --write"
   },
   "devDependencies": {
     "@carbonplan/prettier": "^1.2.0",
