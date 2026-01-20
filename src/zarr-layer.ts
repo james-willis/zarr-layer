@@ -604,7 +604,7 @@ export class ZarrLayer {
       customShaderConfig: this.customShaderConfig || undefined,
       shaderData: projectionParams.shaderData,
       projectionData: projectionParams.projectionData,
-      mapboxGlobe: projectionParams.mapboxGlobe,
+      mapbox: projectionParams.mapbox,
     }
 
     this.mode.render(this.renderer, context)

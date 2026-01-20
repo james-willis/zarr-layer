@@ -12,7 +12,7 @@ export interface CustomShaderConfig {
   customUniforms?: Record<string, number>
 }
 
-export interface MapboxGlobeParams {
+export interface MapboxParams {
   projection: { name: string }
   globeToMercatorMatrix: number[] | Float32Array | Float64Array
   transition: number

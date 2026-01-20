@@ -13,7 +13,7 @@ import {
 } from './shaders'
 import type {
   CustomShaderConfig,
-  MapboxGlobeParams,
+  MapboxParams,
   ProjectionMode,
 } from './renderer-types'
 

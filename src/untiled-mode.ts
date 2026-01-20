@@ -50,7 +50,7 @@ import {
 } from './webgl-utils'
 import type { ZarrRenderer, ShaderProgram } from './zarr-renderer'
 import type { CustomShaderConfig } from './renderer-types'
-import { renderMapboxTile } from './mapbox-globe-tile-renderer'
+import { renderMapboxTile } from './mapbox-tile-renderer'
 import { queryRegionSingleImage } from './query/region-query'
 import {
   mercatorBoundsToPixel,

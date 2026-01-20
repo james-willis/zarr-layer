@@ -93,7 +93,7 @@ import {
   TILE_SUBDIVISIONS,
 } from './constants'
 import type { ZarrRenderer } from './zarr-renderer'
-import { renderMapboxTile } from './mapbox-globe-tile-renderer'
+import { renderMapboxTile } from './mapbox-tile-renderer'
 
 export class TiledMode implements ZarrMode {
   isMultiscale: true = true
@@ -245,13 +245,13 @@ export class TiledMode implements ZarrMode {
       return
     }
 
-    const useMapboxGlobe = !!context.mapboxGlobe
+    const useMapbox = !!context.mapbox
     // EPSG:4326 uses fragment shader reprojection (not wgs84 vertex shader)
     // The fragment shader inverts Mercator Y to get latitude for texture lookup
     const shaderProgram = renderer.getProgram(
       context.shaderData,
       context.customShaderConfig,
-      useMapboxGlobe,
+      useMapbox,
       false // useWgs84 - fragment shader reprojection for EPSG:4326
     )
 
@@ -263,7 +263,7 @@ export class TiledMode implements ZarrMode {
       context.uniforms,
       context.customShaderConfig,
       context.projectionData,
-      context.mapboxGlobe,
+      context.mapbox,
       context.matrix,
       false
     )

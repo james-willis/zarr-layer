@@ -619,7 +619,7 @@ interface ProjectionResolution {
   matrix: number[] | Float32Array | Float64Array | null
   shaderData?: ShaderData
   projectionData?: ProjectionData
-  mapboxGlobe?:
+  mapbox?:
     | {
         projection: { name: string }
         globeToMercatorMatrix: number[] | Float32Array | Float64Array

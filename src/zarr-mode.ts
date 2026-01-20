@@ -10,7 +10,7 @@ import type {
 } from './types'
 import type {
   CustomShaderConfig,
-  MapboxGlobeParams,
+  MapboxParams,
   RendererUniforms,
 } from './renderer-types'
 import type { ZarrRenderer } from './zarr-renderer'
@@ -25,7 +25,7 @@ export interface RenderContext {
   customShaderConfig?: CustomShaderConfig
   shaderData?: ShaderData
   projectionData?: ProjectionData
-  mapboxGlobe?: MapboxGlobeParams
+  mapbox?: MapboxParams
 }
 
 export interface TileId {

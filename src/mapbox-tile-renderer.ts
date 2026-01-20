@@ -1,8 +1,8 @@
 /**
- * @module mapbox-globe-tile-renderer
+ * @module mapbox-tile-renderer
  *
- * Specialized rendering for Mapbox GL JS globe tile API (renderToTile).
- * This is fundamentally different from MapLibre's globe which uses projectTile().
+ * Specialized rendering for Mapbox GL JS tile API (renderToTile).
+ * This is fundamentally different from MapLibre which uses projectTile().
  *
  * Mapbox's renderToTile() asks the custom layer to render individual tiles
  * to offscreen textures, requiring:
@@ -33,11 +33,11 @@ import type {
 import { setupBandTextureUniforms } from './render-helpers'
 import { renderRegion, type RenderableRegion } from './renderable-region'
 import {
-  MAPBOX_GLOBE_IDENTITY_MATRIX,
+  MAPBOX_IDENTITY_MATRIX,
   createMapboxTileMatrix,
   getMapboxTileBounds,
   boundsIntersect,
-} from './mapbox-globe-utils'
+} from './mapbox-utils'
 
 // ============================================================================
 // Helper Functions
@@ -208,13 +208,19 @@ function renderRegionsToTile(
 
   const { colormapTexture, uniforms, customShaderConfig } = context
 
+  // Determine if we're in globe mode (default true for backwards compatibility)
+  const isGlobe = context.isGlobe ?? true
+
   // Check if any region uses WGS84 (proj4 datasets or EPSG:4326)
   const useWgs84 = regions.some((r) => !!r.wgs84Bounds)
 
+  // Always use Mapbox globe shader for tile rendering - it handles both globe and mercator
+  // via the transition uniform. The shader converts WGS84 → Mercator, then optionally
+  // applies globe projection based on transition value.
   const shaderProgram = renderer.getProgram(
     context.shaderData,
     customShaderConfig,
-    true, // useMapboxGlobe
+    true, // useMapbox - always true for Mapbox tile rendering
     useWgs84
   )
   renderer.gl.useProgram(shaderProgram.program)
@@ -225,12 +231,12 @@ function renderRegionsToTile(
     customShaderConfig,
     context.projectionData,
     {
-      projection: { name: 'globe' },
-      globeToMercatorMatrix: MAPBOX_GLOBE_IDENTITY_MATRIX,
-      transition: 0,
+      projection: { name: isGlobe ? 'globe' : 'mercator' },
+      globeToMercatorMatrix: MAPBOX_IDENTITY_MATRIX,
+      transition: isGlobe ? 0 : 1, // 0 = globe, 1 = mercator (blended)
     },
     tileMatrix,
-    true
+    true // useMapbox
   )
 
   setupBandTextureUniforms(renderer.gl, shaderProgram, customShaderConfig)
@@ -242,11 +248,32 @@ function renderRegionsToTile(
     let intersects: boolean
     if (region.wgs84Bounds) {
       const w = region.wgs84Bounds
-      intersects =
-        w.lon0 < tileWgs84Bounds.lon1 &&
-        w.lon1 > tileWgs84Bounds.lon0 &&
-        w.lat0 < tileWgs84Bounds.lat1 &&
-        w.lat1 > tileWgs84Bounds.lat0
+
+      // Check latitude intersection (always simple)
+      const latIntersects =
+        w.lat0 < tileWgs84Bounds.lat1 && w.lat1 > tileWgs84Bounds.lat0
+
+      // Check longitude intersection (handles antimeridian crossing)
+      let lonIntersects: boolean
+      if (w.crossesAntimeridian) {
+        // Region crosses antimeridian: covers [lon0, 1.0] ∪ [0.0, lon1]
+        // Tile intersects if it overlaps EITHER segment
+        // Special case: if lon0 >= 1.0 (at antimeridian), eastern segment is empty
+        const hasEasternSegment = w.lon0 < 1.0
+        const overlapsEast =
+          hasEasternSegment &&
+          tileWgs84Bounds.lon0 < 1.0 &&
+          tileWgs84Bounds.lon1 > w.lon0
+        const overlapsWest =
+          tileWgs84Bounds.lon0 < w.lon1 && tileWgs84Bounds.lon1 > 0.0
+        lonIntersects = overlapsEast || overlapsWest
+      } else {
+        // Standard case: lon0 < lon1
+        lonIntersects =
+          w.lon0 < tileWgs84Bounds.lon1 && w.lon1 > tileWgs84Bounds.lon0
+      }
+
+      intersects = latIntersects && lonIntersects
     } else {
       intersects = boundsIntersect(region.mercatorBounds, tileBounds)
     }
@@ -378,7 +405,7 @@ function render4326TiledToTile(
   const shaderProgram = renderer.getProgram(
     context.shaderData,
     customShaderConfig,
-    true, // useMapboxGlobe
+    true, // useMapbox
     false // useWgs84 - fragment shader reprojection for EPSG:4326
   )
   renderer.gl.useProgram(shaderProgram.program)
@@ -518,6 +545,8 @@ function renderSingle4326Tile(
     },
   }
 
+  // Use context.isGlobe to determine projection mode
+  const isGlobe = context.isGlobe ?? true
   renderer.applyCommonUniforms(
     shaderProgram,
     colormapTexture,
@@ -525,9 +554,9 @@ function renderSingle4326Tile(
     customShaderConfig,
     context.projectionData,
     {
-      projection: { name: 'globe' },
-      globeToMercatorMatrix: MAPBOX_GLOBE_IDENTITY_MATRIX,
-      transition: 0,
+      projection: { name: isGlobe ? 'globe' : 'mercator' },
+      globeToMercatorMatrix: MAPBOX_IDENTITY_MATRIX,
+      transition: isGlobe ? 0 : 1,
     },
     tileMatrix,
     true
@@ -622,6 +651,8 @@ function renderChild4326Tile(
     },
   }
 
+  // Use context.isGlobe to determine projection mode
+  const isGlobe = context.isGlobe ?? true
   renderer.applyCommonUniforms(
     shaderProgram,
     colormapTexture,
@@ -629,9 +660,9 @@ function renderChild4326Tile(
     customShaderConfig,
     context.projectionData,
     {
-      projection: { name: 'globe' },
-      globeToMercatorMatrix: MAPBOX_GLOBE_IDENTITY_MATRIX,
-      transition: 0,
+      projection: { name: isGlobe ? 'globe' : 'mercator' },
+      globeToMercatorMatrix: MAPBOX_IDENTITY_MATRIX,
+      transition: isGlobe ? 0 : 1,
     },
     tileMatrix,
     true
@@ -710,6 +741,8 @@ function render3857TiledToTile(
   )
   renderer.gl.useProgram(shaderProgram.program)
 
+  // Use context.isGlobe to determine projection mode
+  const isGlobe = context.isGlobe ?? true
   renderer.applyCommonUniforms(
     shaderProgram,
     colormapTexture,
@@ -717,9 +750,9 @@ function render3857TiledToTile(
     customShaderConfig,
     context.projectionData,
     {
-      projection: { name: 'globe' },
-      globeToMercatorMatrix: MAPBOX_GLOBE_IDENTITY_MATRIX,
-      transition: 0,
+      projection: { name: isGlobe ? 'globe' : 'mercator' },
+      globeToMercatorMatrix: MAPBOX_IDENTITY_MATRIX,
+      transition: isGlobe ? 0 : 1,
     },
     tileMatrix,
     true
