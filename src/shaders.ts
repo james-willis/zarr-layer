@@ -32,10 +32,6 @@ uniform float shift_x;
 uniform float shift_y;
 uniform float u_worldXOffset;`
 
-/** Additional uniforms for matrix-based projection */
-const UNIFORMS_MATRIX = `
-uniform mat4 matrix;`
-
 /** Additional uniforms for Mapbox globe projection */
 const UNIFORMS_MAPBOX_GLOBE = `
 uniform mat4 matrix;
@@ -96,10 +92,6 @@ float mercatorYToLatRad(float y) {
   return atan(sinh(t));
 }`
 
-/** Simple matrix projection output */
-const PROJECT_MATRIX = `
-  gl_Position = matrix * vec4(merc, 0.0, 1.0);`
-
 /** MapLibre globe projection output (uses projectTile from prelude) */
 const PROJECT_MAPLIBRE_GLOBE = `
   gl_Position = projectTile(merc);`
@@ -132,10 +124,7 @@ const PROJECT_MAPBOX_GLOBE = `
 // ============================================================================
 
 export type VertexShaderInputSpace = 'mercator' | 'wgs84'
-export type VertexShaderProjection =
-  | 'matrix'
-  | 'maplibre-globe'
-  | 'mapbox-globe'
+export type VertexShaderProjection = 'maplibre-globe' | 'mapbox-globe'
 
 export interface VertexShaderOptions {
   inputSpace: VertexShaderInputSpace
@@ -151,7 +140,7 @@ export interface VertexShaderOptions {
  * Create a vertex shader from composable parts.
  *
  * @param options.inputSpace - 'mercator' (data already in Mercator) or 'wgs84' (needs transform)
- * @param options.projection - 'matrix' (simple), 'maplibre-globe', or 'mapbox-globe'
+ * @param options.projection - 'maplibre-globe' or 'mapbox-globe'
  * @param options.shaderData - Required for maplibre-globe (provides projectTile prelude)
  */
 export function createVertexShader(options: VertexShaderOptions): string {
@@ -169,10 +158,9 @@ export function createVertexShader(options: VertexShaderOptions): string {
     prelude = shaderData.vertexShaderPrelude
     define = shaderData.define
     uniforms = UNIFORMS_COMMON // projectTile handles matrix internally
-  } else if (projection === 'mapbox-globe') {
-    uniforms = UNIFORMS_COMMON + UNIFORMS_MAPBOX_GLOBE
   } else {
-    uniforms = UNIFORMS_COMMON + UNIFORMS_MATRIX
+    // mapbox-globe
+    uniforms = UNIFORMS_COMMON + UNIFORMS_MAPBOX_GLOBE
   }
 
   // Build constants section (MapLibre prelude already defines PI)
@@ -199,14 +187,10 @@ export function createVertexShader(options: VertexShaderOptions): string {
     inputSpace === 'wgs84' ? VERTEX_TO_WGS84_TO_MERCATOR : VERTEX_TO_MERCATOR
 
   // Build projection output
-  let projectionOutput: string
-  if (projection === 'maplibre-globe') {
-    projectionOutput = PROJECT_MAPLIBRE_GLOBE
-  } else if (projection === 'mapbox-globe') {
-    projectionOutput = PROJECT_MAPBOX_GLOBE
-  } else {
-    projectionOutput = PROJECT_MATRIX
-  }
+  const projectionOutput =
+    projection === 'maplibre-globe'
+      ? PROJECT_MAPLIBRE_GLOBE
+      : PROJECT_MAPBOX_GLOBE
 
   // Compose final shader
   return `#version 300 es
@@ -225,52 +209,6 @@ ${projectionOutput}
   v_mercatorPos = merc;
 }
 `
-}
-
-// ============================================================================
-// Vertex Shader Exports
-// ============================================================================
-
-/** Standard Mercator vertex shader with matrix projection */
-export function createVertexShaderSource(shaderData?: ShaderData): string {
-  if (shaderData?.vertexShaderPrelude) {
-    return createVertexShader({
-      inputSpace: 'mercator',
-      projection: 'maplibre-globe',
-      shaderData,
-    })
-  }
-  return createVertexShader({ inputSpace: 'mercator', projection: 'matrix' })
-}
-
-/** WGS84 input with matrix projection (for non-globe Mercator maps) */
-export const wgs84VertexShaderSource = createVertexShader({
-  inputSpace: 'wgs84',
-  projection: 'matrix',
-})
-
-/** WGS84 input with MapLibre globe projection */
-export function createWgs84GlobeVertexShaderSource(
-  shaderData: ShaderData
-): string {
-  return createVertexShader({
-    inputSpace: 'wgs84',
-    projection: 'maplibre-globe',
-    shaderData,
-  })
-}
-
-/** Mapbox globe with Mercator input */
-export function createMapboxGlobeVertexShaderSource(): string {
-  return createVertexShader({
-    inputSpace: 'mercator',
-    projection: 'mapbox-globe',
-  })
-}
-
-/** Mapbox globe with WGS84 input (for proj4def datasets) */
-export function createMapboxGlobeWgs84VertexShaderSource(): string {
-  return createVertexShader({ inputSpace: 'wgs84', projection: 'mapbox-globe' })
 }
 
 // ============================================================================

@@ -19,9 +19,7 @@ export interface MapboxParams {
 }
 
 export type ProjectionMode =
-  | 'mercator'
-  | 'wgs84'
   | 'wgs84-globe'
   | 'maplibre-globe'
-  | 'mapbox-globe'
-  | 'mapbox-globe-wgs84'
+  | 'mapbox'
+  | 'mapbox-wgs84'

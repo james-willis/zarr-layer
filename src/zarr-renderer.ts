@@ -31,7 +31,7 @@ export class ZarrRenderer {
     this.gl = ZarrRenderer.resolveGl(gl)
     this.fragmentShaderSource = fragmentShaderSource
     this.customShaderConfig = customShaderConfig || null
-    this.getProgram(undefined, customShaderConfig)
+    // Shaders are created lazily in getProgram() when shaderData is available
   }
 
   updateMultiBandConfig(config: CustomShaderConfig | null) {
@@ -69,11 +69,7 @@ export class ZarrRenderer {
     useMapbox: boolean = false,
     useWgs84: boolean = false
   ): ShaderProgram {
-    const projectionMode = resolveProjectionMode(
-      shaderData,
-      useMapboxGlobe,
-      useWgs84
-    )
+    const projectionMode = resolveProjectionMode(useMapbox, useWgs84)
     const config = customShaderConfig || this.customShaderConfig
     const variantName = makeShaderVariantKey({
       projectionMode,

@@ -58,24 +58,16 @@ export interface ShaderProgram {
 }
 
 export function resolveProjectionMode(
-  shaderData?: ShaderData,
-  useMapboxGlobe: boolean = false,
+  useMapbox: boolean = false,
   useWgs84: boolean = false
 ): ProjectionMode {
-  // For proj4 datasets with Mapbox globe, use hybrid shader that:
-  // 1. Converts WGS84 → Mercator
-  // 2. Then applies Mapbox's globe projection
-  if (useMapboxGlobe && useWgs84) return 'mapbox-globe-wgs84'
-  if (useMapboxGlobe) return 'mapbox-globe'
-  // For proj4 datasets with MapLibre globe, use hybrid shader that:
-  // 1. Converts WGS84 → Mercator
-  // 2. Then applies MapLibre's projectTile()
-  if (useWgs84 && shaderData?.vertexShaderPrelude) return 'wgs84-globe'
-  // For proj4 datasets without globe, use basic wgs84 shader
-  if (useWgs84) return 'wgs84'
-  // For standard datasets with MapLibre globe
-  if (shaderData?.vertexShaderPrelude) return 'maplibre-globe'
-  return 'mercator'
+  // For Mapbox (proj4 and non-proj4)
+  if (useMapbox && useWgs84) return 'mapbox-wgs84'
+  if (useMapbox) return 'mapbox'
+  // For MapLibre: projectTile() handles both globe and mercator modes
+  // Requires MapLibre 3.0+ which provides vertexShaderPrelude
+  if (useWgs84) return 'wgs84-globe'
+  return 'maplibre-globe'
 }
 
 export function makeShaderVariantKey(options: {
@@ -101,7 +93,8 @@ const toFloat32Array = (
 }
 
 // Projection mode helpers - modes are combinations of input space + projection target
-const isMapboxGlobe = (mode: ProjectionMode) => mode.startsWith('mapbox-globe')
+const isMapboxMode = (mode: ProjectionMode) =>
+  mode === 'mapbox' || mode === 'mapbox-wgs84'
 const isMaplibreGlobe = (mode: ProjectionMode) =>
   mode === 'maplibre-globe' || mode === 'wgs84-globe'
 
@@ -114,9 +107,9 @@ function getVertexShaderOptions(projectionMode: ProjectionMode): {
     ? 'wgs84'
     : 'mercator'
 
-  let projection: VertexShaderProjection = 'matrix'
-  if (isMapboxGlobe(projectionMode)) projection = 'mapbox-globe'
-  else if (isMaplibreGlobe(projectionMode)) projection = 'maplibre-globe'
+  const projection: VertexShaderProjection = isMapboxMode(projectionMode)
+    ? 'mapbox-globe'
+    : 'maplibre-globe'
 
   return { inputSpace, projection }
 }
@@ -193,13 +186,13 @@ export function createShaderProgram(
     }
   }
 
-  // MapLibre globe modes use projectTile uniforms, Mapbox globe has its own
+  // MapLibre globe modes use projectTile uniforms, Mapbox has its own
   const needsMaplibreGlobe = isMaplibreGlobe(projectionMode)
-  const needsMapboxGlobe = isMapboxGlobe(projectionMode)
+  const needsMapbox = isMapboxMode(projectionMode)
   const maplibreUniform = (name: string) =>
     needsMaplibreGlobe ? gl.getUniformLocation(program, name) : null
   const mapboxUniform = (name: string) =>
-    needsMapboxGlobe ? gl.getUniformLocation(program, name) : null
+    needsMapbox ? gl.getUniformLocation(program, name) : null
 
   const shaderProgram: ShaderProgram = {
     program,
@@ -259,7 +252,7 @@ export function applyProjectionUniforms(
   shaderProgram: ShaderProgram,
   matrix: number[] | Float32Array | Float64Array,
   projectionData?: ProjectionData,
-  mapboxGlobe?: MapboxGlobeParams,
+  mapbox?: MapboxParams,
   isGlobeTileRender?: boolean
 ) {
   const setMatrix4 = (
@@ -306,14 +299,15 @@ export function applyProjectionUniforms(
       )
       break
     }
-    case 'mapbox-globe':
-    case 'mapbox-globe-wgs84': {
+    case 'mapbox':
+    case 'mapbox-wgs84': {
+      // mapbox is always present for Mapbox (mercator uses identity matrix + transition=1)
       setMatrix4(shaderProgram.matrixLoc, matrix)
       setMatrix4(
         shaderProgram.globeToMercMatrixLoc,
-        mapboxGlobe?.globeToMercatorMatrix
+        mapbox?.globeToMercatorMatrix
       )
-      setFloat(shaderProgram.globeTransitionLoc, mapboxGlobe?.transition ?? 0)
+      setFloat(shaderProgram.globeTransitionLoc, mapbox?.transition ?? 1)
       if (shaderProgram.tileRenderLoc) {
         gl.uniform1i(shaderProgram.tileRenderLoc, isGlobeTileRender ? 1 : 0)
       }
