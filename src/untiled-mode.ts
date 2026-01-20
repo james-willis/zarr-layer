@@ -123,6 +123,19 @@ interface RegionState {
   bandTextures: Map<string, WebGLTexture>
   bandTexturesUploaded: Set<string>
   bandTexturesConfigured: Set<string>
+  // Level-specific dimensions for correct geometry rebuild across projection changes.
+  // Set from LevelSnapshot during fetch to avoid races with level switching.
+  levelMeta: LevelMeta | null
+}
+
+/** Level-specific dimensions for geometry bounds calculation */
+type LevelMeta = {
+  width: number
+  height: number
+  regionSize: [number, number]
+  // xyLimits omitted - assumed constant across levels for now.
+  // TODO: If heterogeneous pyramids with per-level bounds are needed,
+  // add xyLimits here and store per-region.
 }
 
 /** Maximum number of regions to keep in cache (LRU eviction) */
@@ -662,6 +675,7 @@ export class UntiledMode implements ZarrMode {
       bandTextures: new Map(),
       bandTexturesUploaded: new Set(),
       bandTexturesConfigured: new Set(),
+      levelMeta: null, // Set from snapshot in fetchRegion
     }
   }
 
@@ -802,27 +816,35 @@ export class UntiledMode implements ZarrMode {
   /**
    * Get geographic bounds for a region.
    * Accounts for data orientation (latIsAscending).
+   * Accepts optional levelMeta to use level-specific dimensions instead of current level.
    */
   private getRegionBounds(
     regionX: number,
-    regionY: number
+    regionY: number,
+    levelMeta?: LevelMeta
   ): { xMin: number; xMax: number; yMin: number; yMax: number } {
-    if (!this.xyLimits || !this.regionSize) {
+    const width = levelMeta?.width ?? this.width
+    const height = levelMeta?.height ?? this.height
+    const regionSize = levelMeta?.regionSize ?? this.regionSize
+
+    // xyLimits is assumed constant across all multiscale levels (same geographic extent).
+    // If per-level bounds are ever needed, add xyLimits to LevelMeta type.
+    if (!this.xyLimits || !regionSize) {
       return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }
     }
 
-    const [regionH, regionW] = this.regionSize
+    const [regionH, regionW] = regionSize
     const { xMin, xMax, yMin, yMax } = this.xyLimits
 
     // Calculate pixel bounds for this region
     const pxXStart = regionX * regionW
-    const pxXEnd = Math.min(pxXStart + regionW, this.width)
+    const pxXEnd = Math.min(pxXStart + regionW, width)
     const pxYStart = regionY * regionH
-    const pxYEnd = Math.min(pxYStart + regionH, this.height)
+    const pxYEnd = Math.min(pxYStart + regionH, height)
 
     // Convert pixel bounds to geographic bounds using pixel edges.
-    const geoXMin = xMin + (pxXStart / this.width) * (xMax - xMin)
-    const geoXMax = xMin + (pxXEnd / this.width) * (xMax - xMin)
+    const geoXMin = xMin + (pxXStart / width) * (xMax - xMin)
+    const geoXMax = xMin + (pxXEnd / width) * (xMax - xMin)
 
     // Y mapping depends on data orientation
     // Default (null/undefined) assumes ascending (row 0 = south = yMin)
@@ -830,12 +852,12 @@ export class UntiledMode implements ZarrMode {
     let geoYMax: number
     if (this.latIsAscending === false) {
       // Data has lat decreasing with array index: pixel 0 = north (yMax)
-      geoYMax = yMax - (pxYStart / this.height) * (yMax - yMin)
-      geoYMin = yMax - (pxYEnd / this.height) * (yMax - yMin)
+      geoYMax = yMax - (pxYStart / height) * (yMax - yMin)
+      geoYMin = yMax - (pxYEnd / height) * (yMax - yMin)
     } else {
       // Data has lat increasing with array index: pixel 0 = south (yMin)
-      geoYMin = yMin + (pxYStart / this.height) * (yMax - yMin)
-      geoYMax = yMin + (pxYEnd / this.height) * (yMax - yMin)
+      geoYMin = yMin + (pxYStart / height) * (yMax - yMin)
+      geoYMax = yMin + (pxYEnd / height) * (yMax - yMin)
     }
 
     return { xMin: geoXMin, xMax: geoXMax, yMin: geoYMin, yMax: geoYMax }
@@ -856,7 +878,16 @@ export class UntiledMode implements ZarrMode {
     gl: WebGL2RenderingContext,
     region: RegionState
   ): void {
-    const geoBounds = this.getRegionBounds(regionX, regionY)
+    // Guard: can't create geometry without dimension info
+    if (!region.levelMeta && !this.regionSize) {
+      return
+    }
+
+    const geoBounds = this.getRegionBounds(
+      regionX,
+      regionY,
+      region.levelMeta ?? undefined
+    )
 
     // Use cached mercatorBounds if set (from fetchRegion's resampling path),
     // otherwise compute from geoBounds (for non-resampling cases like EPSG:3857)
@@ -1519,7 +1550,12 @@ export class UntiledMode implements ZarrMode {
         this.proj4def && this.cached4326Transformer && this.crs !== 'EPSG:4326'
 
       if (needsProj4MercBounds && this.xyLimits && !region.mercatorBounds) {
-        const geoBounds = this.getRegionBounds(regionX, regionY)
+        const levelMeta: LevelMeta = {
+          width: snapshot.width,
+          height: snapshot.height,
+          regionSize: snapshot.regionSize,
+        }
+        const geoBounds = this.getRegionBounds(regionX, regionY, levelMeta)
         region.mercatorBounds = this.computeRegionMercatorBounds(geoBounds)
       }
 
@@ -1581,6 +1617,15 @@ export class UntiledMode implements ZarrMode {
       region.height = outputH
       region.channels = numChannels
       region.loading = false
+
+      // Store level-specific dimensions from snapshot for geometry rebuild.
+      // Must use snapshot (not this.*) to avoid races with level switching.
+      // Set before createRegionGeometry is called below.
+      region.levelMeta = {
+        width: snapshot.width,
+        height: snapshot.height,
+        regionSize: [...snapshot.regionSize] as [number, number],
+      }
 
       // Create/update main texture for this region
       if (!region.texture) {
