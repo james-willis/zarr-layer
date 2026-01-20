@@ -8,6 +8,7 @@
  */
 
 import { MERCATOR_LAT_LIMIT, WEB_MERCATOR_EXTENT } from './constants'
+import { MAPBOX_IDENTITY_MATRIX } from './mapbox-utils'
 import type { ProjectionData, ShaderData } from './shaders'
 import type { MapLike } from './types'
 
@@ -700,19 +701,29 @@ export function resolveProjectionParams(
     matrix = paramsObj.projectionMatrix
   }
 
-  const mapboxGlobe =
-    projection && projectionToMercatorMatrix !== undefined
-      ? {
-          projection,
-          globeToMercatorMatrix: projectionToMercatorMatrix,
-          transition:
-            typeof projectionToMercatorTransition === 'number'
-              ? projectionToMercatorTransition
-              : 0,
-        }
-      : undefined
+  // Mapbox detection: passes projection param (globe mode) or matrix directly (mercator mode)
+  const paramsIsMatrix =
+    Array.isArray(params) ||
+    params instanceof Float32Array ||
+    params instanceof Float64Array
+  const isMapbox = !!projection || paramsIsMatrix
 
-  return { matrix, shaderData, projectionData, mapboxGlobe }
+  // For Mapbox, always provide mapbox params (even in mercator mode) to avoid special-case logic
+  // In mercator mode: use identity matrix and transition=1 (pure mercator)
+  // In globe mode: use provided values
+  const mapbox = isMapbox
+    ? {
+        projection: projection ?? { name: 'mercator' },
+        globeToMercatorMatrix:
+          projectionToMercatorMatrix ?? MAPBOX_IDENTITY_MATRIX,
+        transition:
+          typeof projectionToMercatorTransition === 'number'
+            ? projectionToMercatorTransition
+            : 1, // Default to mercator (transition=1) when not in globe mode
+      }
+    : undefined
+
+  return { matrix, shaderData, projectionData, mapbox }
 }
 
 export function computeWorldOffsets(

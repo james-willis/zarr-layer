@@ -26,6 +26,7 @@ export interface RenderContext {
   shaderData?: ShaderData
   projectionData?: ProjectionData
   mapbox?: MapboxParams
+  isGlobe?: boolean
 }
 
 export interface TileId {
