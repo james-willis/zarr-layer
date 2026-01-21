@@ -215,7 +215,8 @@ class TransformingFetchStore implements AsyncReadable<RequestInit> {
   ): Promise<Uint8Array | undefined> {
     const resolvedUrl = this.resolveUrl(key)
     const { url: transformedUrl, ...overrides } = await this.transformRequest(
-      resolvedUrl
+      resolvedUrl,
+      { method: 'GET' }
     )
 
     const merged = mergeInit(overrides, opts)
@@ -229,16 +230,44 @@ class TransformingFetchStore implements AsyncReadable<RequestInit> {
     opts?: RequestInit
   ): Promise<Uint8Array | undefined> {
     const resolvedUrl = this.resolveUrl(key)
-    const { url: transformedUrl, ...overrides } = await this.transformRequest(
-      resolvedUrl
-    )
 
-    const merged = mergeInit(overrides, opts)
     let response: Response
 
     if ('suffixLength' in range) {
-      response = await fetchSuffix(transformedUrl, range.suffixLength, merged)
+      // For suffix queries, we need separate signed URLs for HEAD and GET
+      const { url: headUrl, ...headOverrides } = await this.transformRequest(
+        resolvedUrl,
+        { method: 'HEAD' }
+      )
+      const headMerged = mergeInit(headOverrides, opts)
+      const headResponse = await fetch(headUrl, {
+        ...headMerged,
+        method: 'HEAD',
+      })
+      if (!headResponse.ok) {
+        return handleResponse(headResponse)
+      }
+      const contentLength = headResponse.headers.get('Content-Length')
+      const length = Number(contentLength)
+
+      // Now get the actual range with a GET-signed URL
+      const { url: getUrl, ...getOverrides } = await this.transformRequest(
+        resolvedUrl,
+        { method: 'GET' }
+      )
+      const getMerged = mergeInit(getOverrides, opts)
+      response = await fetchRange(
+        getUrl,
+        length - range.suffixLength,
+        range.suffixLength,
+        getMerged
+      )
     } else {
+      const { url: transformedUrl, ...overrides } = await this.transformRequest(
+        resolvedUrl,
+        { method: 'GET' }
+      )
+      const merged = mergeInit(overrides, opts)
       response = await fetchRange(
         transformedUrl,
         range.offset,

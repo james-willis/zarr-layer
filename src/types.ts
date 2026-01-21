@@ -8,8 +8,17 @@ export interface RequestParameters extends Omit<RequestInit, 'headers'> {
   headers?: { [key: string]: string }
 }
 
+/**
+ * Options passed to transformRequest
+ */
+export interface TransformRequestOptions {
+  /** HTTP method that will be used for this request */
+  method?: 'GET' | 'HEAD'
+}
+
 export type TransformRequest = (
-  url: string
+  url: string,
+  options?: TransformRequestOptions
 ) => RequestParameters | Promise<RequestParameters>
 
 export type ColormapArray = number[][] | string[]
