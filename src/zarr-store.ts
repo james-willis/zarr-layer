@@ -1068,8 +1068,35 @@ export class ZarrStore {
 
         // Return the highest resolution (largest size) coordinate array
         if (candidates.length === 0) return null
-        candidates.sort((a, b) => b.size - a.size)
-        return candidates[0].path
+
+        const pickLargest = (list: CoordCandidate[]) => {
+          if (list.length === 0) return null
+          const sorted = [...list].sort((a, b) => b.size - a.size)
+          return sorted[0].path
+        }
+
+        // Prefer coord arrays within the bounds level to avoid cross-variable grids.
+        // Fallback to root-level coords, then the global maximum.
+        if (boundsLevel) {
+          const levelPrefix = `${boundsLevel}/`
+          const levelCandidates = candidates.filter((c) =>
+            c.path.startsWith(levelPrefix)
+          )
+          const levelPick = pickLargest(levelCandidates)
+          if (levelPick) return levelPick
+
+          const rootCandidates = candidates.filter((c) => !c.path.includes('/'))
+          const rootPick = pickLargest(rootCandidates)
+          if (rootPick) return rootPick
+        } else if (this.variable) {
+          const varCandidates = candidates.filter((c) =>
+            c.path.startsWith(`${this.variable}/`)
+          )
+          const varPick = pickLargest(varCandidates)
+          if (varPick) return varPick
+        }
+
+        return pickLargest(candidates)
       }
 
       // Find highest resolution coordinate arrays from metadata (handles all multiscale conventions)
