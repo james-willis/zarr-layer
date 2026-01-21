@@ -168,26 +168,6 @@ const fetchRange = (
 }
 
 /**
- * Fetch suffix bytes from a URL.
- * Uses HEAD + range fallback for backends that don't support suffix ranges.
- */
-const fetchSuffix = async (
-  url: string | URL,
-  suffixLength: number,
-  init: RequestInit
-): Promise<Response> => {
-  // Use HEAD + range fallback (matches zarrita's default behavior)
-  // Some backends (like S3) don't support bytes=-n suffix requests well
-  const headResponse = await fetch(url, { ...init, method: 'HEAD' })
-  if (!headResponse.ok) {
-    return headResponse // will be picked up by handleResponse
-  }
-  const contentLength = headResponse.headers.get('Content-Length')
-  const length = Number(contentLength)
-  return fetchRange(url, length - suffixLength, suffixLength, init)
-}
-
-/**
  * Custom store that calls transformRequest for each request with the fully resolved URL.
  * This enables per-path authentication like presigned S3 URLs.
  */
