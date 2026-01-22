@@ -32,10 +32,6 @@ export interface TileData {
   selectorVersion: number
   loading: boolean
 
-  // Data normalization (for half-float precision on mobile GPUs)
-  dataScale: number // Scale factor applied to data (1.0 = no normalization)
-  bandDataScales: Map<string, number> // Scale factors per band
-
   // Geographic bounds for fragment shader reprojection (EPSG:4326 only)
   latBounds: { min: number; max: number } | null
   geoBounds: { west: number; south: number; east: number; north: number } | null
@@ -57,12 +53,12 @@ interface TilesOptions {
   store: ZarrStore
   selector: NormalizedSelector
   fillValue: number
-  clim?: [number, number]
   dimIndices: DimIndicesProps
   coordinates: Record<string, (string | number)[]>
   maxCachedTiles?: number
   bandNames?: string[]
   crs?: 'EPSG:4326' | 'EPSG:3857'
+  fixedDataScale?: number
 }
 
 /**
@@ -73,32 +69,32 @@ export class Tiles {
   private store: ZarrStore
   private selector: NormalizedSelector
   private fillValue: number
-  private clim: [number, number]
   private dimIndices: DimIndicesProps
   private coordinates: Record<string, (string | number)[]>
   private maxCachedTiles: number
   private tiles: Map<string, TileData> = new Map()
   private bandNames: string[]
   private gl: WebGL2RenderingContext | null = null
+  private fixedDataScale: number
 
   constructor({
     store,
     selector,
     fillValue,
-    clim = [0, 1],
     dimIndices,
     coordinates,
     maxCachedTiles = 64,
     bandNames = [],
+    fixedDataScale = 1,
   }: TilesOptions) {
     this.store = store
     this.selector = selector
     this.fillValue = fillValue
-    this.clim = clim
     this.dimIndices = dimIndices
     this.coordinates = coordinates
     this.maxCachedTiles = maxCachedTiles
     this.bandNames = bandNames
+    this.fixedDataScale = fixedDataScale
   }
 
   /**
@@ -114,10 +110,6 @@ export class Tiles {
 
   updateSelector(selector: NormalizedSelector) {
     this.selector = selector
-  }
-
-  updateClim(clim: [number, number]) {
-    this.clim = clim
   }
 
   private getDimKeyForName(dimName: string): string {
@@ -390,24 +382,21 @@ export class Tiles {
 
     // Normalize bands (single pass) and collect for interleaving
     tile.bandData = new Map()
-    tile.bandDataScales = new Map()
     tile.bandTexturesUploaded.clear()
     const normalizedBands: Float32Array[] = []
 
     for (const [bandName, bandData] of bandDataToProcess) {
-      const { normalized, scale } = normalizeDataForTexture(
+      const { normalized } = normalizeDataForTexture(
         bandData,
         this.fillValue,
-        this.clim
+        this.fixedDataScale
       )
       tile.bandData.set(bandName, normalized)
-      tile.bandDataScales.set(bandName, scale)
       normalizedBands.push(normalized)
     }
 
     // Construct interleaved data from normalized bands
     tile.data = interleaveBands(normalizedBands, sliced.channels)
-    tile.dataScale = tile.bandDataScales.values().next().value ?? 1.0
     tile.channels = sliced.channels
 
     // Upload texture
@@ -472,8 +461,6 @@ export class Tiles {
       selectorHash: null,
       selectorVersion: 0,
       loading: false,
-      dataScale: 1.0,
-      bandDataScales: new Map(),
       latBounds: null,
       geoBounds: null,
       mercatorBounds: null,

@@ -212,9 +212,6 @@ export class UntiledMode implements ZarrMode {
   // Dimension values cache
   private dimensionValues: { [key: string]: Float64Array | number[] } = {}
 
-  // Data processing
-  private clim: [number, number] = [0, 1]
-
   // Region-based loading (for multi-level datasets with chunking/sharding)
   // Single unified cache with LRU eviction - keys include level index (e.g., "2:0,0")
   private regionCache: Map<string, RegionState> = new Map()
@@ -245,12 +242,16 @@ export class UntiledMode implements ZarrMode {
   // Track current projection for subdivision optimization
   private isGlobeProjection: boolean = false
 
+  // Fixed data scale for normalization (set at initialization, passed from ZarrLayer)
+  private fixedDataScale: number = 1
+
   constructor(
     store: ZarrStore,
     variable: string,
     selector: NormalizedSelector,
     invalidate: () => void,
-    throttleMs: number = 100
+    throttleMs: number = 100,
+    fixedDataScale: number = 1
   ) {
     this.zarrStore = store
     this.variable = variable
@@ -258,6 +259,7 @@ export class UntiledMode implements ZarrMode {
     this.bandNames = getBands(variable, selector)
     this.invalidate = invalidate
     this.throttleMs = throttleMs
+    this.fixedDataScale = fixedDataScale
   }
 
   async initialize(): Promise<void> {
@@ -1593,7 +1595,7 @@ export class UntiledMode implements ZarrMode {
         const { normalized: bandNormalized } = normalizeDataForTexture(
           bandData,
           effectiveFillValue,
-          this.clim
+          this.fixedDataScale
         )
         region.bandData.set(bandName, bandNormalized)
         normalizedBands.push(bandNormalized)
@@ -2130,10 +2132,6 @@ export class UntiledMode implements ZarrMode {
 
   getLevels(): string[] {
     return this.levels.map((l) => l.asset)
-  }
-
-  updateClim(clim: [number, number]): void {
-    this.clim = clim
   }
 
   async setSelector(selector: NormalizedSelector): Promise<void> {
