@@ -106,7 +106,7 @@ const mapLibreConfig: MapConfig = {
         layers: layers('protomaps', mapLibreTheme, { lang: 'en' }),
       },
       center: [0, 20],
-      zoom: 2.4,
+      zoom: window.innerWidth < 640 ? 1.2 : 2.4,
     }) as MapInstance
   },
   setProjection: (map: MapInstance, globeProjection: boolean) => {
@@ -127,7 +127,7 @@ const mapboxConfig: MapConfig = {
       container,
       style: 'mapbox://styles/mapbox/dark-v11',
       center: [0, 20],
-      zoom: 2,
+      zoom: window.innerWidth < 640 ? 1 : 2,
       projection: globeProjection ? 'globe' : 'mercator',
     })
 
@@ -425,11 +425,17 @@ export const Map = () => {
           position: 'absolute',
           top: 0,
           right: 0,
-          bottom: 0,
-          left: sidebarWidth,
+          bottom: ['50vh', '50vh', 0],
+          left: sidebarWidth ?? 0,
         }}
       />
-      <Box sx={{ position: 'absolute', top: '8px', left: sidebarWidth + 10 }}>
+      <Box
+        sx={{
+          position: 'absolute',
+          top: ['56px', '56px', '8px'],
+          left: sidebarWidth ? sidebarWidth + 10 : 2,
+        }}
+      >
         {loadingState.loading && <Spinner size={40} />}
       </Box>
     </>
