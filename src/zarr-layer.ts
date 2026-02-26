@@ -13,7 +13,7 @@ import {
   normalizeSelector,
 } from './zarr-utils'
 import { ZarrStore } from './zarr-store'
-import { maplibreFragmentShaderSource } from './shaders'
+import { maplibreFragmentShaderSource, type ShaderData } from './shaders'
 import { ColormapState } from './colormap'
 import { ZarrRenderer } from './zarr-renderer'
 import type { CustomShaderConfig } from './renderer-types'
