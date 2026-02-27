@@ -711,7 +711,10 @@ export class UntiledMode implements ZarrMode {
   }
 
   /**
-   * Clear loading flags for a batch of regions (used when aborting stale fetches).
+   * Clear loading flags for queued-but-not-started regions in a batch.
+   * Only touches regions where requestId is null (pre-marked as loading
+   * but no fetch was started). In-flight regions (requestId set) are
+   * cleaned up by their own finally block.
    */
   private clearBatchLoadingFlags(
     regions: Array<{ regionX: number; regionY: number }>,
@@ -720,7 +723,9 @@ export class UntiledMode implements ZarrMode {
     for (const { regionX, regionY } of regions) {
       const key = this.makeRegionKey(levelIndex, regionX, regionY)
       const region = this.regionCache.get(key)
-      if (region) region.loading = false
+      if (region && region.requestId === null) {
+        region.loading = false
+      }
     }
   }
 
@@ -1334,7 +1339,8 @@ export class UntiledMode implements ZarrMode {
       }
     }
 
-    // Cancel in-flight fetches for regions that left the viewport
+    // Abort in-flight fetches for regions that left the viewport.
+    // Only signal abort — the fetch's own catch/finally handles state cleanup.
     const visibleKeys = new Set(
       visible.map(({ regionX, regionY }) =>
         this.makeRegionKey(levelIndex, regionX, regionY)
@@ -1347,15 +1353,7 @@ export class UntiledMode implements ZarrMode {
         region.requestId !== null &&
         !visibleKeys.has(key)
       ) {
-        const controller = this.requestCanceller.controllers.get(
-          region.requestId
-        )
-        if (controller) {
-          controller.abort()
-          this.requestCanceller.controllers.delete(region.requestId)
-        }
-        region.loading = false
-        region.requestId = null
+        this.requestCanceller.controllers.get(region.requestId)?.abort()
       }
     }
 
@@ -1595,11 +1593,6 @@ export class UntiledMode implements ZarrMode {
       return
     }
 
-    // Check if this fetch still owns the region and is still relevant.
-    // After viewport-based cancellation, a replacement fetch may have claimed
-    // the region with a new requestId — the old fetch must not touch its state.
-    const ownsRegion = () => region.requestId === requestId
-
     try {
       // Build base slice args with spatial region bounds
       const baseSliceArgs = [...snapshot.baseSliceArgs]
@@ -1624,25 +1617,19 @@ export class UntiledMode implements ZarrMode {
       packedData.fill(fillValue ?? 0)
 
       const isStale = () =>
-        !ownsRegion() ||
         controller.signal.aborted ||
         this.isRemoved ||
         this.currentLevelIndex !== snapshot.index
-      const bailIfStale = () => {
-        if (!isStale()) return false
-        if (ownsRegion()) region.loading = false
-        return true
-      }
 
       if (numChannels === 1) {
         // Single channel - simple fetch
-        if (bailIfStale()) return
+        if (isStale()) return
 
         const result = (await zarr.get(snapshot.zarrArray, baseSliceArgs, {
           opts: { signal: controller.signal },
         })) as { data: ArrayLike<number> }
 
-        if (bailIfStale()) return
+        if (isStale()) return
 
         const rawData = new Float32Array(result.data as ArrayLike<number>)
         bandArrays.push(rawData)
@@ -1650,7 +1637,7 @@ export class UntiledMode implements ZarrMode {
       } else {
         // Multi-channel - fetch all channels in parallel
         // Check if already aborted or level changed before starting fetches
-        if (bailIfStale()) return
+        if (isStale()) return
 
         // Build slice args for all channels upfront
         const allSliceArgs: (number | zarr.Slice)[][] = []
@@ -1675,7 +1662,7 @@ export class UntiledMode implements ZarrMode {
         )
 
         // Check abort/level again after all fetches complete
-        if (bailIfStale()) return
+        if (isStale()) return
 
         // Process results in order
         for (let c = 0; c < numChannels; c++) {
@@ -1691,10 +1678,7 @@ export class UntiledMode implements ZarrMode {
       }
 
       // Only render if this is newer than what's already rendered for this region
-      if (fetchSelectorVersion < region.selectorVersion) {
-        if (ownsRegion()) region.loading = false
-        return
-      }
+      if (fetchSelectorVersion < region.selectorVersion) return
 
       // Update region's selector version
       region.selectorVersion = fetchSelectorVersion
@@ -1815,10 +1799,14 @@ export class UntiledMode implements ZarrMode {
       if (!(err instanceof DOMException && err.name === 'AbortError')) {
         console.error(`[fetchRegion] Error fetching region ${key}:`, err)
       }
-      if (ownsRegion()) region.loading = false
     } finally {
+      region.loading = false
+      region.requestId = null
       this.requestCanceller.controllers.delete(requestId)
-      if (ownsRegion()) region.requestId = null
+      // Re-evaluate visible regions after abort so panned-back regions get re-fetched.
+      if (controller.signal.aborted && !this.isRemoved) {
+        this.invalidate()
+      }
     }
   }
 
