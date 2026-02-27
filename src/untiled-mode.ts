@@ -96,6 +96,7 @@ interface RegionState {
   width: number
   height: number
   loading: boolean
+  requestId: number | null
   channels: number
   // WebGL resources
   texture: WebGLTexture | null
@@ -657,6 +658,7 @@ export class UntiledMode implements ZarrMode {
       width: 0,
       height: 0,
       loading: false,
+      requestId: null,
       channels: 1,
       texture: null,
       textureUploaded: false,
@@ -1219,6 +1221,31 @@ export class UntiledMode implements ZarrMode {
       }
     }
 
+    // Cancel in-flight fetches for regions that left the viewport
+    const visibleKeys = new Set(
+      visible.map(({ regionX, regionY }) =>
+        this.makeRegionKey(levelIndex, regionX, regionY)
+      )
+    )
+    for (const [key, region] of this.regionCache) {
+      if (
+        region.loading &&
+        region.levelIndex === levelIndex &&
+        region.requestId !== null &&
+        !visibleKeys.has(key)
+      ) {
+        const controller = this.requestCanceller.controllers.get(
+          region.requestId
+        )
+        if (controller) {
+          controller.abort()
+          this.requestCanceller.controllers.delete(region.requestId)
+        }
+        region.loading = false
+        region.requestId = null
+      }
+    }
+
     // Separate regions into two categories:
     // 1. New regions (no data) - viewport change, fetch immediately
     // 2. Stale regions (have data, wrong selector) - selector change, throttle
@@ -1414,6 +1441,7 @@ export class UntiledMode implements ZarrMode {
       this.regionCache.set(key, region)
     }
     region.loading = true
+    region.requestId = requestId
 
     const [regionH, regionW] = snapshot.regionSize
 
@@ -1636,6 +1664,7 @@ export class UntiledMode implements ZarrMode {
       region.loading = false
     } finally {
       this.requestCanceller.controllers.delete(requestId)
+      region.requestId = null
     }
   }
 
