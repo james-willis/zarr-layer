@@ -22,6 +22,9 @@ const icechunkAirTemp: Dataset<Record<string, never>> = {
     return (_storePromise ??= IcechunkStore.open(ICECHUNK_URL, {
       branch: 'main',
       formatVersion: 'v1',
+    }).catch((err) => {
+      _storePromise = null
+      throw err
     }))
   },
   defaultState: {},

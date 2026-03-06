@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Spinner } from 'theme-ui'
 // @ts-expect-error - carbonplan colormaps types not available
-import { useThemedColormap } from '@carbonplan/colormaps'
+import { useThemedColormap, makeColormap } from '@carbonplan/colormaps'
 import {
   ZarrLayer,
   ZarrLayerOptions,
@@ -185,17 +185,12 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     isCarbonplan4d &&
     (currentBand === 'tavg_range' || currentBand === 'prec_range')
 
-  const latestLayerConfigRef = useRef(layerConfig)
   const latestRangeStateRef = useRef({
     isRangeBand,
     monthStart,
     monthEnd,
     currentBand,
   })
-
-  useEffect(() => {
-    latestLayerConfigRef.current = layerConfig
-  }, [layerConfig])
 
   useEffect(() => {
     latestRangeStateRef.current = {
@@ -222,9 +217,10 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       zarrLayerRef.current = null
     }
 
-    const currentLayerConfig = latestLayerConfigRef.current
-
     const createLayer = async () => {
+      const currentLayerConfig = datasetModule.buildLayerProps(
+        useAppStore.getState().getDatasetState() as any
+      )
       const options: ZarrLayerOptions = {
         id: 'zarr-layer',
         source: datasetModule.source,
@@ -245,14 +241,24 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       if (datasetModule.store) {
         options.store = await datasetModule.store
       }
-      if (currentLayerConfig.customFrag) {
-        options.customFrag = currentLayerConfig.customFrag
-      }
-      if (currentLayerConfig.uniforms) {
-        options.uniforms = currentLayerConfig.uniforms
-      }
 
       if (cancelled) return
+
+      const latestState = useAppStore.getState()
+      options.clim = latestState.clim
+      options.opacity = latestState.opacity
+      options.colormap = makeColormap(latestState.colormap, { format: 'hex' })
+
+      const latestConfig = datasetModule.buildLayerProps(
+        latestState.getDatasetState() as any
+      )
+      options.selector = latestConfig.selector
+      if (latestConfig.customFrag) {
+        options.customFrag = latestConfig.customFrag
+      }
+      if (latestConfig.uniforms) {
+        options.uniforms = latestConfig.uniforms
+      }
 
       const layer = new ZarrLayer(options)
       let beforeId: string | undefined
@@ -260,7 +266,6 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
         beforeId = mapConfig.getLayerBeforeId(map)
       } catch (e) {}
       map.addLayer(layer, beforeId)
-      console.log('zarr-layer', layer)
       clickHandler = (event: any) => {
         const lng = event.lngLat.lng
         const lat = event.lngLat.lat
@@ -274,7 +279,9 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
           monthEnd: latestMonthEnd,
           currentBand: latestBand,
         } = latestRangeStateRef.current
-        const latestSelector = latestLayerConfigRef.current.selector
+        const latestSelector = datasetModule.buildLayerProps(
+          useAppStore.getState().getDatasetState() as any
+        ).selector
 
         let querySelector = latestSelector
         if (rangeMode && latestMonthStart !== null && latestMonthEnd !== null) {
