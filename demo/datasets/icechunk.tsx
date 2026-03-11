@@ -2,19 +2,20 @@ import { IcechunkStore } from '@carbonplan/icechunk-js'
 import type { Dataset, LayerProps } from './types'
 
 const ICECHUNK_URL =
-  'https://carbonplan-share.s3.us-west-2.amazonaws.com/zarr-layer-examples/virtual_icechunk/air_temperature.icechunk'
+  'https://carbonplan-share.s3.us-west-2.amazonaws.com/zarr-layer-examples/pipeline/multi_level_virtual_hybrid_icechunk.icechunk'
 
 let _storePromise: Promise<IcechunkStore> | null = null
 
-const icechunkAirTemp: Dataset<Record<string, never>> = {
-  id: 'icechunk_air_temp',
+const icechunkPrecip: Dataset<Record<string, never>> = {
+  id: 'icechunk_prec',
   source: ICECHUNK_URL,
-  variable: 'air',
-  clim: [185, 322],
-  colormap: 'warm',
+  variable: 'IMERG_PRECTOT',
+  clim: [0, 10],
+  colormap: 'cool',
   zarrVersion: 3,
-  info: 'Air temperature (Icechunk)',
-  sourceInfo: 'Air temperature stored in an Icechunk store',
+  info: 'Precip, NetCDF in Icechunk store w/ multiscales',
+  sourceInfo:
+    'Icechunk store of virtualized NetCDF base level with multiscale overviews added. NASA / IMERG data.',
   center: [-100, 45],
   zoom: 2,
   get store() {
@@ -33,4 +34,4 @@ const icechunkAirTemp: Dataset<Record<string, never>> = {
   }),
 }
 
-export default icechunkAirTemp
+export default icechunkPrecip

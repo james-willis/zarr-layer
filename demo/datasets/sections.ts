@@ -20,15 +20,10 @@ export const SELECTOR_SECTIONS: SelectorSection[] = [
   },
   {
     label: 'Untiled Multiscale',
-    datasetIds: [
-      'usgsdem',
-      'untiled_2level_4326',
-      'sentinel_2_eopf',
-      'Burn Probability over CONUS',
-    ],
+    datasetIds: ['usgsdem', 'sentinel_2_eopf', 'Burn Probability over CONUS'],
   },
   {
     label: 'Icechunk',
-    datasetIds: ['icechunk_air_temp'],
+    datasetIds: ['icechunk_prec'],
   },
 ]
