@@ -1,11 +1,9 @@
 import React, { useState } from 'react'
 import { Box, Flex, IconButton } from 'theme-ui'
-// @ts-expect-error - carbonplan icons types not available
 import { Info } from '@carbonplan/icons'
 import { DATASET_MAP } from '../datasets'
 import { SELECTOR_SECTIONS } from '../datasets/sections'
 import { useAppStore } from '../lib/store'
-import type { ControlsProps } from '../datasets/types'
 
 const InfoButton = ({
   expanded,
@@ -60,9 +58,7 @@ const DatasetBrowser = () => {
     })
   }
 
-  const ActiveDatasetControls = datasetModule.Controls as React.FC<
-    ControlsProps<any>
-  >
+  const ActiveDatasetControls = datasetModule.Controls
 
   return (
     <Box sx={{ mt: 3 }}>
@@ -153,8 +149,8 @@ const DatasetBrowser = () => {
                     {isActive && (
                       <Box sx={{ ml: 1 }}>
                         <ActiveDatasetControls
-                          state={datasetState as any}
-                          setState={setActiveDatasetState as any}
+                          state={datasetState}
+                          setState={setActiveDatasetState}
                         />
                       </Box>
                     )}

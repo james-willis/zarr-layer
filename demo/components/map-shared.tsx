@@ -1,12 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Spinner } from 'theme-ui'
-// @ts-expect-error - carbonplan colormaps types not available
 import { useThemedColormap, makeColormap } from '@carbonplan/colormaps'
 import {
   ZarrLayer,
   ZarrLayerOptions,
   QueryGeometry,
-  QueryResult,
 } from '@carbonplan/zarr-layer'
 import maplibregl from 'maplibre-gl'
 import mapboxgl from 'mapbox-gl'
@@ -174,14 +172,14 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const setZarrLayer = useAppStore((state) => state.setZarrLayer)
 
   const layerConfig: LayerProps = useMemo(
-    () => datasetModule.buildLayerProps(datasetState as any),
+    () => datasetModule.buildLayerProps(datasetState),
     [datasetModule, datasetState]
   )
 
   const isCarbonplan4d = datasetModule.id === 'carbonplan_4d'
-  const currentBand = (datasetState as any)?.band
-  const monthStart = (datasetState as any)?.monthStart ?? null
-  const monthEnd = (datasetState as any)?.monthEnd ?? null
+  const currentBand = datasetState['band']
+  const monthStart = Number(datasetState['monthStart']) || null
+  const monthEnd = Number(datasetState['monthEnd']) || null
   const isRangeBand =
     isCarbonplan4d &&
     (currentBand === 'tavg_range' || currentBand === 'prec_range')
@@ -220,7 +218,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
 
     const createLayer = async () => {
       const currentLayerConfig = datasetModule.buildLayerProps(
-        useAppStore.getState().getDatasetState() as any
+        useAppStore.getState().getDatasetState()
       )
       const options: ZarrLayerOptions = {
         id: 'zarr-layer',
@@ -252,7 +250,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       options.colormap = makeColormap(latestState.colormap, { format: 'hex' })
 
       const latestConfig = datasetModule.buildLayerProps(
-        latestState.getDatasetState() as any
+        latestState.getDatasetState()
       )
       options.selector = latestConfig.selector
       if (latestConfig.customFrag) {
@@ -282,7 +280,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
           currentBand: latestBand,
         } = latestRangeStateRef.current
         const latestSelector = datasetModule.buildLayerProps(
-          useAppStore.getState().getDatasetState() as any
+          useAppStore.getState().getDatasetState()
         ).selector
 
         let querySelector = latestSelector
@@ -297,7 +295,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
 
         layer.queryData(geometry, querySelector).then((result) => {
           console.log('queryData result', result)
-          setPointResult(result as QueryResult)
+          setPointResult(result)
         })
       }
       map.on('click', clickHandler)

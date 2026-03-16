@@ -9,11 +9,8 @@ import {
   Button,
   Input,
   Select,
-  // @ts-expect-error - carbonplan components types not available
 } from '@carbonplan/components'
-// @ts-expect-error - carbonplan colormaps types not available
 import { useThemedColormap } from '@carbonplan/colormaps'
-// @ts-expect-error - carbonplan icons types not available
 import { Info, RotatingArrow } from '@carbonplan/icons'
 import { Box, Divider, Flex, IconButton } from 'theme-ui'
 import { useAppStore } from '../lib/store'
@@ -242,20 +239,18 @@ const Controls = () => {
   const fillValue =
     zarrLayer?.fillValue ?? datasetModule.fillValue ?? Number.NaN
   const [zoomLevel, setZoomLevel] = useState<number | null>(() =>
-    typeof (mapInstance as any)?.getZoom === 'function'
-      ? (mapInstance as any).getZoom()
-      : null
+    mapInstance ? mapInstance.getZoom() : null
   )
 
   useEffect(() => {
-    if (!mapInstance || typeof (mapInstance as any)?.getZoom !== 'function') {
+    if (!mapInstance) {
       setZoomLevel(null)
       return
     }
 
     const updateZoom = () => {
       try {
-        setZoomLevel((mapInstance as any).getZoom())
+        setZoomLevel(mapInstance.getZoom())
       } catch (error) {
         console.error('Failed to read zoom', error)
       }
@@ -288,14 +283,14 @@ const Controls = () => {
   const themedColormap = useThemedColormap(colormap)
 
   const layerConfig = useMemo(
-    () => datasetModule.buildLayerProps(datasetState as any),
+    () => datasetModule.buildLayerProps(datasetState),
     [datasetModule, datasetState]
   )
 
   const isCarbonplan4d = datasetModule.id === 'carbonplan_4d'
-  const currentBand = (datasetState as any)?.band
-  const monthStart = (datasetState as any)?.monthStart ?? null
-  const monthEnd = (datasetState as any)?.monthEnd ?? null
+  const currentBand = datasetState['band']
+  const monthStart = Number(datasetState['monthStart']) || null
+  const monthEnd = Number(datasetState['monthEnd']) || null
   const isRangeBand =
     isCarbonplan4d &&
     (currentBand === 'tavg_range' || currentBand === 'prec_range')
@@ -307,7 +302,7 @@ const Controls = () => {
   }, [datasetId, datasetState, setPointResult, setRegionResult])
 
   const currentVariable = useMemo(() => {
-    const layerConfig = datasetModule.buildLayerProps(datasetState as any)
+    const layerConfig = datasetModule.buildLayerProps(datasetState)
     return layerConfig.variable ?? datasetModule.variable
   }, [datasetModule, datasetState])
 
@@ -406,10 +401,7 @@ const Controls = () => {
         )
       }
 
-      const result = (await zarrLayer.queryData(
-        geometry,
-        querySelector
-      )) as QueryResult
+      const result = await zarrLayer.queryData(geometry, querySelector)
       console.log('Query result:', result)
       setRegionResult(result)
     } catch (error) {

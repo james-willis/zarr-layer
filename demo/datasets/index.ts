@@ -63,7 +63,7 @@ export const DATASETS: Dataset<any>[] = [
 
 export const DATASET_MAP = Object.fromEntries(
   DATASETS.map((d) => [d.id, d])
-) as Record<string, Dataset<any>>
+) as Record<string, Dataset>
 
 export const DEFAULT_DATASET_ID = usgsdem.id
 
