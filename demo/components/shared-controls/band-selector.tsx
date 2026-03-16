@@ -1,5 +1,4 @@
 import React from 'react'
-// @ts-expect-error - carbonplan components types not available
 import { Filter, Row, Column } from '@carbonplan/components'
 import { Box } from 'theme-ui'
 import { subheadingSx } from './styles'

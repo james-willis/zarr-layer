@@ -1,5 +1,4 @@
 import React from 'react'
-// @ts-expect-error - carbonplan components types not available
 import { Slider, Row, Column } from '@carbonplan/components'
 import { Box } from 'theme-ui'
 import type { Theme } from 'theme-ui'

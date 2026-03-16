@@ -1,7 +1,6 @@
 import React, { useEffect } from 'react'
 import { useRouter } from 'next/router'
 import { Box, Container } from 'theme-ui'
-// @ts-expect-error - carbonplan components types not available
 import { Header, Meta } from '@carbonplan/components'
 import { Map } from '../components/map-shared'
 import Sidebar from '../components/sidebar'

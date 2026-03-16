@@ -1,8 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { Box, Divider } from 'theme-ui'
-// @ts-expect-error - carbonplan layouts types not available
 import { Sidebar } from '@carbonplan/layouts'
-// @ts-expect-error - carbonplan components types not available
 import { Link } from '@carbonplan/components'
 import Controls from './controls'
 import { useAppStore } from '../lib/store'
