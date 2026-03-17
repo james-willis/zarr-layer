@@ -281,7 +281,7 @@ function renderRegionsToTile(
 
     // For proj4 datasets: use indexed mesh with wgs84Bounds
     // For EPSG:4326: use subdivided quad (not indexed) with wgs84Bounds
-    // Both use the mapbox-globe-wgs84 shader to convert WGS84 → Mercator
+    // Both use the mapbox-proj4 shader to convert WGS84 → Mercator
     const useIndexedMesh = !!region.useIndexedMesh && !!region.indexBuffer
 
     const renderable: RenderableRegion = {

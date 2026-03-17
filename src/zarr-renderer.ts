@@ -67,9 +67,14 @@ export class ZarrRenderer {
     shaderData?: ShaderData,
     customShaderConfig?: CustomShaderConfig,
     useMapbox: boolean = false,
-    useWgs84: boolean = false
+    useWgs84: boolean = false,
+    useDirectEcef: boolean = false
   ): ShaderProgram {
-    const projectionMode = resolveProjectionMode(useMapbox, useWgs84)
+    const projectionMode = resolveProjectionMode(
+      useMapbox,
+      useWgs84,
+      useDirectEcef
+    )
     const config = customShaderConfig || this.customShaderConfig
     const variantName = makeShaderVariantKey({
       projectionMode,

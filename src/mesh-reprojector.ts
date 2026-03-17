@@ -2,8 +2,8 @@
  * Mesh generation for client-side raster reprojection.
  *
  * Uses Delaunay triangulation on a uniform grid for reliable mesh generation.
- * Outputs EPSG:4326 coordinates for two-stage GPU reprojection
- * (source CRS → WGS84 on CPU, WGS84 → Mercator in shader).
+ * Outputs EPSG:4326 coordinates that the GPU projects to either
+ * Mercator (flat map) or ECEF (globe).
  */
 
 import Delaunator from 'delaunator'
