@@ -40,7 +40,7 @@ export const DATASETS: Dataset<any>[] = [
     maxTime: 729,
   }),
   createTimeDataset({
-    id: 'delta_FG_CO2',
+    id: 'delta_fg_co2',
     source:
       'https://carbonplan-oae-efficiency.s3.us-west-2.amazonaws.com/fgco2-2021-180x360.zarr',
     variable: 'FG_CO2_2',
