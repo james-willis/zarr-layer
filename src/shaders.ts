@@ -56,33 +56,8 @@ const SCALE_HANDLING = `
 const VERTEX_TO_MERCATOR = `
   vec2 merc = vec2(vertex.x * sx + shift_x + u_worldXOffset, -vertex.y * sy + shift_y);`
 
-/** Transform vertex from local space to normalized WGS84, then to Mercator */
-const VERTEX_TO_WGS84_TO_MERCATOR = `
-  // vertex.xy are in local [-1, 1] space for this region
-  // scale/shift transform to absolute normalized 4326 [0,1] on world
-  float normLon = vertex.x * sx + shift_x + u_worldXOffset;
-  float normLat = vertex.y * sy + shift_y;
-
-  // Convert normalized [0,1] to degrees
-  float lon = normLon * 360.0 - 180.0;
-  float lat = normLat * 180.0 - 90.0;
-
-  // Clamp latitude to Mercator limits to avoid infinity at poles
-  lat = clamp(lat, -MERCATOR_LAT_LIMIT, MERCATOR_LAT_LIMIT);
-
-  // Mercator projection
-  float lambda = radians(lon);
-  float phi = radians(lat);
-  float mercY_raw = log(tan((PI / 2.0 + phi) / 2.0));
-
-  // Normalize mercator output to [0,1]
-  float mercX = (lambda / PI + 1.0) / 2.0;
-  float mercY = (1.0 - mercY_raw / PI) / 2.0;
-  vec2 merc = vec2(mercX, mercY);`
-
 /** Individual shader constants (composed as needed) */
 const CONST_PI = `const float PI = 3.14159265358979323846;`
-const CONST_MERCATOR_LAT_LIMIT = `const float MERCATOR_LAT_LIMIT = 85.05112878;`
 const CONST_GLOBE_RADIUS = `const float GLOBE_RADIUS = 1303.7972938088067;`
 
 /** Helper function for Mapbox globe: convert Mercator Y to latitude radians */
@@ -123,11 +98,9 @@ const PROJECT_MAPBOX_GLOBE = `
 // Vertex Shader Types
 // ============================================================================
 
-export type VertexShaderInputSpace = 'mercator' | 'wgs84'
 export type VertexShaderProjection = 'maplibre-globe' | 'mapbox-globe'
 
 export interface VertexShaderOptions {
-  inputSpace: VertexShaderInputSpace
   projection: VertexShaderProjection
   shaderData?: ShaderData
 }
@@ -144,7 +117,7 @@ export interface VertexShaderOptions {
  * @param options.shaderData - Required for maplibre-globe (provides projectTile prelude)
  */
 export function createVertexShader(options: VertexShaderOptions): string {
-  const { inputSpace, projection, shaderData } = options
+  const { projection, shaderData } = options
 
   // Build uniforms section
   let uniforms: string
@@ -165,12 +138,10 @@ export function createVertexShader(options: VertexShaderOptions): string {
 
   // Build constants section (MapLibre prelude already defines PI)
   const needsPI = projection !== 'maplibre-globe'
-  const needsMercatorLimit = inputSpace === 'wgs84'
   const needsGlobeRadius = projection === 'mapbox-globe'
 
   const constants = [
     needsPI ? CONST_PI : '',
-    needsMercatorLimit ? CONST_MERCATOR_LAT_LIMIT : '',
     needsGlobeRadius ? CONST_GLOBE_RADIUS : '',
   ]
     .filter(Boolean)
@@ -181,10 +152,6 @@ export function createVertexShader(options: VertexShaderOptions): string {
   if (projection === 'mapbox-globe') {
     helpers = FUNC_MERCATOR_Y_TO_LAT
   }
-
-  // Build coordinate transform
-  const coordTransform =
-    inputSpace === 'wgs84' ? VERTEX_TO_WGS84_TO_MERCATOR : VERTEX_TO_MERCATOR
 
   // Build projection output
   const projectionOutput =
@@ -203,7 +170,7 @@ ${helpers}
 
 void main() {
 ${SCALE_HANDLING}
-${coordTransform}
+${VERTEX_TO_MERCATOR}
 ${projectionOutput}
   pix_coord = pix_coord_in;
   v_mercatorPos = merc;

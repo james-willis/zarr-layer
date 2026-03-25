@@ -19,8 +19,4 @@ export interface MapboxParams {
   transition: number
 }
 
-export type ProjectionMode =
-  | 'wgs84-globe'
-  | 'maplibre-globe'
-  | 'mapbox'
-  | 'mapbox-wgs84'
+export type ProjectionMode = 'maplibre-globe' | 'mapbox'

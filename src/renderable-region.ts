@@ -6,7 +6,7 @@
  * for a single render path.
  */
 
-import type { MercatorBounds, Wgs84Bounds } from './map-utils'
+import type { MercatorBounds } from './map-utils'
 import type { CustomShaderConfig } from './renderer-types'
 import type { ShaderProgram } from './shader-program'
 import { bindBandTextures, bindGeometryBuffers } from './render-helpers'
@@ -27,9 +27,6 @@ export interface RenderableRegion {
   // Indexed mesh support (for adaptive mesh with proj4 datasets)
   indexBuffer?: WebGLBuffer | null
   useIndexedMesh?: boolean
-
-  // WGS84 bounds for two-stage reprojection (proj4 datasets)
-  wgs84Bounds?: Wgs84Bounds | null
 
   // Data orientation: true = row 0 is south (latitude ascending)
   // Resolved by ZarrStore during init
@@ -72,26 +69,11 @@ export function renderRegion(
   worldOffsets: number[],
   customShaderConfig?: CustomShaderConfig
 ): boolean {
-  // Determine bounds for scale/shift uniforms
-  // For wgs84 shader (two-stage reprojection), use wgs84Bounds
-  // Otherwise use mercatorBounds
-  const wgs84Bounds = region.wgs84Bounds ?? null
-
-  // Set position uniforms
-  // For wgs84: bounds are in normalized 4326 [0,1], shader transforms to Mercator
-  // For mercator: bounds are in normalized Mercator [0,1]
-  let scaleX: number, scaleY: number, shiftX: number, shiftY: number
-  if (wgs84Bounds) {
-    scaleX = (wgs84Bounds.lon1 - wgs84Bounds.lon0) / 2
-    scaleY = (wgs84Bounds.lat1 - wgs84Bounds.lat0) / 2
-    shiftX = (wgs84Bounds.lon0 + wgs84Bounds.lon1) / 2
-    shiftY = (wgs84Bounds.lat0 + wgs84Bounds.lat1) / 2
-  } else {
-    scaleX = (region.mercatorBounds.x1 - region.mercatorBounds.x0) / 2
-    scaleY = (region.mercatorBounds.y1 - region.mercatorBounds.y0) / 2
-    shiftX = (region.mercatorBounds.x0 + region.mercatorBounds.x1) / 2
-    shiftY = (region.mercatorBounds.y0 + region.mercatorBounds.y1) / 2
-  }
+  // Set position uniforms from mercatorBounds
+  const scaleX = (region.mercatorBounds.x1 - region.mercatorBounds.x0) / 2
+  const scaleY = (region.mercatorBounds.y1 - region.mercatorBounds.y0) / 2
+  const shiftX = (region.mercatorBounds.x0 + region.mercatorBounds.x1) / 2
+  const shiftY = (region.mercatorBounds.y0 + region.mercatorBounds.y1) / 2
 
   gl.uniform1f(shaderProgram.scaleLoc, 0)
   gl.uniform1f(shaderProgram.scaleXLoc, scaleX)
@@ -110,7 +92,7 @@ export function renderRegion(
   const hasLatBounds =
     region.mercatorBounds.latMin !== undefined &&
     region.mercatorBounds.latMax !== undefined
-  const useFragmentReproject = hasLatBounds && !wgs84Bounds
+  const useFragmentReproject = hasLatBounds
 
   if (shaderProgram.reprojectLoc !== null) {
     gl.uniform1i(shaderProgram.reprojectLoc, useFragmentReproject ? 1 : 0)

@@ -8,12 +8,7 @@
 
 import Delaunator from 'delaunator'
 import { RasterReprojector } from '@developmentseed/raster-reproject'
-import {
-  latToMercatorNorm,
-  lonToMercatorNorm,
-  type MercatorBounds,
-  type Wgs84Bounds,
-} from './map-utils'
+import { latToMercatorNorm, type MercatorBounds } from './map-utils'
 import {
   pixelToSourceCRS,
   sourceCRSToPixel,
@@ -52,11 +47,10 @@ interface ReprojectorConfig {
 }
 
 export interface AdaptiveMeshResult {
-  positions: Float32Array // Vertex positions (either normalized 4326 or Mercator)
+  positions: Float32Array // Vertex positions in Mercator space
   texCoords: Float32Array // UVs for texture sampling
   indices: Uint32Array // Triangle indices
-  wgs84Bounds: Wgs84Bounds | null // null when using CPU Mercator conversion
-  mercatorBounds?: MercatorBounds // Set when positions are in Mercator space
+  mercatorBounds: MercatorBounds // Absolute Mercator bounds (always {0,1,0,1})
 }
 
 export interface HybridMeshOptions {
@@ -128,78 +122,6 @@ function createReprojector(config: ReprojectorConfig): RasterReprojector {
     width,
     height
   )
-}
-
-/**
- * Compute normalized WGS84 bounds from min/max lon/lat values.
- * For antimeridian-crossing data, minLon > maxLon (e.g., 170° to -170°).
- *
- * Note: For Mercator rendering, latitudes beyond ±85.05° will be clamped
- * in the shader. This may cause visual artifacts for polar data.
- * Globe mode can display full polar data without issues.
- */
-function computeWgs84Bounds(
-  minLon: number,
-  maxLon: number,
-  minLat: number,
-  maxLat: number,
-  crossesAntimeridian: boolean = false
-): Wgs84Bounds {
-  return {
-    lon0: lonToMercatorNorm(minLon),
-    lat0: (minLat + 90) / 180,
-    lon1: lonToMercatorNorm(maxLon),
-    lat1: (maxLat + 90) / 180,
-    crossesAntimeridian,
-  }
-}
-
-/**
- * Normalize lon/lat positions to local [-1, 1] coordinates.
- * This matches the standard mercator path where createSubdividedQuad outputs [-1, 1].
- *
- * For antimeridian-crossing bounds (minLon > maxLon in degrees, e.g., 170° to -170°):
- * - Actual range is (360 - minLon + maxLon), e.g., (360 - 170 + (-170)) = 20°
- * - Longitudes < minLon get +360 to create a continuous range
- */
-function normalizeToLocalCoords(
-  positions: ArrayLike<number>,
-  minLon: number,
-  maxLon: number,
-  minLat: number,
-  maxLat: number,
-  crossesAntimeridian: boolean = false
-): Float32Array {
-  const numVerts = positions.length / 2
-  const normalized = new Float32Array(numVerts * 2)
-
-  // For antimeridian crossing: actual range wraps through 180°
-  // e.g., minLon=170, maxLon=-170 means range of 20° (not -340°)
-  const lonRange = crossesAntimeridian
-    ? 360 - minLon + maxLon || 1
-    : maxLon - minLon || 1
-  const latRange = maxLat - minLat || 1
-
-  for (let i = 0; i < numVerts; i++) {
-    let lon = positions[i * 2]
-    const lat = positions[i * 2 + 1]
-
-    // Normalize longitude to [-180, 180) range first
-    // This handles the case where proj4 outputs 180° which equals -180°
-    lon = normalizeLon180(lon)
-
-    // For antimeridian crossing, shift negative longitudes up by 360
-    // so they're in a continuous range with positive longitudes
-    if (crossesAntimeridian && lon < minLon) {
-      lon += 360
-    }
-
-    // Map [minLon, maxLon] → [-1, 1] and [minLat, maxLat] → [-1, 1]
-    normalized[i * 2] = ((lon - minLon) / lonRange) * 2 - 1
-    normalized[i * 2 + 1] = ((lat - minLat) / latRange) * 2 - 1
-  }
-
-  return normalized
 }
 
 // ============================================================================
@@ -617,24 +539,14 @@ export function createHybridMesh(
       continue
     }
 
-    const mx = lonToMercatorNorm(lon)
+    const mx = (lon + 180) / 360
     const my = latToMercatorNorm(lat)
     mercPositions[i * 2] = mx
     mercPositions[i * 2 + 1] = my
   }
 
-  // Encode absolute Mercator [0,1] into [-1,1] vertex space for the shader.
-  //
-  // With mercatorBounds = {x0:0, x1:1, y0:0, y1:1}, renderRegion computes:
-  //   sx = 0.5, shift_x = 0.5, sy = 0.5, shift_y = 0.5
-  //
-  // The VERTEX_TO_MERCATOR shader does:
-  //   merc.x = vertex.x * sx + shift_x  → vertex.x * 0.5 + 0.5
-  //   merc.y = -vertex.y * sy + shift_y  → -vertex.y * 0.5 + 0.5
-  //
-  // To recover merc.x = mx and merc.y = my:
-  //   vertex.x = mx * 2 - 1   (maps [0,1] → [-1,1])
-  //   vertex.y = -(my * 2 - 1) (accounts for shader's Y negation)
+  // Encode [0,1] Mercator as [-1,1] to match the shader's expected input range.
+  // Y is negated because the VERTEX_TO_MERCATOR shader negates it back.
   for (let i = 0; i < numSplitVerts; i++) {
     mercPositions[i * 2] = mercPositions[i * 2] * 2 - 1
     mercPositions[i * 2 + 1] = -(mercPositions[i * 2 + 1] * 2 - 1)
@@ -644,7 +556,6 @@ export function createHybridMesh(
     positions: mercPositions,
     texCoords: new Float32Array(splitResult.texCoords),
     indices: splitResult.indices,
-    wgs84Bounds: null,
     mercatorBounds: {
       x0: 0,
       x1: 1,

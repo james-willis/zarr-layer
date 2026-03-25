@@ -40,7 +40,6 @@ import {
   mercatorNormToLat,
   type MercatorBounds,
   type XYLimits,
-  type Wgs84Bounds,
 } from './map-utils'
 import { loadDimensionValues, normalizeSelector, getBands } from './zarr-utils'
 import {
@@ -112,8 +111,6 @@ interface RegionState {
   useIndexedMesh: boolean // Whether to use indexed triangles (adaptive mesh)
   // Mercator bounds for this region (for shader uniforms)
   mercatorBounds: MercatorBounds | null
-  // WGS84 bounds for two-stage reprojection (proj4 datasets)
-  wgs84Bounds: Wgs84Bounds | null
   // Data orientation: true = row 0 is south
   latIsAscending: boolean
   // Version tracking for selector changes
@@ -684,7 +681,6 @@ export class UntiledMode implements ZarrMode {
       vertexCount: 0,
       useIndexedMesh: false,
       mercatorBounds: null,
-      wgs84Bounds: null,
       latIsAscending: this.latIsAscending,
       selectorVersion: this.selectorVersion,
       bandData: new Map(),
@@ -1075,12 +1071,7 @@ export class UntiledMode implements ZarrMode {
       region.vertexArr = meshResult.positions
       region.pixCoordArr = meshResult.texCoords
       region.indexArr = meshResult.indices
-      region.wgs84Bounds = meshResult.wgs84Bounds
-      // If the mesh computed its own Mercator bounds (CPU-side Mercator conversion),
-      // use those instead of the initial mercatorBounds from boundsToMercatorNorm
-      if (meshResult.mercatorBounds) {
-        region.mercatorBounds = meshResult.mercatorBounds
-      }
+      region.mercatorBounds = meshResult.mercatorBounds
       region.useIndexedMesh = true
       region.vertexCount = region.indexArr!.length
     } else {
@@ -2050,18 +2041,11 @@ export class UntiledMode implements ZarrMode {
 
   render(renderer: ZarrRenderer, context: RenderContext): void {
     const useMapbox = !!context.mapbox
-    // Only use WGS84→Mercator vertex shader if regions still have wgs84Bounds.
-    // When createHybridMesh converts to Mercator on CPU, wgs84Bounds is null
-    // and we should use the standard Mercator vertex shader instead.
-    const hasWgs84Regions = this.getLoadedRegions().some((r) => !!r.wgs84Bounds)
-    const useWgs84 =
-      hasWgs84Regions && !!this.proj4def && !!this.cached4326Transformer
 
     const shaderProgram = renderer.getProgram(
       context.shaderData,
       context.customShaderConfig,
-      useMapbox,
-      useWgs84
+      useMapbox
     )
 
     renderer.gl.useProgram(shaderProgram.program)
@@ -2099,7 +2083,6 @@ export class UntiledMode implements ZarrMode {
         : region.vertexArr!.length / 2,
       indexBuffer: region.indexBuffer,
       useIndexedMesh: region.useIndexedMesh,
-      wgs84Bounds: region.wgs84Bounds ?? undefined,
       latIsAscending: region.latIsAscending,
       texture: region.texture!,
       bandData: region.bandData,
@@ -2201,7 +2184,6 @@ export class UntiledMode implements ZarrMode {
       indexBuffer: region.indexBuffer ?? undefined,
       vertexCount: region.vertexCount,
       useIndexedMesh: region.useIndexedMesh,
-      wgs84Bounds: region.wgs84Bounds ?? undefined,
       latIsAscending: region.latIsAscending,
     }))
   }

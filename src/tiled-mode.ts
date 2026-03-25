@@ -255,8 +255,7 @@ export class TiledMode implements ZarrMode {
     const shaderProgram = renderer.getProgram(
       context.shaderData,
       context.customShaderConfig,
-      useMapbox,
-      false // useWgs84 - fragment shader reprojection for EPSG:4326
+      useMapbox
     )
 
     renderer.gl.useProgram(shaderProgram.program)

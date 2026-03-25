@@ -68,8 +68,6 @@ export interface RegionRenderState {
   vertexCount?: number
   /** Whether to use indexed mesh rendering (gl.drawElements) */
   useIndexedMesh?: boolean
-  /** WGS84 bounds for two-stage reprojection */
-  wgs84Bounds?: import('./map-utils').Wgs84Bounds
 }
 
 export interface ZarrMode {

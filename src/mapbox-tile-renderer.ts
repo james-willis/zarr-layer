@@ -188,17 +188,6 @@ function renderRegionsToTile(
 
   const tileBounds = getMapboxTileBounds(tileId)
 
-  // Convert tile bounds to WGS84 for intersection with wgs84Bounds regions
-  // Tile bounds are in normalized Mercator [0,1], convert to normalized WGS84 [0,1]
-  const tileWgs84Bounds = {
-    lon0: tileBounds.x0, // lon is same in both spaces (just x)
-    lon1: tileBounds.x1,
-    // Mercator Y needs conversion: y0 is north (smaller lat), y1 is south (larger lat)
-    // In normalized WGS84: lat0 is south, lat1 is north
-    lat0: (mercatorNormToLat(tileBounds.y1) + 90) / 180, // south edge
-    lat1: (mercatorNormToLat(tileBounds.y0) + 90) / 180, // north edge
-  }
-
   const tileMatrix = createMapboxTileMatrix(
     tileBounds.x0,
     tileBounds.y0,
@@ -211,17 +200,12 @@ function renderRegionsToTile(
   // Determine if we're in globe mode (default true for backwards compatibility)
   const isGlobe = context.isGlobe ?? true
 
-  // Check if any region uses WGS84 (proj4 datasets or EPSG:4326)
-  const useWgs84 = regions.some((r) => !!r.wgs84Bounds)
-
   // Always use Mapbox globe shader for tile rendering - it handles both globe and mercator
-  // via the transition uniform. The shader converts WGS84 → Mercator, then optionally
-  // applies globe projection based on transition value.
+  // via the transition uniform.
   const shaderProgram = renderer.getProgram(
     context.shaderData,
     customShaderConfig,
-    true, // useMapbox - always true for Mapbox tile rendering
-    useWgs84
+    true // useMapbox - always true for Mapbox tile rendering
   )
   renderer.gl.useProgram(shaderProgram.program)
   renderer.applyCommonUniforms(
@@ -243,45 +227,8 @@ function renderRegionsToTile(
 
   let needsMoreData = false
   for (const region of regions) {
-    // For regions with wgs84Bounds, do intersection in WGS84 space
-    // This avoids the Mercator/WGS84 coordinate mismatch at low zoom
-    let intersects: boolean
-    if (region.wgs84Bounds) {
-      const w = region.wgs84Bounds
+    if (!boundsIntersect(region.mercatorBounds, tileBounds)) continue
 
-      // Check latitude intersection (always simple)
-      const latIntersects =
-        w.lat0 < tileWgs84Bounds.lat1 && w.lat1 > tileWgs84Bounds.lat0
-
-      // Check longitude intersection (handles antimeridian crossing)
-      let lonIntersects: boolean
-      if (w.crossesAntimeridian) {
-        // Region crosses antimeridian: covers [lon0, 1.0] ∪ [0.0, lon1]
-        // Tile intersects if it overlaps EITHER segment
-        // Special case: if lon0 >= 1.0 (at antimeridian), eastern segment is empty
-        const hasEasternSegment = w.lon0 < 1.0
-        const overlapsEast =
-          hasEasternSegment &&
-          tileWgs84Bounds.lon0 < 1.0 &&
-          tileWgs84Bounds.lon1 > w.lon0
-        const overlapsWest =
-          tileWgs84Bounds.lon0 < w.lon1 && tileWgs84Bounds.lon1 > 0.0
-        lonIntersects = overlapsEast || overlapsWest
-      } else {
-        // Standard case: lon0 < lon1
-        lonIntersects =
-          w.lon0 < tileWgs84Bounds.lon1 && w.lon1 > tileWgs84Bounds.lon0
-      }
-
-      intersects = latIntersects && lonIntersects
-    } else {
-      intersects = boundsIntersect(region.mercatorBounds, tileBounds)
-    }
-    if (!intersects) continue
-
-    // For proj4 datasets: use indexed mesh with wgs84Bounds
-    // For EPSG:4326: use subdivided quad (not indexed) with wgs84Bounds
-    // Both use the mapbox-globe-wgs84 shader to convert WGS84 → Mercator
     const useIndexedMesh = !!region.useIndexedMesh && !!region.indexBuffer
 
     const renderable: RenderableRegion = {
@@ -298,11 +245,8 @@ function renderRegionsToTile(
       bandTexturesConfigured: region.bandTexturesConfigured ?? new Set(),
       width: region.width,
       height: region.height,
-      // Include indexed mesh fields for proj4 datasets
       indexBuffer: useIndexedMesh ? region.indexBuffer : undefined,
       useIndexedMesh: useIndexedMesh,
-      // Include wgs84Bounds for both proj4 and EPSG:4326 datasets
-      wgs84Bounds: region.wgs84Bounds,
       latIsAscending: region.latIsAscending,
     }
 
@@ -405,8 +349,7 @@ function render4326TiledToTile(
   const shaderProgram = renderer.getProgram(
     context.shaderData,
     customShaderConfig,
-    true, // useMapbox
-    false // useWgs84 - fragment shader reprojection for EPSG:4326
+    true // useMapbox
   )
   renderer.gl.useProgram(shaderProgram.program)
 
