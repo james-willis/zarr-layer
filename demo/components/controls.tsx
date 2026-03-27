@@ -451,7 +451,7 @@ const Controls = () => {
                   </Box>
                 )}
               </Flex>
-              <Box>Click map to query</Box>
+              <Box sx={{ fontSize: 1 }}>Click map to query</Box>
             </Flex>
           </Box>
         </Column>
@@ -474,9 +474,7 @@ const Controls = () => {
                     cursor: 'pointer',
                     fontSize: 0,
                     color: 'secondary',
-                    '@media (hover: hover) and (pointer: fine)': {
-                      '&:hover': { color: 'primary' },
-                    },
+                    '&:hover': { color: 'primary' },
                   }}
                 >
                   ✕
@@ -484,13 +482,16 @@ const Controls = () => {
               )}
             </Flex>
             {viewportQueryDisabled ? (
-              <Box sx={{ color: 'secondary' }}> Zoom in to query</Box>
+              <Box sx={{ color: 'secondary', fontSize: 1 }}>
+                Zoom in to query
+              </Box>
             ) : (
               <Button
                 onClick={handleViewportQuery}
                 suffix={<RotatingArrow />}
                 size='xs'
                 title='Query viewport'
+                sx={{ fontSize: 1 }}
               >
                 Query viewport average
               </Button>
