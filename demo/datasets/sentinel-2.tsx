@@ -36,7 +36,7 @@ const sentinel2: Dataset<State> = {
   colormap: 'greys',
   zarrVersion: 3,
   latIsAscending: false,
-  info: 'Sentinel-2 L2A (UTM Zone 37N, multiscale)',
+  info: 'Sentinel-2 L2A (UTM Zone 37N)',
   sourceInfo:
     'Sentinel-2 Level-2A reflectance from ESA EOPF. 6-level pyramid (10m-720m), UTM Zone 37N.',
   bounds: [199980.0, 4590240.0, 309780.0, 4700040.0],

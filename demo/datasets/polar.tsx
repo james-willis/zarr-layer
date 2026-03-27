@@ -17,7 +17,7 @@ const polar = createSimpleDataset({
   clim: [0, 1.5],
   colormap: 'cool',
   zarrVersion: 2,
-  info: 'Antarctic Ice Velocity (EPSG:3031, single resolution)',
+  info: 'Antarctic Ice Velocity (EPSG:3031)',
   sourceInfo:
     'Ice velocity, 100m resolution. EPSG:3031 Antarctic Polar Stereographic.',
   proj4:

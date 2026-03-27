@@ -13,7 +13,7 @@ const icechunkPrecip: Dataset<Record<string, never>> = {
   clim: [0, 10],
   colormap: 'cool',
   zarrVersion: 3,
-  info: 'IMERG Precipitation (Virtualized NetCDF Icechunk)',
+  info: 'Virtualized NetCDF of IMERG Precipitation (EPSG:4326)',
   sourceInfo:
     'Virtualized NetCDF of NASA IMERG precipitation stored in Icechunk with native multiscales added.',
   get store() {

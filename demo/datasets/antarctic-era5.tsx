@@ -8,7 +8,7 @@ const antarcticEra5 = createSimpleDataset({
   clim: [0, 25],
   colormap: 'cool',
   zarrVersion: 3,
-  info: 'Antarctic ERA5 (EPSG:3031, single resolution)',
+  info: 'Antarctic ERA5 (EPSG:3031)',
   sourceInfo:
     'ERA5 Reanalysis wind speed. EPSG:3031 Antarctic Polar Stereographic',
   proj4:

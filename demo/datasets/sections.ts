@@ -15,11 +15,11 @@ export const SELECTOR_SECTIONS: SelectorSection[] = [
     label: 'Single Resolution',
     description: 'Single-resolution datasets. Reprojected if needed.',
     datasetIds: [
-      'hrrr_weather',
       'hurricane_florence',
+      'delta_fg_co2',
       'polar_antarctic',
       'antarctic_era5',
-      'delta_fg_co2',
+      'hrrr_weather',
     ],
   },
   {

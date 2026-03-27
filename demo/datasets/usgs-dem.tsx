@@ -69,7 +69,7 @@ const usgsdem: Dataset<DEMState> = {
     'USGS 10m DEM with derived hillshade, aspect, and slope. EPSG:4326, multiscale pyramid.',
   colormap: 'warm',
   zarrVersion: 3,
-  info: 'USGS 10m DEM (EPSG:4326, multiscale)',
+  info: 'USGS 10m DEM (EPSG:4326)',
   center: [-98, 39],
   zoom: 3,
   defaultState: {

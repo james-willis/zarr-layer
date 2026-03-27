@@ -87,7 +87,7 @@ const hrrr: Dataset<HRRRState> = {
   clim: [250, 310],
   colormap: 'fire',
   zarrVersion: 2,
-  info: 'HRRR Weather Model (Lambert Conformal, single resolution)',
+  info: 'HRRR Weather Model (Lambert Conformal Conic)',
   sourceInfo:
     'NOAA HRRR weather model via MesoWest (updated daily), 3km resolution. Lambert Conformal Conic projection.',
   fillValue: -9999,
