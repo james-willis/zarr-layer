@@ -22,9 +22,7 @@ const InfoButton = ({
       height: '16px',
       p: 0,
       flexShrink: 0,
-      '@media (hover: hover) and (pointer: fine)': {
-        '&:hover > #info': { stroke: 'primary' },
-      },
+      '&:hover > #info': { stroke: 'primary' },
     }}
   >
     <Info
@@ -66,14 +64,14 @@ const DatasetBrowser = () => {
         const infoExpanded = expandedInfos.has(section.label)
 
         return (
-          <Box key={section.label} sx={{ mb: 2 }}>
+          <Box key={section.label} sx={{ mb: 3 }}>
             <Flex sx={{ alignItems: 'center', gap: 2 }}>
               <Box
                 sx={{
                   fontFamily: 'mono',
                   letterSpacing: 'smallcaps',
                   textTransform: 'uppercase',
-                  fontSize: [2, 2, 2, 2],
+                  fontSize: [3],
                 }}
               >
                 {section.label}
@@ -86,7 +84,7 @@ const DatasetBrowser = () => {
             {infoExpanded && (
               <Box
                 sx={{
-                  fontSize: 0,
+                  fontSize: 1,
                   color: 'secondary',
                   mt: 1,
                   mb: 2,
@@ -109,12 +107,10 @@ const DatasetBrowser = () => {
                     sx={{
                       bg: isActive ? 'hinted' : 'transparent',
                       px: [4, 5, 5, 6],
-                      py: isActive ? 2 : '2px',
+                      py: isActive ? 2 : 1,
                       transition: 'background-color 0.15s',
-                      '@media (hover: hover) and (pointer: fine)': {
-                        '&:hover': {
-                          bg: 'hinted',
-                        },
+                      '&:hover': {
+                        bg: 'hinted',
                       },
                     }}
                   >
@@ -122,11 +118,9 @@ const DatasetBrowser = () => {
                       onClick={() => setDatasetId(id)}
                       sx={{
                         color: isActive ? 'primary' : 'secondary',
-                        fontSize: [1, 1, 1, 1],
+                        fontSize: [2],
                         cursor: 'pointer',
-                        '@media (hover: hover) and (pointer: fine)': {
-                          '&:hover': { color: 'primary' },
-                        },
+                        '&:hover': { color: 'primary' },
                       }}
                     >
                       <Box>
@@ -135,8 +129,8 @@ const DatasetBrowser = () => {
                           <Box
                             sx={{
                               color: 'secondary',
-                              fontSize: 0,
-                              mt: '2px',
+                              fontSize: 1,
+                              px: 1,
                             }}
                           >
                             {config.sourceInfo}
@@ -145,12 +139,10 @@ const DatasetBrowser = () => {
                       </Box>
                     </Box>
                     {isActive && (
-                      <Box sx={{ ml: 1 }}>
-                        <ActiveDatasetControls
-                          state={datasetState}
-                          setState={setActiveDatasetState}
-                        />
-                      </Box>
+                      <ActiveDatasetControls
+                        state={datasetState}
+                        setState={setActiveDatasetState}
+                      />
                     )}
                   </Box>
                 )
