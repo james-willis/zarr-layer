@@ -107,7 +107,7 @@ const DatasetBrowser = () => {
                     sx={{
                       bg: isActive ? 'hinted' : 'transparent',
                       px: [4, 5, 5, 6],
-                      py: isActive ? 2 : 1,
+                      py: '6px',
                       transition: 'background-color 0.15s',
                       '&:hover': {
                         bg: 'hinted',
@@ -118,7 +118,8 @@ const DatasetBrowser = () => {
                       onClick={() => setDatasetId(id)}
                       sx={{
                         color: isActive ? 'primary' : 'secondary',
-                        fontSize: [2],
+                        fontSize: 3,
+                        fontFamily: 'faux',
                         cursor: 'pointer',
                         '&:hover': { color: 'primary' },
                       }}
