@@ -54,6 +54,7 @@ const ZoomButton = ({
       width: '24px',
       height: '24px',
       p: 0,
+      borderRadius: 0,
       bg: 'hinted',
       border: 'none',
       borderBottom: border ? '1px solid' : 'none',
