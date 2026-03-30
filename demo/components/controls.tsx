@@ -555,7 +555,9 @@ const Controls = () => {
               onKeyDown={(e: React.KeyboardEvent) => {
                 if (e.key === 'Enter') commitClimInput(0)
               }}
-              sx={{ width: '60px', flexShrink: 0 }}
+              sx={{
+                width: `${Math.max(2, climInputs[0].length + 2)}ch`,
+              }}
             />
             <Box sx={{ flex: 1 }}>
               <Colorbar width='100%' colormap={themedColormap} horizontal />
@@ -571,7 +573,9 @@ const Controls = () => {
               onKeyDown={(e: React.KeyboardEvent) => {
                 if (e.key === 'Enter') commitClimInput(1)
               }}
-              sx={{ width: '60px', flexShrink: 0 }}
+              sx={{
+                width: `${Math.max(2, climInputs[1].length + 2)}ch`,
+              }}
             />
           </Flex>
         </Column>
