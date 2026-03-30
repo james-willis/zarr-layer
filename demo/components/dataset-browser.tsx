@@ -104,41 +104,36 @@ const DatasetBrowser = () => {
                 return (
                   <Box
                     key={id}
+                    onClick={() => setDatasetId(id)}
                     sx={{
                       bg: isActive ? 'hinted' : 'transparent',
                       px: [4, 5, 5, 6],
                       py: '6px',
+                      cursor: 'pointer',
+                      color: isActive ? 'primary' : 'secondary',
+                      fontSize: 3,
+                      fontFamily: 'faux',
                       transition: 'background-color 0.15s',
                       '&:hover': {
                         bg: 'hinted',
+                        color: 'primary',
                       },
                     }}
                   >
-                    <Box
-                      onClick={() => setDatasetId(id)}
-                      sx={{
-                        color: isActive ? 'primary' : 'secondary',
-                        fontSize: 3,
-                        fontFamily: 'faux',
-                        cursor: 'pointer',
-                        '&:hover': { color: 'primary' },
-                      }}
-                    >
-                      <Box>
-                        {config.info}
-                        {isActive && config.sourceInfo && (
-                          <Box
-                            sx={{
-                              color: 'secondary',
-                              fontSize: 2,
-                              fontFamily: 'body',
-                              my: 2,
-                            }}
-                          >
-                            {config.sourceInfo}
-                          </Box>
-                        )}
-                      </Box>
+                    <Box>
+                      {config.info}
+                      {isActive && config.sourceInfo && (
+                        <Box
+                          sx={{
+                            color: 'secondary',
+                            fontSize: 2,
+                            fontFamily: 'body',
+                            my: 2,
+                          }}
+                        >
+                          {config.sourceInfo}
+                        </Box>
+                      )}
                     </Box>
                     {isActive && (
                       <ActiveDatasetControls
