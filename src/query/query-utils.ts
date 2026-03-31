@@ -327,9 +327,9 @@ export function computePixelBoundsFromGeometry(
     // Clamp to valid range
     // Use floor + 1 to ensure integer maxX/maxY values include that pixel
     const xStart = Math.max(0, Math.floor(minX))
-    const xEnd = Math.min(width, Math.floor(maxX) + 1)
+    const xEnd = Math.min(width, Math.max(Math.floor(maxX) + 1, xStart + 1))
     const yStart = Math.max(0, Math.floor(minY))
-    const yEnd = Math.min(height, Math.floor(maxY) + 1)
+    const yEnd = Math.min(height, Math.max(Math.floor(maxY) + 1, yStart + 1))
 
     if (xEnd <= xStart || yEnd <= yStart) return null
 
@@ -374,20 +374,20 @@ export function computePixelBoundsFromGeometry(
     const yFracMin = Math.min(yStartFracRaw, yEndFracRaw)
     const yFracMax = Math.max(yStartFracRaw, yEndFracRaw)
 
-    if (overlapX1 <= overlapX0 || yFracMax <= yFracMin) return null
+    if (overlapX1 < overlapX0 || yFracMax < yFracMin) return null
 
     const minX = ((overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0)) * width
     const maxX = ((overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0)) * width
 
     xStart = Math.max(0, Math.floor(minX))
-    xEnd = Math.min(width, Math.ceil(maxX))
+    xEnd = Math.min(width, Math.max(Math.ceil(maxX), xStart + 1))
     yStart = Math.max(0, Math.floor(yFracMin * height))
-    yEnd = Math.min(height, Math.ceil(yFracMax * height))
+    yEnd = Math.min(height, Math.max(Math.ceil(yFracMax * height), yStart + 1))
   } else {
     const overlapY0 = Math.max(bounds.y0, Math.min(polyY0, polyY1))
     const overlapY1 = Math.min(bounds.y1, Math.max(polyY0, polyY1))
 
-    if (overlapX1 <= overlapX0 || overlapY1 <= overlapY0) return null
+    if (overlapX1 < overlapX0 || overlapY1 < overlapY0) return null
 
     const minX = ((overlapX0 - bounds.x0) / (bounds.x1 - bounds.x0)) * width
     const maxX = ((overlapX1 - bounds.x0) / (bounds.x1 - bounds.x0)) * width
@@ -395,14 +395,283 @@ export function computePixelBoundsFromGeometry(
     const maxY = ((overlapY1 - bounds.y0) / (bounds.y1 - bounds.y0)) * height
 
     xStart = Math.max(0, Math.floor(minX))
-    xEnd = Math.min(width, Math.ceil(maxX))
+    xEnd = Math.min(width, Math.max(Math.ceil(maxX), xStart + 1))
     yStart = Math.max(0, Math.floor(minY))
-    yEnd = Math.min(height, Math.ceil(maxY))
+    yEnd = Math.min(height, Math.max(Math.ceil(maxY), yStart + 1))
   }
 
   if (xEnd <= xStart || yEnd <= yStart) return null
 
   return { minX: xStart, maxX: xEnd, minY: yStart, maxY: yEnd }
+}
+
+/** Number of intermediate points to insert per polygon edge for densification */
+const DENSIFY_SEGMENTS = 10
+
+/**
+ * Densify a ring by inserting intermediate points along each edge.
+ * Interpolates in the source coordinate system (lon/lat) and transforms each point.
+ */
+function densifyAndTransformRing(
+  ring: number[][],
+  transformVertex: (lon: number, lat: number) => [number, number]
+): number[][] {
+  const result: number[][] = []
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [lon0, lat0] = ring[i]
+    const [lon1, lat1] = ring[i + 1]
+    // Add start point
+    result.push(transformVertex(lon0, lat0) as number[])
+    // Add intermediate points
+    for (let s = 1; s < DENSIFY_SEGMENTS; s++) {
+      const t = s / DENSIFY_SEGMENTS
+      const lon = lon0 + t * (lon1 - lon0)
+      const lat = lat0 + t * (lat1 - lat0)
+      const pt = transformVertex(lon, lat)
+      if (isFinite(pt[0]) && isFinite(pt[1])) {
+        result.push(pt as number[])
+      }
+    }
+  }
+  // Close ring
+  if (result.length > 0) {
+    result.push([result[0][0], result[0][1]])
+  }
+  return result
+}
+
+/**
+ * Transform a query geometry from WGS84 lon/lat into pixel-space coordinates.
+ * For proj4 projections: forward-transforms vertices, then converts source CRS → pixel.
+ * For standard CRS: uses mercator/equirect math → pixel.
+ * Densifies edges to preserve curvature under nonlinear projections.
+ *
+ * Returns a geometry with the same GeoJSON ring structure but in pixel coordinates,
+ * suitable for use with pointInGeoJSON / pointInPolygon.
+ */
+export function transformGeometryToPixelSpace(
+  geometry: QueryGeometry,
+  bounds: MercatorBounds,
+  width: number,
+  height: number,
+  crs: CRS,
+  latIsAscending?: boolean,
+  proj4def?: string | null,
+  sourceBounds?: Bounds | null,
+  cachedTransformer?: CachedTransformer
+): QueryGeometry | null {
+  if (geometry.type === 'Point') {
+    const [lon, lat] = geometry.coordinates
+    const px = lonLatToPixel(
+      lon,
+      lat,
+      bounds,
+      width,
+      height,
+      crs,
+      latIsAscending,
+      proj4def,
+      sourceBounds,
+      cachedTransformer
+    )
+    if (!px) return null
+    return { type: 'Point', coordinates: [px[0], px[1]] }
+  }
+
+  // Build the vertex transform function
+  const transformVertex = (lon: number, lat: number): [number, number] => {
+    const px = lonLatToPixel(
+      lon,
+      lat,
+      bounds,
+      width,
+      height,
+      crs,
+      latIsAscending,
+      proj4def,
+      sourceBounds,
+      cachedTransformer
+    )
+    return px ?? [NaN, NaN]
+  }
+
+  // Densify for any nonlinear CRS. EPSG:3857 uses latToMercatorNorm (nonlinear in Y).
+  // EPSG:4326 with lat bounds is linear and doesn't need densification.
+  const isLinear4326 =
+    crs === 'EPSG:4326' &&
+    bounds.latMin !== undefined &&
+    bounds.latMax !== undefined
+  const needsDensification =
+    !!proj4def || (!isLinear4326 && crs !== 'EPSG:4326')
+
+  const transformRing = (ring: number[][]): number[][] => {
+    if (needsDensification) {
+      return densifyAndTransformRing(ring, transformVertex)
+    }
+    // For linear projections, just transform vertices directly
+    const result: number[][] = []
+    for (const [lon, lat] of ring) {
+      const pt = transformVertex(lon, lat)
+      if (isFinite(pt[0]) && isFinite(pt[1])) {
+        result.push(pt as number[])
+      }
+    }
+    // Ensure ring is closed
+    if (
+      result.length > 1 &&
+      (result[0][0] !== result[result.length - 1][0] ||
+        result[0][1] !== result[result.length - 1][1])
+    ) {
+      result.push([result[0][0], result[0][1]])
+    }
+    return result
+  }
+
+  if (geometry.type === 'Polygon') {
+    const coords = geometry.coordinates.map(transformRing)
+    if (coords[0].length < 4) return null // Need at least a triangle
+    return { type: 'Polygon', coordinates: coords }
+  }
+
+  // MultiPolygon
+  const coords = geometry.coordinates.map((polygon) =>
+    polygon.map(transformRing)
+  )
+  // Filter out degenerate polygons
+  const valid = coords.filter((poly) => poly[0].length >= 4)
+  if (valid.length === 0) return null
+  return { type: 'MultiPolygon', coordinates: valid }
+}
+
+/**
+ * Convert a single lon/lat point to pixel coordinates.
+ * Handles proj4, EPSG:4326, and EPSG:3857.
+ */
+function lonLatToPixel(
+  lon: number,
+  lat: number,
+  bounds: MercatorBounds,
+  width: number,
+  height: number,
+  crs: CRS,
+  latIsAscending?: boolean,
+  proj4def?: string | null,
+  sourceBounds?: Bounds | null,
+  cachedTransformer?: CachedTransformer
+): [number, number] | null {
+  if (proj4def && sourceBounds) {
+    const transformer =
+      cachedTransformer ?? createWGS84ToSourceTransformer(proj4def)
+    const [srcX, srcY] = transformer.forward(lon, lat)
+    if (!isFinite(srcX) || !isFinite(srcY)) return null
+    return sourceCRSToPixel(
+      srcX,
+      srcY,
+      sourceBounds,
+      width,
+      height,
+      latIsAscending
+    )
+  }
+
+  // Standard CRS: convert to mercator normalized, then to pixel.
+  // No bounds clamping — polygon vertices can legitimately lie far outside
+  // the raster extent (e.g. when the polygon fully contains a small raster).
+  const normX = lonToMercatorNorm(lon)
+  const xFrac = (normX - bounds.x0) / (bounds.x1 - bounds.x0)
+
+  let yFrac: number
+  if (
+    crs === 'EPSG:4326' &&
+    bounds.latMin !== undefined &&
+    bounds.latMax !== undefined
+  ) {
+    const latRange = bounds.latMax - bounds.latMin
+    if (latRange === 0) return null
+    yFrac = latIsAscending
+      ? (lat - bounds.latMin) / latRange
+      : (bounds.latMax - lat) / latRange
+  } else {
+    const normY = latToMercatorNorm(lat)
+    yFrac = (normY - bounds.y0) / (bounds.y1 - bounds.y0)
+  }
+
+  return [xFrac * width, yFrac * height]
+}
+
+/**
+ * Scanline fill: precompute sorted X-intersections for each row in the pixel-space polygon.
+ * Returns a Map from integer Y to sorted array of X-intersection values.
+ * For each row, pixels between pairs of intersections (0-1, 2-3, ...) are inside.
+ *
+ * This replaces per-pixel pointInPolygon, changing complexity from O(W*H*V) to O(H*E + H*E*logE).
+ */
+export function buildScanlineTable(
+  geometry: QueryGeometry,
+  yStart: number,
+  yEnd: number
+): Map<number, number[]> {
+  const table = new Map<number, number[]>()
+
+  // Collect all edges from the geometry
+  const processRing = (ring: number[][]) => {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const x0 = ring[i][0]
+      const y0 = ring[i][1]
+      const x1 = ring[i + 1][0]
+      const y1 = ring[i + 1][1]
+
+      // Skip horizontal edges
+      if (y0 === y1) continue
+
+      const edgeYMin = Math.min(y0, y1)
+      const edgeYMax = Math.max(y0, y1)
+
+      // Clamp to scan range. Use pixel edges (row, row+1) not centers (row+0.5)
+      // so that any pixel whose rect overlaps the polygon is included.
+      const scanYMin = Math.max(yStart, Math.ceil(edgeYMin) - 1)
+      const scanYMax = Math.min(yEnd - 1, Math.floor(edgeYMax))
+
+      const slope = (x1 - x0) / (y1 - y0)
+
+      for (let row = scanYMin; row <= scanYMax; row++) {
+        // Intersect at the pixel edge closest to the polygon interior.
+        // For a row spanning [row, row+1], clamp scanY to the edge's Y range.
+        const scanY = Math.max(
+          edgeYMin + 1e-10,
+          Math.min(edgeYMax - 1e-10, row + 0.5)
+        )
+        if (scanY <= edgeYMin || scanY >= edgeYMax) continue
+
+        const xIntersect = x0 + (scanY - y0) * slope
+        let arr = table.get(row)
+        if (!arr) {
+          arr = []
+          table.set(row, arr)
+        }
+        arr.push(xIntersect)
+      }
+    }
+  }
+
+  if (geometry.type === 'Polygon') {
+    for (const ring of geometry.coordinates) {
+      processRing(ring)
+    }
+  } else if (geometry.type === 'MultiPolygon') {
+    for (const polygon of geometry.coordinates) {
+      for (const ring of polygon) {
+        processRing(ring)
+      }
+    }
+  }
+
+  // Sort intersections for each row
+  for (const [, arr] of table) {
+    arr.sort((a, b) => a - b)
+  }
+
+  return table
 }
 
 /**
@@ -473,6 +742,30 @@ export function pointInGeoJSON(
 }
 
 /**
+ * Test if two line segments intersect using cross-product method.
+ * Avoids allocations by inlining the math.
+ */
+function segmentsIntersect(
+  a1: [number, number],
+  a2: [number, number],
+  b1: [number, number],
+  b2: [number, number]
+): boolean {
+  const d1x = a2[0] - a1[0]
+  const d1y = a2[1] - a1[1]
+  const d2x = b2[0] - b1[0]
+  const d2y = b2[1] - b1[1]
+  const denom = d1x * d2y - d1y * d2x
+  if (denom === 0) return false
+
+  const dx = b1[0] - a1[0]
+  const dy = b1[1] - a1[1]
+  const s = (dx * d2y - dy * d2x) / denom
+  const t = (dx * d1y - dy * d1x) / denom
+  return s >= 0 && s <= 1 && t >= 0 && t <= 1
+}
+
+/**
  * Lightweight polygon-rectangle intersection test.
  * Returns true if any rectangle corner is inside geometry,
  * any geometry vertex is inside rectangle, or if any edges intersect.
@@ -481,13 +774,11 @@ function rectIntersectsGeometry(
   rect: [number, number][],
   geometry: QueryGeometry
 ): boolean {
-  const rectMinX = Math.min(...rect.map((p) => p[0]))
-  const rectMaxX = Math.max(...rect.map((p) => p[0]))
-  const rectMinY = Math.min(...rect.map((p) => p[1]))
-  const rectMaxY = Math.max(...rect.map((p) => p[1]))
-
-  const pointInRect = (p: [number, number]) =>
-    p[0] >= rectMinX && p[0] <= rectMaxX && p[1] >= rectMinY && p[1] <= rectMaxY
+  // Inline min/max to avoid temporary arrays from Math.min(...rect.map(...))
+  const rectMinX = Math.min(rect[0][0], rect[1][0], rect[2][0], rect[3][0])
+  const rectMaxX = Math.max(rect[0][0], rect[1][0], rect[2][0], rect[3][0])
+  const rectMinY = Math.min(rect[0][1], rect[1][1], rect[2][1], rect[3][1])
+  const rectMaxY = Math.max(rect[0][1], rect[1][1], rect[2][1], rect[3][1])
 
   // Any rect corner inside geometry (supports point or polygon)
   for (const corner of rect) {
@@ -495,22 +786,29 @@ function rectIntersectsGeometry(
   }
 
   // Point geometry inside rectangle
-  if (
-    geometry.type === 'Point' &&
-    pointInRect([geometry.coordinates[0], geometry.coordinates[1]])
-  ) {
-    return true
+  if (geometry.type === 'Point') {
+    const gx = geometry.coordinates[0]
+    const gy = geometry.coordinates[1]
+    if (gx >= rectMinX && gx <= rectMaxX && gy >= rectMinY && gy <= rectMaxY) {
+      return true
+    }
+    return false
   }
 
   // Any polygon vertex inside rect
-  if (geometry.type !== 'Point') {
-    const rings =
-      geometry.type === 'Polygon'
-        ? geometry.coordinates
-        : geometry.coordinates.flatMap((poly) => poly)
-    for (const ring of rings) {
-      for (const [lon, lat] of ring) {
-        if (pointInRect([lon, lat])) return true
+  const rings =
+    geometry.type === 'Polygon'
+      ? geometry.coordinates
+      : geometry.coordinates.flatMap((poly) => poly)
+  for (const ring of rings) {
+    for (const coord of ring) {
+      if (
+        coord[0] >= rectMinX &&
+        coord[0] <= rectMaxX &&
+        coord[1] >= rectMinY &&
+        coord[1] <= rectMaxY
+      ) {
+        return true
       }
     }
   }
@@ -523,45 +821,20 @@ function rectIntersectsGeometry(
     [rect[3], rect[0]],
   ]
 
-  const edgesFromRing = (ring: number[][]) =>
-    ring
-      .slice(0, -1)
-      .map(
-        (_, i) => [ring[i], ring[i + 1]] as [[number, number], [number, number]]
-      )
-
-  const segments =
+  // Build edge segments without intermediate array allocations
+  const outerRings: number[][][] =
     geometry.type === 'Polygon'
-      ? edgesFromRing(geometry.coordinates[0])
-      : geometry.type === 'MultiPolygon'
-      ? geometry.coordinates.flatMap((poly) => edgesFromRing(poly[0]))
-      : []
-
-  const intersects = (
-    a1: [number, number],
-    a2: [number, number],
-    b1: [number, number],
-    b2: [number, number]
-  ): boolean => {
-    const cross = (v1: [number, number], v2: [number, number]) =>
-      v1[0] * v2[1] - v1[1] * v2[0]
-    const sub = (p1: [number, number], p2: [number, number]) =>
-      [p1[0] - p2[0], p1[1] - p2[1]] as [number, number]
-
-    const d1 = sub(a2, a1)
-    const d2 = sub(b2, b1)
-    const denom = cross(d1, d2)
-    if (denom === 0) return false
-
-    const s = cross(sub(b1, a1), d2) / denom
-    const t = cross(sub(b1, a1), d1) / denom
-    return s >= 0 && s <= 1 && t >= 0 && t <= 1
-  }
+      ? [geometry.coordinates[0]]
+      : geometry.coordinates.map((poly) => poly[0])
 
   for (const edge of rectEdges) {
-    for (const seg of segments) {
-      if (intersects(edge[0], edge[1], seg[0], seg[1])) {
-        return true
+    for (const ring of outerRings) {
+      for (let i = 0; i < ring.length - 1; i++) {
+        const b1 = ring[i] as [number, number]
+        const b2 = ring[i + 1] as [number, number]
+        if (segmentsIntersect(edge[0], edge[1], b1, b2)) {
+          return true
+        }
       }
     }
   }
@@ -601,48 +874,6 @@ function pixelRectLonLat(
   return corners
 }
 
-/**
- * Rectangle (pixel) corners in lon/lat for single-image mode.
- * Uses pixelToLatLon for consistent handling of all CRS types including proj4 reprojection.
- */
-function pixelRectLonLatSingle(
-  bounds: MercatorBounds,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-  crs: CRS,
-  latIsAscending?: boolean,
-  proj4def?: string | null,
-  sourceBounds?: Bounds | null,
-  cachedTransformer?: CachedTransformer
-): [number, number][] {
-  const offsets = [
-    [0, 0],
-    [1, 0],
-    [1, 1],
-    [0, 1],
-  ]
-  const corners: [number, number][] = []
-  for (const [dx, dy] of offsets) {
-    const { lon, lat } = pixelToLatLon(
-      x + dx,
-      y + dy,
-      bounds,
-      width,
-      height,
-      crs,
-      latIsAscending,
-      proj4def,
-      sourceBounds,
-      cachedTransformer,
-      false // Use pixel corners, not centers
-    )
-    corners.push([lon, lat])
-  }
-  return corners
-}
-
 export function pixelIntersectsGeometryTiled(
   tile: TileTuple,
   pixelX: number,
@@ -653,34 +884,6 @@ export function pixelIntersectsGeometryTiled(
   geometry: QueryGeometry
 ): boolean {
   const rect = pixelRectLonLat(tile, pixelX, pixelY, tileSize, crs, xyLimits)
-  return rectIntersectsGeometry(rect, geometry)
-}
-
-export function pixelIntersectsGeometrySingle(
-  bounds: MercatorBounds,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-  crs: CRS,
-  geometry: QueryGeometry,
-  latIsAscending?: boolean,
-  proj4def?: string | null,
-  sourceBounds?: Bounds | null,
-  cachedTransformer?: CachedTransformer
-): boolean {
-  const rect = pixelRectLonLatSingle(
-    bounds,
-    width,
-    height,
-    x,
-    y,
-    crs,
-    latIsAscending,
-    proj4def,
-    sourceBounds,
-    cachedTransformer
-  )
   return rectIntersectsGeometry(rect, geometry)
 }
 
