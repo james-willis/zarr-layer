@@ -1,7 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Filter,
-  Select,
   Slider,
   Row,
   Column,
@@ -9,18 +8,15 @@ import {
   Badge,
   Button,
   Input,
-  // @ts-expect-error - carbonplan components types not available
+  Select,
 } from '@carbonplan/components'
-// @ts-expect-error - carbonplan colormaps types not available
 import { useThemedColormap } from '@carbonplan/colormaps'
-// @ts-expect-error - carbonplan icons types not available
 import { Info, RotatingArrow } from '@carbonplan/icons'
-import { Box, Divider, Flex, IconButton } from 'theme-ui'
-import { DATASET_MAP } from '../datasets'
+import { Box, Flex, IconButton } from 'theme-ui'
+import { SidebarDivider } from '@carbonplan/layouts'
 import { useAppStore } from '../lib/store'
-import type { ControlsProps } from '../datasets/types'
-import { SELECTOR_SECTIONS } from '../datasets/sections'
 import { subheadingSx } from './shared-controls'
+import DatasetBrowser from './dataset-browser'
 import type {
   QueryGeometry,
   QueryResult,
@@ -60,7 +56,7 @@ const colormaps = [
   'sinebow',
 ]
 
-const VIEWPORT_QUERY_MIN_ZOOM = 4
+const VIEWPORT_QUERY_MIN_ZOOM = 6
 
 const headingSx = {
   fontFamily: 'heading',
@@ -244,20 +240,18 @@ const Controls = () => {
   const fillValue =
     zarrLayer?.fillValue ?? datasetModule.fillValue ?? Number.NaN
   const [zoomLevel, setZoomLevel] = useState<number | null>(() =>
-    typeof (mapInstance as any)?.getZoom === 'function'
-      ? (mapInstance as any).getZoom()
-      : null
+    mapInstance ? mapInstance.getZoom() : null
   )
 
   useEffect(() => {
-    if (!mapInstance || typeof (mapInstance as any)?.getZoom !== 'function') {
+    if (!mapInstance) {
       setZoomLevel(null)
       return
     }
 
     const updateZoom = () => {
       try {
-        setZoomLevel((mapInstance as any).getZoom())
+        setZoomLevel(mapInstance.getZoom())
       } catch (error) {
         console.error('Failed to read zoom', error)
       }
@@ -279,41 +273,40 @@ const Controls = () => {
     zoomLevel === null ||
     zoomLevel <= VIEWPORT_QUERY_MIN_ZOOM
 
-  const setDatasetId = useAppStore((state) => state.setDatasetId)
   const setOpacity = useAppStore((state) => state.setOpacity)
   const setClim = useAppStore((state) => state.setClim)
   const setColormap = useAppStore((state) => state.setColormap)
   const setGlobeProjection = useAppStore((state) => state.setGlobeProjection)
   const setTerrainEnabled = useAppStore((state) => state.setTerrainEnabled)
   const setMapProvider = useAppStore((state) => state.setMapProvider)
-  const setActiveDatasetState = useAppStore(
-    (state) => state.setActiveDatasetState
-  )
   const setRegionResult = useAppStore((state) => state.setRegionResult)
   const setPointResult = useAppStore((state) => state.setPointResult)
   const themedColormap = useThemedColormap(colormap)
+  const [queryInFlight, setQueryInFlight] = useState(false)
+  const queryGenRef = useRef(0)
 
   const layerConfig = useMemo(
-    () => datasetModule.buildLayerProps(datasetState as any),
+    () => datasetModule.buildLayerProps(datasetState),
     [datasetModule, datasetState]
   )
 
   const isCarbonplan4d = datasetModule.id === 'carbonplan_4d'
-  const currentBand = (datasetState as any)?.band
-  const monthStart = (datasetState as any)?.monthStart ?? null
-  const monthEnd = (datasetState as any)?.monthEnd ?? null
+  const currentBand = datasetState['band']
+  const monthStart = Number(datasetState['monthStart']) || null
+  const monthEnd = Number(datasetState['monthEnd']) || null
   const isRangeBand =
     isCarbonplan4d &&
     (currentBand === 'tavg_range' || currentBand === 'prec_range')
 
   useEffect(() => {
-    // Clear query results when switching dataset or band to avoid stale display
+    // Clear query results when switching dataset or selector to avoid stale display
+    queryGenRef.current++
     setPointResult(null)
     setRegionResult(null)
-  }, [datasetId, currentBand, setPointResult, setRegionResult])
+  }, [datasetId, datasetState, setPointResult, setRegionResult])
 
   const currentVariable = useMemo(() => {
-    const layerConfig = datasetModule.buildLayerProps(datasetState as any)
+    const layerConfig = datasetModule.buildLayerProps(datasetState)
     return layerConfig.variable ?? datasetModule.variable
   }, [datasetModule, datasetState])
 
@@ -385,17 +378,11 @@ const Controls = () => {
     setClim([lo, hi])
   }
 
-  const handleDatasetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setDatasetId(e.target.value)
-  }
-
-  const ActiveDatasetControls = datasetModule.Controls as React.FC<
-    ControlsProps<any>
-  >
-
   const handleViewportQuery = async () => {
-    if (viewportQueryDisabled) return
+    if (viewportQueryDisabled || queryInFlight) return
     if (!mapInstance || !zarrLayer || !mapInstance.getBounds) return
+    const gen = queryGenRef.current
+    setQueryInFlight(true)
     try {
       const bounds = mapInstance.getBounds()
       if (!bounds) {
@@ -420,15 +407,14 @@ const Controls = () => {
         )
       }
 
-      const result = (await zarrLayer.queryData(
-        geometry,
-        querySelector
-      )) as QueryResult
-      console.log('Query result:', result)
+      const result = await zarrLayer.queryData(geometry, querySelector)
+      if (gen !== queryGenRef.current) return
       setRegionResult(result)
     } catch (error) {
       console.error('Viewport query failed', error)
-      setRegionResult(null)
+      if (gen === queryGenRef.current) setRegionResult(null)
+    } finally {
+      setQueryInFlight(false)
     }
   }
 
@@ -436,36 +422,9 @@ const Controls = () => {
     <Box>
       <Box sx={headingSx}>Dataset</Box>
 
-      <Box sx={{ width: '100%', my: 2 }}>
-        <Select
-          value={datasetId}
-          onChange={handleDatasetChange}
-          size='xs'
-          sxSelect={{ width: '100%' }}
-        >
-          {SELECTOR_SECTIONS.map((section) => (
-            <optgroup key={section.label} label={section.label}>
-              {section.datasetIds.map((id) => {
-                const config = DATASET_MAP[id]
-                if (!config) return null
-                return (
-                  <option key={id} value={id}>
-                    {config.info}
-                  </option>
-                )
-              })}
-            </optgroup>
-          ))}
-        </Select>
-        <Box sx={{ color: 'secondary', mt: 1 }}>{datasetModule.sourceInfo}</Box>
-      </Box>
+      <DatasetBrowser />
 
-      <ActiveDatasetControls
-        state={datasetState as any}
-        setState={setActiveDatasetState as any}
-      />
-
-      <Divider sx={{ mt: 4, mb: 3 }} />
+      <SidebarDivider sx={{ my: 3 }} />
 
       <Row columns={[4, 4, 4, 4]} sx={{ alignItems: 'baseline' }}>
         <Column start={1} width={4}>
@@ -476,13 +435,31 @@ const Controls = () => {
         </Column>
         <Column start={2} width={3}>
           <Box sx={{ color: 'secondary' }}>
-            <Flex sx={{ justifyContent: 'space-between' }}>
-              <Badge>
-                {pointDisplayValue !== null
-                  ? pointDisplayValue.toFixed(2)
-                  : '---'}
-              </Badge>
-              <Box>Click map to query</Box>
+            <Flex
+              sx={{ justifyContent: 'space-between', alignItems: 'center' }}
+            >
+              <Flex sx={{ alignItems: 'center', gap: 2 }}>
+                <Badge>
+                  {pointDisplayValue !== null
+                    ? pointDisplayValue.toFixed(2)
+                    : '---'}
+                </Badge>
+                {pointDisplayValue !== null && (
+                  <Box
+                    as='span'
+                    onClick={() => setPointResult(null)}
+                    sx={{
+                      cursor: 'pointer',
+                      fontSize: 0,
+                      color: 'secondary',
+                      '&:hover': { color: 'primary' },
+                    }}
+                  >
+                    ✕
+                  </Box>
+                )}
+              </Flex>
+              <Box sx={{ fontSize: 2 }}>Click map to query</Box>
             </Flex>
           </Box>
         </Column>
@@ -492,29 +469,47 @@ const Controls = () => {
           <Box sx={subheadingSx}>Region</Box>
         </Column>
         <Column start={2} width={3}>
-          <Flex sx={{ justifyContent: 'space-between' }}>
-            <Box sx={{ color: 'secondary' }}>
+          <Flex sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <Flex sx={{ alignItems: 'center', gap: 2, color: 'secondary' }}>
               <Badge>
                 {regionMean !== null ? regionMean.toFixed(2) : '---'}
               </Badge>
-            </Box>
+              {regionMean !== null && (
+                <Box
+                  as='span'
+                  onClick={() => setRegionResult(null)}
+                  sx={{
+                    cursor: 'pointer',
+                    fontSize: 0,
+                    color: 'secondary',
+                    '&:hover': { color: 'primary' },
+                  }}
+                >
+                  ✕
+                </Box>
+              )}
+            </Flex>
             {viewportQueryDisabled ? (
-              <Box sx={{ color: 'secondary' }}> Zoom in to query</Box>
+              <Box sx={{ color: 'secondary', fontSize: 2 }}>
+                Zoom in to query
+              </Box>
             ) : (
               <Button
                 onClick={handleViewportQuery}
                 suffix={<RotatingArrow />}
                 size='xs'
                 title='Query viewport'
+                disabled={queryInFlight}
+                sx={{ fontSize: 2 }}
               >
-                Query viewport average
+                {queryInFlight ? 'Querying...' : 'Query viewport average'}
               </Button>
             )}
           </Flex>
         </Column>
       </Row>
 
-      <Divider sx={{ mt: 4, mb: 3 }} />
+      <SidebarDivider sx={{ my: 3 }} />
 
       <Row columns={[4, 4, 4, 4]}>
         <Column start={1} width={4}>
@@ -560,7 +555,9 @@ const Controls = () => {
               onKeyDown={(e: React.KeyboardEvent) => {
                 if (e.key === 'Enter') commitClimInput(0)
               }}
-              sx={{ width: '55px', flexShrink: 0 }}
+              sx={{
+                width: `${Math.max(2, climInputs[0].length + 2)}ch`,
+              }}
             />
             <Box sx={{ flex: 1 }}>
               <Colorbar width='100%' colormap={themedColormap} horizontal />
@@ -576,7 +573,9 @@ const Controls = () => {
               onKeyDown={(e: React.KeyboardEvent) => {
                 if (e.key === 'Enter') commitClimInput(1)
               }}
-              sx={{ width: '55px', flexShrink: 0 }}
+              sx={{
+                width: `${Math.max(2, climInputs[1].length + 2)}ch`,
+              }}
             />
           </Flex>
         </Column>
@@ -602,7 +601,7 @@ const Controls = () => {
         </Column>
       </Row>
 
-      <Divider sx={{ mt: 4, mb: 3 }} />
+      <SidebarDivider sx={{ my: 3 }} />
 
       <Box sx={headingSx}>Map</Box>
 
@@ -667,9 +666,7 @@ const Controls = () => {
                     height: '16px',
                     p: 0,
                     flexShrink: 0,
-                    '@media (hover: hover) and (pointer: fine)': {
-                      '&:hover > #terrain-info': { stroke: 'primary' },
-                    },
+                    '&:hover > #terrain-info': { stroke: 'primary' },
                   }}
                 >
                   <Info
@@ -688,7 +685,7 @@ const Controls = () => {
           {terrainInfo && (
             <Box
               sx={{
-                fontSize: 0,
+                fontSize: 2,
                 color: 'secondary',
                 mt: 1,
                 mb: 2,
@@ -726,9 +723,7 @@ const Controls = () => {
                     height: '16px',
                     p: 0,
                     flexShrink: 0,
-                    '@media (hover: hover) and (pointer: fine)': {
-                      '&:hover > #render-poles-info': { stroke: 'primary' },
-                    },
+                    '&:hover > #render-poles-info': { stroke: 'primary' },
                   }}
                 >
                   <Info
@@ -747,7 +742,7 @@ const Controls = () => {
           {renderPolesInfo && (
             <Box
               sx={{
-                fontSize: 0,
+                fontSize: 2,
                 color: 'secondary',
                 mt: 1,
                 mb: 2,
@@ -755,7 +750,8 @@ const Controls = () => {
               }}
             >
               Experimental direct ECEF rendering that avoids the visible polar
-              gap from Web Mercator clipping. Incompatible with terrain.
+              gap from Web Mercator clipping. Incompatible with terrain. Toggle
+              impacts Mapbox only: Maplibre renders to the poles by default
             </Box>
           )}
         </>

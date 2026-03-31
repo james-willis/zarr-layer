@@ -39,7 +39,7 @@ interface AppState {
   setRegionResult: (result: QueryResult | null) => void
   setMapInstance: (map: MapInstance | null) => void
   setZarrLayer: (layer: InstanceType<typeof ZarrLayer> | null) => void
-  getDatasetModule: () => Dataset<any>
+  getDatasetModule: () => Dataset
   getDatasetState: () => Record<string, unknown>
 }
 
