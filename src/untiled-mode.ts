@@ -2705,7 +2705,8 @@ export class UntiledMode implements ZarrMode {
       },
       this.proj4def,
       subsetSourceBounds,
-      options
+      options,
+      desc.dimIndices
     )
   }
 }

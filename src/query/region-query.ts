@@ -9,7 +9,7 @@
 import type { MercatorBounds, TileTuple, XYLimits } from '../map-utils'
 import { parseLevelZoom, tileToKey } from '../map-utils'
 import type { ZarrStore } from '../zarr-store'
-import type { Bounds, CRS, Selector } from '../types'
+import type { Bounds, CRS, DimIndicesProps, Selector } from '../types'
 import { pixelToSourceCRS } from '../projection-utils'
 import type {
   QueryGeometry,
@@ -29,32 +29,46 @@ import {
 } from './query-utils'
 import { createWGS84ToSourceTransformer } from '../projection-utils'
 import { setObjectValues, getChunks, getPointValues } from './selector-utils'
-import { SPATIAL_DIMENSION_ALIASES, SPATIAL_DIM_NAMES } from '../constants'
+import { SPATIAL_DIMENSION_ALIASES } from '../constants'
 
 /**
  * Determine spatial coordinate keys for query results.
  *
  * For proj4 data we emit source-CRS values, so keys match the store's
- * original axis names (e.g. 'y'/'x').
+ * original axis names (e.g. 'y'/'x' or 'projection_y_coordinate').
  *
  * For standard CRS the values are always WGS84 lat/lon (from pixelToLatLon),
  * so keys are always 'lat'/'lon' regardless of what the store calls its axes.
+ *
+ * Uses dimIndices (which incorporates spatialDimensions overrides) when available,
+ * falling back to alias matching on the raw dimension names.
  */
 function findSpatialDimNames(
   dimensions: string[],
-  isProj4: boolean
+  isProj4: boolean,
+  dimIndices?: DimIndicesProps
 ): {
   yDim: string
   xDim: string
+  /** The raw store dimension name for y, used to map resultDimensions */
+  yStoreDim: string
+  /** The raw store dimension name for x, used to map resultDimensions */
+  xStoreDim: string
 } {
-  if (!isProj4) return { yDim: 'lat', xDim: 'lon' }
-  const yAliases = SPATIAL_DIMENSION_ALIASES.lat
-  const xAliases = SPATIAL_DIMENSION_ALIASES.lon
-  const yDim =
-    dimensions.find((d) => yAliases.includes(d.toLowerCase())) ?? 'lat'
-  const xDim =
-    dimensions.find((d) => xAliases.includes(d.toLowerCase())) ?? 'lon'
-  return { yDim, xDim }
+  // Resolve the actual store dimension names from dimIndices if available
+  const yStoreDim = dimIndices?.lat?.name ?? findByAlias(dimensions, 'lat')
+  const xStoreDim = dimIndices?.lon?.name ?? findByAlias(dimensions, 'lon')
+
+  if (!isProj4) {
+    return { yDim: 'lat', xDim: 'lon', yStoreDim, xStoreDim }
+  }
+  // For proj4, emit coordinates under the store's own axis names
+  return { yDim: yStoreDim, xDim: xStoreDim, yStoreDim, xStoreDim }
+}
+
+function findByAlias(dimensions: string[], axis: 'lat' | 'lon'): string {
+  const aliases = SPATIAL_DIMENSION_ALIASES[axis]
+  return dimensions.find((d) => aliases.includes(d.toLowerCase())) ?? axis
 }
 
 function isMultiValSelector(value: Selector[string]): boolean {
@@ -205,11 +219,20 @@ export async function queryRegionTiled(
   const useNestedResults = resultDim > 2
   let results: QueryDataValues = useNestedResults ? {} : []
 
-  const { yDim, xDim } = findSpatialDimNames(dimensions, false)
+  const { yDim, xDim, yStoreDim, xStoreDim } = findSpatialDimNames(
+    dimensions,
+    false,
+    desc.dimIndices
+  )
   const yCoords: number[] = []
   const xCoords: number[] = []
 
-  const resultDimensions = useNestedResults ? dimensions : [yDim, xDim]
+  // Map spatial dimensions in the result to the emitted coordinate keys
+  const resultDimensions = useNestedResults
+    ? dimensions.map((d) =>
+        d === yStoreDim ? yDim : d === xStoreDim ? xDim : d
+      )
+    : [yDim, xDim]
 
   const buildResultCoordinates = (): Record<string, (number | string)[]> => {
     const coords: Record<string, (number | string)[]> = {
@@ -218,10 +241,9 @@ export async function queryRegionTiled(
     }
 
     if (useNestedResults) {
-      const addDimCoordinates = (dim: string) => {
-        if (SPATIAL_DIM_NAMES.has(dim.toLowerCase())) {
-          return
-        }
+      for (const dim of dimensions) {
+        // Skip spatial dimensions — they're already emitted as yDim/xDim
+        if (dim === yStoreDim || dim === xStoreDim) continue
 
         const sel = selector[dim]
         let values: (number | string)[] | undefined
@@ -241,8 +263,6 @@ export async function queryRegionTiled(
           coords[dim] = values
         }
       }
-
-      dimensions.forEach(addDimCoordinates)
     }
 
     return coords
@@ -443,7 +463,8 @@ export function queryRegionUntiled(
   transforms?: QueryTransformOptions,
   proj4def?: string | null,
   sourceBounds?: Bounds | null,
-  options?: QueryOptions
+  options?: QueryOptions,
+  dimIndices?: DimIndicesProps
 ): QueryResult {
   const { signal, includeSpatialCoordinates = true } = options ?? {}
 
@@ -457,11 +478,20 @@ export function queryRegionUntiled(
   const useNestedResults = resultDim > 2
   let results: QueryDataValues = useNestedResults ? {} : []
 
-  const { yDim, xDim } = findSpatialDimNames(dimensions, !!proj4def)
+  const { yDim, xDim, yStoreDim, xStoreDim } = findSpatialDimNames(
+    dimensions,
+    !!proj4def,
+    dimIndices
+  )
   const yCoords: number[] = []
   const xCoords: number[] = []
 
-  const resultDimensions = useNestedResults ? dimensions : [yDim, xDim]
+  // Map spatial dimensions in the result to the emitted coordinate keys
+  const resultDimensions = useNestedResults
+    ? dimensions.map((d) =>
+        d === yStoreDim ? yDim : d === xStoreDim ? xDim : d
+      )
+    : [yDim, xDim]
 
   const buildResultCoordinates = (): Record<string, (number | string)[]> => {
     const coords: Record<string, (number | string)[]> = {
@@ -470,10 +500,8 @@ export function queryRegionUntiled(
     }
 
     if (useNestedResults) {
-      const addDimCoordinates = (dim: string) => {
-        if (SPATIAL_DIM_NAMES.has(dim.toLowerCase())) {
-          return
-        }
+      for (const dim of dimensions) {
+        if (dim === yStoreDim || dim === xStoreDim) continue
 
         const sel = selector[dim]
         let values: (number | string)[] | undefined
@@ -493,8 +521,6 @@ export function queryRegionUntiled(
           coords[dim] = values
         }
       }
-
-      dimensions.forEach(addDimCoordinates)
     }
 
     return coords
