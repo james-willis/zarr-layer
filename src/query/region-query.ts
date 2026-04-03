@@ -6,7 +6,7 @@
  * Matches carbonplan/maps structure and behavior.
  */
 
-import type { MercatorBounds, TileTuple, XYLimits } from '../map-utils'
+import type { MercatorBounds, XYLimits } from '../map-utils'
 import { parseLevelZoom, tileToKey } from '../map-utils'
 import type { ZarrStore } from '../zarr-store'
 import type { Bounds, CRS, DimIndicesProps, Selector } from '../types'
@@ -108,81 +108,6 @@ function transformValue(
   }
 
   return result
-}
-
-/**
- * Process a single pixel in tiled mode: extract values from chunks and emit results.
- */
-function processPixelTiled(
-  pixelX: number,
-  pixelY: number,
-  tileTuple: [number, number, number],
-  chunksForTile: number[][],
-  chunkDataMap: Map<string, Float32Array>,
-  selector: Selector,
-  dimensions: string[],
-  coordinates: Record<string, (number | string)[]>,
-  shape: number[],
-  chunks: number[],
-  transforms: QueryTransformOptions | undefined,
-  includeSpatialCoordinates: boolean,
-  tileSize: number,
-  crs: CRS,
-  xyLimits: XYLimits,
-  yCoords: number[],
-  xCoords: number[],
-  results: QueryDataValues,
-  useNestedResults: boolean
-) {
-  const pixelValues: { keys: (string | number)[]; value: number }[] = []
-
-  for (const chunkIndices of chunksForTile) {
-    const chunkKey = chunkIndices.join(',')
-    const chunkData = chunkDataMap.get(chunkKey)
-    if (!chunkData) continue
-
-    const valuesToSet = getPointValues(
-      chunkData,
-      pixelX,
-      pixelY,
-      selector,
-      dimensions,
-      coordinates,
-      shape,
-      chunks,
-      chunkIndices
-    )
-
-    for (const { keys, value } of valuesToSet) {
-      const transformed = transformValue(value, transforms)
-      if (transformed !== null) {
-        pixelValues.push({ keys, value: transformed })
-      }
-    }
-  }
-
-  if (pixelValues.length === 0) return
-
-  if (includeSpatialCoordinates) {
-    const geo = tilePixelToLatLon(
-      tileTuple,
-      pixelX + 0.5,
-      pixelY + 0.5,
-      tileSize,
-      crs,
-      xyLimits
-    )
-    yCoords.push(geo.lat)
-    xCoords.push(geo.lon)
-  }
-
-  for (const { keys, value } of pixelValues) {
-    if (keys.length > 0) {
-      setObjectValues(results, keys, value)
-    } else if (Array.isArray(results)) {
-      results.push(value)
-    }
-  }
 }
 
 /**
@@ -369,32 +294,66 @@ export async function queryRegionTiled(
       y
     )
 
-    // Point geometry: process the single pixel directly
-    if (tileGeometry.type === 'Point') {
-      const px = Math.min(Math.floor(tileGeometry.coordinates[0]), tileSize - 1)
-      const py = Math.min(Math.floor(tileGeometry.coordinates[1]), tileSize - 1)
-      if (px >= 0 && py >= 0) {
-        processPixelTiled(
-          px,
-          py,
-          tileTuple,
-          chunksForTile,
-          chunkDataMap,
+    // Process a single pixel: extract values from chunks and emit results.
+    // Defined per-tile so it captures tileTuple/chunksForTile/chunkDataMap.
+    const processPixel = (pixelX: number, pixelY: number) => {
+      const pixelValues: { keys: (string | number)[]; value: number }[] = []
+
+      for (const chunkIndices of chunksForTile) {
+        const chunkKey = chunkIndices.join(',')
+        const chunkData = chunkDataMap.get(chunkKey)
+        if (!chunkData) continue
+
+        const valuesToSet = getPointValues(
+          chunkData,
+          pixelX,
+          pixelY,
           selector,
           dimensions,
           coordinates,
           shape,
           chunks,
-          transforms,
-          includeSpatialCoordinates,
+          chunkIndices
+        )
+
+        for (const { keys, value } of valuesToSet) {
+          const transformed = transformValue(value, transforms)
+          if (transformed !== null) {
+            pixelValues.push({ keys, value: transformed })
+          }
+        }
+      }
+
+      if (pixelValues.length === 0) return
+
+      if (includeSpatialCoordinates) {
+        const geo = tilePixelToLatLon(
+          tileTuple,
+          pixelX + 0.5,
+          pixelY + 0.5,
           tileSize,
           crs,
-          xyLimits,
-          yCoords,
-          xCoords,
-          results,
-          useNestedResults
+          xyLimits
         )
+        yCoords.push(geo.lat)
+        xCoords.push(geo.lon)
+      }
+
+      for (const { keys, value } of pixelValues) {
+        if (keys.length > 0) {
+          setObjectValues(results, keys, value)
+        } else if (Array.isArray(results)) {
+          results.push(value)
+        }
+      }
+    }
+
+    // Point geometry: process the single pixel directly
+    if (tileGeometry.type === 'Point') {
+      const px = Math.min(Math.floor(tileGeometry.coordinates[0]), tileSize - 1)
+      const py = Math.min(Math.floor(tileGeometry.coordinates[1]), tileSize - 1)
+      if (px >= 0 && py >= 0) {
+        processPixel(px, py)
       }
       continue
     }
@@ -412,27 +371,7 @@ export async function queryRegionTiled(
         const xTo = Math.min(tileSize, Math.floor(crossings[i + 1] - 0.5) + 1)
 
         for (let pixelX = xFrom; pixelX < xTo; pixelX++) {
-          processPixelTiled(
-            pixelX,
-            pixelY,
-            tileTuple,
-            chunksForTile,
-            chunkDataMap,
-            selector,
-            dimensions,
-            coordinates,
-            shape,
-            chunks,
-            transforms,
-            includeSpatialCoordinates,
-            tileSize,
-            crs,
-            xyLimits,
-            yCoords,
-            xCoords,
-            results,
-            useNestedResults
-          )
+          processPixel(pixelX, pixelY)
         }
       }
     }
@@ -557,8 +496,8 @@ export function queryRegionUntiled(
   )
   if (!pixelGeometry) return buildResult()
 
-  // For proj4 data, emit source CRS coordinates via pure linear math (no inverse transform).
-  // For standard CRS, emit lat/lon via pixelToLatLon.
+  // Emit pixel-center coordinates: source CRS for proj4, lat/lon otherwise.
+  // Both paths use pixel centers (+0.5); pixelToLatLon applies it internally.
   const emitCoords =
     proj4def && sourceBounds
       ? (x: number, y: number) => {
@@ -581,10 +520,7 @@ export function queryRegionUntiled(
             width,
             height,
             _crs,
-            latIsAscending,
-            proj4def,
-            sourceBounds,
-            cachedTransformer
+            latIsAscending
           )
           yCoords.push(lat)
           xCoords.push(lon)
