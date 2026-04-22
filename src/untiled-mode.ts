@@ -1630,7 +1630,7 @@ export class UntiledMode implements ZarrMode {
         if (isStale()) return
 
         const result = (await zarr.get(snapshot.zarrArray, baseSliceArgs, {
-          opts: { signal: controller.signal },
+          signal: controller.signal,
         })) as { data: ArrayLike<number> }
 
         if (isStale()) return
@@ -1659,7 +1659,7 @@ export class UntiledMode implements ZarrMode {
         const results = await Promise.all(
           allSliceArgs.map((sliceArgs) =>
             zarr.get(snapshot.zarrArray, sliceArgs, {
-              opts: { signal: controller.signal },
+              signal: controller.signal,
             })
           )
         )
