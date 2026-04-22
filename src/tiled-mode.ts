@@ -9,7 +9,10 @@ import { queryRegionTiled } from './query/region-query'
 import {
   preprocessQueryGeometry,
   rasterExtentCrossesAntimeridian,
+  getTilesForBoundingBox,
+  getTilesForPolygon,
 } from './query/query-utils'
+import { getChunks } from './query/selector-utils'
 import type {
   LoadingStateCallback,
   MapLike,
@@ -373,6 +376,11 @@ export class TiledMode implements ZarrMode {
   async setSelector(selector: NormalizedSelector): Promise<void> {
     this.selector = selector
     this.selectorVersion++
+    // Abort in-flight tile fetches from the old selector. Otherwise an
+    // older request can resolve after reextractTileSlices cleared the tile
+    // and write stale chunkData back with the now-obsolete selector hash,
+    // causing a brief render of the wrong band until a newer fetch lands.
+    cancelAllRequests(this.requestCanceller)
     const bandNames = getBands(this.variable, selector)
 
     this.tileCache?.updateSelector(this.selector)
@@ -563,6 +571,63 @@ export class TiledMode implements ZarrMode {
   }
 
   /**
+   * Attempt to populate chunk data for `tiles` entirely from the render tile
+   * cache. Returns null on any cache miss so the caller falls back to fetching.
+   *
+   * Preconditions for a hit:
+   * - Query selector hash equals what the renderer tagged tiles with.
+   * - Every tile is cached with its chunkData/chunkIndices matching the one
+   *   chunk the query needs (multi-chunk queries bypass the cache, since the
+   *   render stores at most one chunk per tile).
+   */
+  private tryBuildCachedTileChunks(
+    tiles: TileTuple[],
+    querySelector: NormalizedSelector
+  ): Map<string, Map<string, Float32Array>> | null {
+    if (!this.tileCache) return null
+
+    const expectedHash = JSON.stringify(querySelector)
+    if (expectedHash !== JSON.stringify(this.selector)) return null
+
+    const desc = this.zarrStore.describe()
+    const dimensions = desc.dimensions
+    const coordinates = desc.coordinates
+    const shape = desc.shape || []
+    const chunks = desc.chunks || []
+
+    const out = new Map<string, Map<string, Float32Array>>()
+    for (const tileTuple of tiles) {
+      const [, x, y] = tileTuple
+      const tileKey = tileToKey(tileTuple)
+      const tile = this.tileCache.get(tileKey)
+      if (
+        !tile ||
+        !tile.chunkData ||
+        !tile.chunkIndices ||
+        tile.selectorHash !== expectedHash
+      ) {
+        return null
+      }
+      const needed = getChunks(
+        querySelector,
+        dimensions,
+        coordinates,
+        shape,
+        chunks,
+        x,
+        y
+      )
+      if (needed.length !== 1) return null
+      const neededKey = needed[0].join(',')
+      if (neededKey !== tile.chunkIndices.join(',')) return null
+      const chunkMap = new Map<string, Float32Array>()
+      chunkMap.set(neededKey, tile.chunkData)
+      out.set(tileKey, chunkMap)
+    }
+    return out
+  }
+
+  /**
    * Query data for point or region geometries.
    */
   async queryData(
@@ -587,6 +652,9 @@ export class TiledMode implements ZarrMode {
       fillValue: desc.fill_value,
     }
 
+    const levelPath = desc.levels[level]
+    const actualZoom = levelPath ? parseLevelZoom(levelPath, level) : level
+
     // Antimeridian preprocessing
     const { geometry: processedGeometry, bbox: wrappedBbox } =
       preprocessQueryGeometry(geometry)
@@ -602,7 +670,16 @@ export class TiledMode implements ZarrMode {
           'Antimeridian-crossing polygon queries are not supported for rasters whose own extent crosses the antimeridian; results may be incorrect'
         )
       }
-      // Fall back to existing non-antimeridian flow
+      const fallbackTiles = getTilesForPolygon(
+        geometry,
+        actualZoom,
+        this.crs,
+        this.xyLimits
+      )
+      const preCached = this.tryBuildCachedTileChunks(
+        fallbackTiles,
+        querySelector
+      )
       return queryRegionTiled(
         this.variable,
         geometry,
@@ -613,9 +690,21 @@ export class TiledMode implements ZarrMode {
         level,
         this.tileSize,
         transforms,
-        options
+        options,
+        undefined,
+        preCached ?? undefined
       )
     }
+
+    const queryTiles = wrappedBbox.crossesAntimeridian
+      ? getTilesForBoundingBox(wrappedBbox, actualZoom, this.crs, this.xyLimits)
+      : getTilesForPolygon(
+          processedGeometry,
+          actualZoom,
+          this.crs,
+          this.xyLimits
+        )
+    const preCached = this.tryBuildCachedTileChunks(queryTiles, querySelector)
 
     return queryRegionTiled(
       this.variable,
@@ -628,7 +717,8 @@ export class TiledMode implements ZarrMode {
       this.tileSize,
       transforms,
       options,
-      wrappedBbox
+      wrappedBbox,
+      preCached ?? undefined
     )
   }
 }

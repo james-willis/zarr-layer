@@ -629,11 +629,15 @@ export class Tiles {
       } else {
         // Keep old data visible while new chunk loads - don't clear tile.data
         // The stale selectorHash ensures a new fetch will be triggered,
-        // and the old data continues to render until replaced
+        // and the old data continues to render until replaced.
+        // Bump selectorVersion so any still-in-flight fetch from an older
+        // selector fails the `version < tile.selectorVersion` guard when it
+        // resolves, rather than writing stale chunkData back into the tile.
         tile.selectorHash = null
         tile.chunkData = null
         tile.chunkShape = null
         tile.chunkIndices = undefined
+        tile.selectorVersion = version
       }
     }
   }

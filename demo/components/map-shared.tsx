@@ -171,6 +171,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
   const colormapArray = useThemedColormap(colormap, { format: 'hex' })
   const setPointResult = useAppStore((state) => state.setPointResult)
   const setZarrLayer = useAppStore((state) => state.setZarrLayer)
+  const hoverQueryEnabled = useAppStore((state) => state.hoverQueryEnabled)
 
   const layerConfig: LayerProps = useMemo(
     () => datasetModule.buildLayerProps(datasetState),
@@ -347,6 +348,69 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     renderPoles,
     setLoadingState,
   ])
+
+  useEffect(() => {
+    if (!map || !isMapLoaded || !hoverQueryEnabled) return
+
+    let abortController: AbortController | null = null
+    let cancelled = false
+
+    const handler = (event: any) => {
+      const layer = zarrLayerRef.current
+      if (!layer) return
+
+      abortController?.abort()
+      abortController = new AbortController()
+      const thisController = abortController
+
+      const lng = event.lngLat.lng
+      const lat = event.lngLat.lat
+      const geometry: QueryGeometry = {
+        type: 'Point',
+        coordinates: [lng, lat],
+      }
+      const {
+        isRangeBand: rangeMode,
+        monthStart: latestMonthStart,
+        monthEnd: latestMonthEnd,
+        currentBand: latestBand,
+      } = latestRangeStateRef.current
+      const latestSelector = datasetModule.buildLayerProps(
+        useAppStore.getState().datasetState
+      ).selector
+
+      let querySelector = latestSelector
+      if (rangeMode && latestMonthStart !== null && latestMonthEnd !== null) {
+        const monthRange: number[] = []
+        for (let m = latestMonthStart; m <= latestMonthEnd; m++) {
+          monthRange.push(m)
+        }
+        const baseBand = latestBand === 'tavg_range' ? 'tavg' : 'prec'
+        querySelector = { band: baseBand, month: monthRange }
+      }
+
+      layer
+        .queryData(geometry, querySelector, { signal: thisController.signal })
+        .then((result) => {
+          if (cancelled || thisController.signal.aborted) return
+          setPointResult(result)
+        })
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          console.warn('Hover query failed', err)
+        })
+    }
+
+    map.on('mousemove', handler)
+
+    return () => {
+      cancelled = true
+      abortController?.abort()
+      try {
+        map.off('mousemove', handler)
+      } catch (e) {}
+    }
+  }, [map, isMapLoaded, hoverQueryEnabled, datasetModule, setPointResult])
 
   useEffect(() => {
     const layer = zarrLayerRef.current

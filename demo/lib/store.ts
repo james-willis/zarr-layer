@@ -22,6 +22,7 @@ interface AppState {
   loadingState: LoadingState
   pointResult: QueryResult | null
   regionResult: QueryResult | null
+  hoverQueryEnabled: boolean
   mapInstance: MapInstance | null
   zarrLayer: InstanceType<typeof ZarrLayer> | null
   setSidebarWidth: (width: number | null) => void
@@ -37,6 +38,7 @@ interface AppState {
   setLoadingState: (state: LoadingState) => void
   setPointResult: (result: QueryResult | null) => void
   setRegionResult: (result: QueryResult | null) => void
+  setHoverQueryEnabled: (enabled: boolean) => void
   setMapInstance: (map: MapInstance | null) => void
   setZarrLayer: (layer: InstanceType<typeof ZarrLayer> | null) => void
   getDatasetModule: () => Dataset
@@ -58,6 +60,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadingState: { loading: false, metadata: false, chunks: false },
   pointResult: null,
   regionResult: null,
+  hoverQueryEnabled: false,
   mapInstance: null,
   zarrLayer: null,
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
@@ -87,6 +90,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setPointResult: (pointResult) => set({ pointResult }),
   setRegionResult: (regionResult) => set({ regionResult }),
+  setHoverQueryEnabled: (hoverQueryEnabled) => set({ hoverQueryEnabled }),
   setMapInstance: (mapInstance) => set({ mapInstance }),
   setZarrLayer: (zarrLayer) => set({ zarrLayer }),
   getDatasetModule: () => DATASET_MAP[get().datasetId],

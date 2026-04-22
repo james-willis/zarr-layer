@@ -281,6 +281,10 @@ const Controls = () => {
   const setMapProvider = useAppStore((state) => state.setMapProvider)
   const setRegionResult = useAppStore((state) => state.setRegionResult)
   const setPointResult = useAppStore((state) => state.setPointResult)
+  const hoverQueryEnabled = useAppStore((state) => state.hoverQueryEnabled)
+  const setHoverQueryEnabled = useAppStore(
+    (state) => state.setHoverQueryEnabled
+  )
   const themedColormap = useThemedColormap(colormap)
   const [queryInFlight, setQueryInFlight] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -461,7 +465,19 @@ const Controls = () => {
                   </Box>
                 )}
               </Flex>
-              <Box sx={{ fontSize: 2 }}>Click map to query</Box>
+              <Flex sx={{ alignItems: 'center', gap: 2 }}>
+                <Box sx={{ fontSize: 2, color: 'secondary' }}>Hover</Box>
+                <Filter
+                  values={{
+                    on: hoverQueryEnabled,
+                    off: !hoverQueryEnabled,
+                  }}
+                  setValues={(obj: Record<string, boolean>) => {
+                    if (obj.off) setHoverQueryEnabled(false)
+                    if (obj.on) setHoverQueryEnabled(true)
+                  }}
+                />
+              </Flex>
             </Flex>
           </Box>
         </Column>

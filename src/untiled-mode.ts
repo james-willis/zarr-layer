@@ -2472,6 +2472,113 @@ export class UntiledMode implements ZarrMode {
   }
 
   /**
+   * Try to assemble query data from the render region cache.
+   *
+   * Gated on:
+   * - Every region covering the query is loaded for the current level.
+   * - Each region's selectorVersion equals the mode's current selectorVersion.
+   * - The query selector matches what's currently rendered.
+   *
+   * Returns null on any miss so the caller falls back to fetchQueryData.
+   *
+   * The returned data is normalized (divided by fixedDataScale with fills → NaN),
+   * so callers must un-scale via `transforms: { scaleFactor: fixedDataScale }`.
+   */
+  private tryBuildCachedQueryStrip(
+    selector: NormalizedSelector,
+    spatialQuery: { minX: number; maxX: number; minY: number; maxY: number }
+  ): {
+    data: Float32Array
+    width: number
+    height: number
+    channels: number
+    channelLabels: (string | number)[][]
+    multiValueDimNames: string[]
+    fromCache: true
+  } | null {
+    if (!this.regionSize || !this.baseSliceArgsReady) return null
+    if (this.regionCache.size === 0) return null
+    if (JSON.stringify(selector) !== JSON.stringify(this.selector)) return null
+
+    const [regionH, regionW] = this.regionSize
+    const minX = Math.max(0, Math.floor(spatialQuery.minX))
+    const maxX = Math.min(this.width, Math.ceil(spatialQuery.maxX))
+    const minY = Math.max(0, Math.floor(spatialQuery.minY))
+    const maxY = Math.min(this.height, Math.ceil(spatialQuery.maxY))
+    if (maxX <= minX || maxY <= minY) return null
+
+    const rxStart = Math.floor(minX / regionW)
+    const rxEnd = Math.floor((maxX - 1) / regionW) + 1
+    const ryStart = Math.floor(minY / regionH)
+    const ryEnd = Math.floor((maxY - 1) / regionH) + 1
+
+    const coveringRegions: RegionState[] = []
+    for (let ry = ryStart; ry < ryEnd; ry++) {
+      for (let rx = rxStart; rx < rxEnd; rx++) {
+        const key = `${this.currentLevelIndex}:${rx},${ry}`
+        const region = this.regionCache.get(key)
+        if (
+          !region ||
+          region.loading ||
+          !region.data ||
+          region.selectorVersion !== this.selectorVersion ||
+          region.width <= 0 ||
+          region.height <= 0
+        ) {
+          return null
+        }
+        coveringRegions.push(region)
+      }
+    }
+
+    const { combinations, labelCombinations } = this.buildChannelCombinations(
+      this.baseMultiValueDims
+    )
+    const numChannels = combinations.length || 1
+    const multiValueDimNames = this.baseMultiValueDims.map((d) => d.dimName)
+    if (coveringRegions[0].channels !== numChannels) return null
+
+    const outW = maxX - minX
+    const outH = maxY - minY
+    const composite = new Float32Array(outW * outH * numChannels)
+    composite.fill(NaN)
+
+    for (const region of coveringRegions) {
+      const regionData = region.data
+      if (!regionData) return null
+      const rxPixel = region.regionX * regionW
+      const ryPixel = region.regionY * regionH
+      const srcX0 = Math.max(0, minX - rxPixel)
+      const srcY0 = Math.max(0, minY - ryPixel)
+      const srcX1 = Math.min(region.width, maxX - rxPixel)
+      const srcY1 = Math.min(region.height, maxY - ryPixel)
+      if (srcX1 <= srcX0 || srcY1 <= srcY0) continue
+
+      const dstX0 = rxPixel + srcX0 - minX
+      const dstY0 = ryPixel + srcY0 - minY
+      const rowLen = (srcX1 - srcX0) * numChannels
+      for (let sy = srcY0; sy < srcY1; sy++) {
+        const srcStart = (sy * region.width + srcX0) * numChannels
+        const dstStart = ((dstY0 + (sy - srcY0)) * outW + dstX0) * numChannels
+        composite.set(
+          regionData.subarray(srcStart, srcStart + rowLen),
+          dstStart
+        )
+      }
+    }
+
+    return {
+      data: composite,
+      width: outW,
+      height: outH,
+      channels: numChannels,
+      channelLabels: labelCombinations,
+      multiValueDimNames,
+      fromCache: true,
+    }
+  }
+
+  /**
    * Unified method to fetch query data for either point or region queries.
    * Handles multi-value dimensions and channel combinations.
    */
@@ -2645,12 +2752,27 @@ export class UntiledMode implements ZarrMode {
       pixelBounds: PixelRect,
       opts?: QueryOptions
     ): Promise<QueryResult | null> => {
-      const fetched = await this.fetchQueryData(
+      const cached = this.tryBuildCachedQueryStrip(
         normalizedSelector,
-        pixelBounds,
-        opts?.signal
+        pixelBounds
       )
+      const fetched =
+        cached ??
+        (await this.fetchQueryData(
+          normalizedSelector,
+          pixelBounds,
+          opts?.signal
+        ))
       if (!fetched) return null
+
+      // Cache hit: data is pre-scaled and pre-offset; undo normalization only.
+      const effectiveTransforms = cached
+        ? {
+            scaleFactor: this.fixedDataScale,
+            addOffset: 0,
+            fillValue: null,
+          }
+        : transforms
 
       const subsetBounds = this.computeSubsetBounds(pixelBounds)
 
@@ -2696,7 +2818,7 @@ export class UntiledMode implements ZarrMode {
         fetched.channelLabels,
         fetched.multiValueDimNames,
         this.latIsAscending,
-        transforms,
+        effectiveTransforms,
         this.proj4def,
         subsetSourceBounds,
         opts,
