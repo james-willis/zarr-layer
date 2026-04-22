@@ -546,6 +546,7 @@ export class TiledMode implements ZarrMode {
 
       if (!tile) {
         this.emitLoadingState()
+        this.invalidate()
         return null
       }
 
