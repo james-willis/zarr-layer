@@ -2508,7 +2508,7 @@ export class UntiledMode implements ZarrMode {
       } = this.buildChannelCombinations(multiValueDims)
       const numChannels = channelCombinations.length || 1
       const multiValueDimNames = multiValueDims.map((d) => d.dimName)
-      const getOpts = signal ? { opts: { signal } } : undefined
+      const getOpts = signal ? { signal } : undefined
 
       const fetchWidth = spatialQuery.maxX - spatialQuery.minX
       const fetchHeight = spatialQuery.maxY - spatialQuery.minY
