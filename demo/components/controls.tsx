@@ -321,10 +321,32 @@ const Controls = () => {
       fillValue
     )
     if (values.length === 0) return null
-    // For range bands or multi-values, show mean of collected values
-    const mean = values.reduce((acc, value) => acc + value, 0) / values.length
+
+    // Range bands render with month=[1..12] so queryData caches-hit, but the
+    // displayed average must only cover the user-selected month range.
+    const coordMonths = pointResult.coordinates?.month as number[] | undefined
+    const filtered =
+      isRangeBand &&
+      coordMonths &&
+      coordMonths.length === values.length &&
+      monthStart !== null &&
+      monthEnd !== null
+        ? values.filter(
+            (_, i) => coordMonths[i] >= monthStart && coordMonths[i] <= monthEnd
+          )
+        : values
+
+    if (filtered.length === 0) return null
+    const mean = filtered.reduce((acc, v) => acc + v, 0) / filtered.length
     return Number.isFinite(mean) ? mean : null
-  }, [currentVariable, fillValue, pointResult])
+  }, [
+    currentVariable,
+    fillValue,
+    pointResult,
+    isRangeBand,
+    monthStart,
+    monthEnd,
+  ])
 
   const regionMean = useMemo(
     () => getRegionMean(regionResult, fillValue),

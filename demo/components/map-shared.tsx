@@ -178,30 +178,6 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     [datasetModule, datasetState]
   )
 
-  const isCarbonplan4d = datasetModule.id === 'carbonplan_4d'
-  const currentBand = datasetState['band']
-  const monthStart = Number(datasetState['monthStart']) || null
-  const monthEnd = Number(datasetState['monthEnd']) || null
-  const isRangeBand =
-    isCarbonplan4d &&
-    (currentBand === 'tavg_range' || currentBand === 'prec_range')
-
-  const latestRangeStateRef = useRef({
-    isRangeBand,
-    monthStart,
-    monthEnd,
-    currentBand,
-  })
-
-  useEffect(() => {
-    latestRangeStateRef.current = {
-      isRangeBand,
-      monthStart,
-      monthEnd,
-      currentBand,
-    }
-  }, [isRangeBand, monthStart, monthEnd, currentBand])
-
   useEffect(() => {
     if (!map || !isMapLoaded) return
 
@@ -269,31 +245,13 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       } catch (e) {}
       map.addLayer(layer, beforeId)
       clickHandler = (event: any) => {
-        const lng = event.lngLat.lng
-        const lat = event.lngLat.lat
         const geometry: QueryGeometry = {
           type: 'Point',
-          coordinates: [lng, lat],
+          coordinates: [event.lngLat.lng, event.lngLat.lat],
         }
-        const {
-          isRangeBand: rangeMode,
-          monthStart: latestMonthStart,
-          monthEnd: latestMonthEnd,
-          currentBand: latestBand,
-        } = latestRangeStateRef.current
-        const latestSelector = datasetModule.buildLayerProps(
+        const querySelector = datasetModule.buildLayerProps(
           useAppStore.getState().datasetState
         ).selector
-
-        let querySelector = latestSelector
-        if (rangeMode && latestMonthStart !== null && latestMonthEnd !== null) {
-          const monthRange: number[] = []
-          for (let m = latestMonthStart; m <= latestMonthEnd; m++) {
-            monthRange.push(m)
-          }
-          const baseBand = latestBand === 'tavg_range' ? 'tavg' : 'prec'
-          querySelector = { band: baseBand, month: monthRange }
-        }
 
         layer.queryData(geometry, querySelector).then((result) => {
           if (cancelled) return
@@ -355,6 +313,10 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     let abortController: AbortController | null = null
     let cancelled = false
 
+    const canvas: HTMLCanvasElement | undefined = (map as any).getCanvas?.()
+    const prevCursor = canvas?.style.cursor
+    if (canvas) canvas.style.cursor = 'pointer'
+
     const handler = (event: any) => {
       const layer = zarrLayerRef.current
       if (!layer) return
@@ -363,31 +325,13 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
       abortController = new AbortController()
       const thisController = abortController
 
-      const lng = event.lngLat.lng
-      const lat = event.lngLat.lat
       const geometry: QueryGeometry = {
         type: 'Point',
-        coordinates: [lng, lat],
+        coordinates: [event.lngLat.lng, event.lngLat.lat],
       }
-      const {
-        isRangeBand: rangeMode,
-        monthStart: latestMonthStart,
-        monthEnd: latestMonthEnd,
-        currentBand: latestBand,
-      } = latestRangeStateRef.current
-      const latestSelector = datasetModule.buildLayerProps(
+      const querySelector = datasetModule.buildLayerProps(
         useAppStore.getState().datasetState
       ).selector
-
-      let querySelector = latestSelector
-      if (rangeMode && latestMonthStart !== null && latestMonthEnd !== null) {
-        const monthRange: number[] = []
-        for (let m = latestMonthStart; m <= latestMonthEnd; m++) {
-          monthRange.push(m)
-        }
-        const baseBand = latestBand === 'tavg_range' ? 'tavg' : 'prec'
-        querySelector = { band: baseBand, month: monthRange }
-      }
 
       layer
         .queryData(geometry, querySelector, { signal: thisController.signal })
@@ -406,6 +350,7 @@ export const useMapLayer = (map: MapInstance | null, isMapLoaded: boolean) => {
     return () => {
       cancelled = true
       abortController?.abort()
+      if (canvas) canvas.style.cursor = prevCursor ?? ''
       try {
         map.off('mousemove', handler)
       } catch (e) {}
