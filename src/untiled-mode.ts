@@ -162,13 +162,50 @@ interface LevelSnapshot {
   selectorVersion: number
 }
 
+/**
+ * Fully-committed per-level state. Replaces six top-level fields that were
+ * previously mutated independently across `initializeLevel`, `switchToLevel`,
+ * `_initialize`, and `setSelector` — any of which was one `await` away from
+ * a half-commit race.
+ *
+ * `UntiledMode.activeLevel` is either `null` (nothing loaded) or a fully-
+ * formed runtime; readers never see a partial level.
+ */
+interface LevelRuntime {
+  index: number
+  zarrArray: zarr.Array<zarr.DataType>
+  width: number
+  height: number
+  regionSize: [number, number]
+  baseSliceArgs: (number | zarr.Slice)[]
+  baseMultiValueDims: Array<{
+    dimIndex: number
+    dimName: string
+    values: number[]
+    labels: (number | string)[]
+  }>
+}
+
 export class UntiledMode implements ZarrMode {
   isMultiscale: boolean = false
 
-  // Data state (single-level mode)
-  private width: number = 0
-  private height: number = 0
   private channels: number = 1
+
+  // The single committed snapshot. All per-level state (array, dims, slice
+  // args) is swapped atomically through `loadLevel()`; nothing else mutates
+  // these fields.
+  private activeLevel: LevelRuntime | null = null
+  // Monotonic id stamped by each `loadLevel` call. Async loads check this
+  // before committing — a bump invalidates older pending work.
+  private loadToken: number = 0
+  // Target level requested by zoom/init. `update()` writes this; `loadLevel`
+  // reads it to re-target if a zoom change happened mid-load.
+  private desiredLevelIndex: number = 0
+  // Target of the currently-running `loadLevel`, or null when idle. Used
+  // by `update()` to dedupe: if we're already loading the target level,
+  // don't restart the fetch every frame (ZarrLayer.prerender calls
+  // update() once per frame, so without this we'd never commit).
+  private loadingLevelIndex: number | null = null
 
   // Bounds
   private mercatorBounds: MercatorBounds | null = null
@@ -182,15 +219,41 @@ export class UntiledMode implements ZarrMode {
   private dimIndices: DimIndicesProps = {}
   private xyLimits: XYLimits | null = null
   private crs: CRS = 'EPSG:4326'
-  private zarrArray: zarr.Array<zarr.DataType> | null = null
   private latIsAscending: boolean = true
 
   // Multi-level support
   private levels: UntiledLevel[] = []
-  private currentLevelIndex: number = 0
-  private pendingLevelIndex: number | null = null // Guards against concurrent switchToLevel calls
   private levelMetadataFetched: Set<number> = new Set() // Tracks which levels have had metadata fetched
   private proj4def: string | null = null
+
+  // Read-only views of the active level. Prefer reading these so callers
+  // don't need to unwrap `activeLevel` everywhere. `null` / zero / `[]`
+  // sentinels mirror the pre-refactor initial values so existing readers
+  // keep working.
+  private get zarrArray(): zarr.Array<zarr.DataType> | null {
+    return this.activeLevel?.zarrArray ?? null
+  }
+  private get width(): number {
+    return this.activeLevel?.width ?? 0
+  }
+  private get height(): number {
+    return this.activeLevel?.height ?? 0
+  }
+  private get regionSize(): [number, number] | null {
+    return this.activeLevel?.regionSize ?? null
+  }
+  private get baseSliceArgs(): (number | zarr.Slice)[] {
+    return this.activeLevel?.baseSliceArgs ?? []
+  }
+  private get baseMultiValueDims(): LevelRuntime['baseMultiValueDims'] {
+    return this.activeLevel?.baseMultiValueDims ?? []
+  }
+  private get baseSliceArgsReady(): boolean {
+    return this.activeLevel !== null
+  }
+  private get currentLevelIndex(): number {
+    return this.activeLevel?.index ?? -1
+  }
 
   // Cached transformers for proj4 reprojection (created once, reused everywhere)
   private cachedMercatorTransformer: ReturnType<
@@ -231,22 +294,11 @@ export class UntiledMode implements ZarrMode {
   private visibleRegionKeys: Set<string> = new Set()
   private lastVisibleRegions: Array<{ regionX: number; regionY: number }> = [] // Last computed visible regions
   private lastVisibleRegionsLevel: number = -1 // Level index that lastVisibleRegions corresponds to
-  private regionSize: [number, number] | null = null // [height, width] of each region
   private lastViewportHash: string = ''
-  private baseSliceArgs: (number | zarr.Slice)[] = [] // Cached slice args for non-spatial dims
   private selectorVersion: number = 0 // Incremented on selector change to track stale regions
-  // Multi-band support: track which dimensions have multiple selected values
-  private baseMultiValueDims: Array<{
-    dimIndex: number
-    dimName: string
-    values: number[]
-    labels: (number | string)[]
-  }> = []
 
   // Cached WebGL context for use in setSelector
   private cachedGl: WebGL2RenderingContext | null = null
-  // Track if base slice args have been built (ready for region fetching)
-  private baseSliceArgsReady: boolean = false
   // Track current projection for subdivision optimization
   private isGlobeProjection: boolean = false
   // Deferred geometry rebuild: when globe→flat transition starts, onProjectionChange(false)
@@ -319,15 +371,14 @@ export class UntiledMode implements ZarrMode {
         // Ensure all levels have shape (required for level selection)
         // This only fetches levels where consolidated metadata was incomplete
         await this.ensureAllLevelShapes()
-        // Don't load data yet - defer to update() where we have the actual zoom level
-        // This avoids loading low-res then immediately switching to high-res
-        this.currentLevelIndex = -1 // Mark as not yet selected
+        // Don't load level data yet — `update()` will call `loadLevel`
+        // once we know the actual zoom level. Avoids loading low-res then
+        // immediately switching to high-res.
       } else {
-        // Single-level dataset - load immediately
         this.isMultiscale = false
-        this.zarrArray = await this.zarrStore.getArray()
-        this.width = this.zarrArray.shape[this.dimIndices.lon.index]
-        this.height = this.zarrArray.shape[this.dimIndices.lat.index]
+        // Single-level dataset — commit the level eagerly so first render
+        // doesn't wait for another tick of `update()`.
+        await this.loadLevel(0)
       }
 
       if (this.xyLimits) {
@@ -1213,6 +1264,12 @@ export class UntiledMode implements ZarrMode {
         minY: number
         maxY: number
       }
+      /**
+       * Array to derive shape from. Use during `loadLevel` when the new
+       * array isn't committed to `activeLevel` yet; otherwise defaults to
+       * the active level's array.
+       */
+      array?: zarr.Array<zarr.DataType>
     }
   ): Promise<{
     sliceArgs: (number | zarr.Slice)[]
@@ -1223,12 +1280,13 @@ export class UntiledMode implements ZarrMode {
       labels: (number | string)[]
     }>
   }> {
-    if (!this.zarrArray) {
+    const array = options.array ?? this.zarrArray
+    if (!array) {
       return { sliceArgs: [], multiValueDims: [] }
     }
 
     const sliceArgs: (number | zarr.Slice)[] = new Array(
-      this.zarrArray.shape.length
+      array.shape.length
     ).fill(0)
 
     const multiValueDims: Array<{
@@ -1787,134 +1845,156 @@ export class UntiledMode implements ZarrMode {
       return
     }
 
-    // For multi-level datasets, select/switch levels based on zoom
+    // Pick target: zoom-selected for multiscale, single level otherwise.
     if (this.isMultiscale && this.levels.length > 0) {
       const mapZoom = map.getZoom?.() ?? 0
-      const bestLevelIndex = this.selectLevelForZoom(mapZoom)
-
-      // Initial load
-      if (this.currentLevelIndex === -1) {
-        this.initializeLevel(bestLevelIndex)
-        return
-      }
-
-      // Handle level switch (including retargeting)
-      if (bestLevelIndex !== this.currentLevelIndex) {
-        if (this.pendingLevelIndex === null) {
-          this.switchToLevel(bestLevelIndex)
-        } else if (this.pendingLevelIndex !== bestLevelIndex) {
-          this.pendingLevelIndex = bestLevelIndex
-          cancelAllRequests(this.requestCanceller)
-        }
-        // Defer region updates while switching
-        return
-      }
-
-      // Update regions for current level
-      if (this.regionSize && this.baseSliceArgsReady) {
-        this.updateVisibleRegions(map, gl)
-      }
+      this.desiredLevelIndex = this.selectLevelForZoom(mapZoom)
     } else {
-      // Single-level dataset - set up region-based loading if not already done
-      if (!this.regionSize && this.zarrArray) {
-        const detectedRegionSize = this.getRegionSize(this.zarrArray)
-        this.regionSize = detectedRegionSize ?? [this.height, this.width]
-
-        // Build base slice args and let updateVisibleRegions handle loading
-        this.buildBaseSliceArgs().then(() => {
-          this.updateVisibleRegions(map, gl)
-        })
-        return
-      }
-
-      // Update visible regions for single-level dataset (only if ready)
-      if (this.regionSize && this.baseSliceArgsReady) {
-        this.updateVisibleRegions(map, gl)
-      }
+      this.desiredLevelIndex = 0
     }
+
+    // Kick off a load only when the committed level doesn't match the
+    // target AND we're not already loading that target. `prerender()`
+    // calls `update()` every frame, so without the `loadingLevelIndex`
+    // dedupe we'd bump `loadToken` on every frame and starve the load.
+    if (this.activeLevel?.index !== this.desiredLevelIndex) {
+      if (this.loadingLevelIndex !== this.desiredLevelIndex) {
+        this.loadLevel(this.desiredLevelIndex)
+      }
+      return
+    }
+
+    // Committed level matches target — render from it. If a selector
+    // rebuild is in flight (`loadingLevelIndex === activeLevel.index`),
+    // skip the fetch loop: `updateVisibleRegions` would dispatch fetches
+    // against the old `baseSliceArgs` and stamp them with the pending
+    // selectorVersion, leaving stale data marked fresh in the cache.
+    if (this.loadingLevelIndex !== null) return
+    this.updateVisibleRegions(map, gl)
   }
 
-  private async initializeLevel(levelIndex: number): Promise<void> {
-    if (levelIndex < 0 || levelIndex >= this.levels.length) {
+  /**
+   * Unified level load: handles initial load, zoom-driven switch, and
+   * selector-driven slice-args rebuild. Builds a `LevelRuntime` off to
+   * the side and swaps it into `this.activeLevel` atomically, so readers
+   * never see a half-committed level.
+   *
+   * `reuseArray` reuses the current committed array/dims — used by
+   * `setSelector` to rebuild slice args without refetching. `loadToken`
+   * acts as a cancellation token: any load whose token is stale at
+   * commit time drops its result.
+   */
+  private async loadLevel(
+    levelIndex: number,
+    { reuseArray = false }: { reuseArray?: boolean } = {}
+  ): Promise<void> {
+    if (this.isMultiscale && this.levels.length > 0) {
+      if (levelIndex < 0 || levelIndex >= this.levels.length) return
+    } else if (levelIndex !== 0) {
       return
     }
-    if (this.currentLevelIndex !== -1 || this.pendingLevelIndex !== null) {
-      // Already initialized or initialization in flight.
-      return
-    }
-    // Claim the slot synchronously via `pendingLevelIndex` — the same
-    // mechanism `switchToLevel` uses. Don't touch `currentLevelIndex`
-    // until commit: it's the signal that lets `update()` route to the
-    // switch-level branch, and exposing it before state is consistent
-    // would let `switchToLevel` race against a half-initialized level.
-    this.pendingLevelIndex = levelIndex
 
-    const level = this.levels[levelIndex]
+    // Dedupe: an in-flight load for the same target is already on it.
+    // A selector rebuild (`reuseArray`) intentionally supersedes.
+    if (this.loadingLevelIndex === levelIndex && !reuseArray) {
+      return
+    }
+
+    const token = ++this.loadToken
+    // Snapshot `this.selector` so we can detect a concurrent `setSelector`
+    // that arrived after `buildSliceArgsForSelector` resolved; committing
+    // old slice args with a new selector would leak stale data.
+    const selectorSnapshot = this.selector
+    this.loadingLevelIndex = levelIndex
+
+    // Cancel any in-flight region fetches — they were tied to the old
+    // level's array/dims (or old selector) and can't be reused.
+    if (this.requestCanceller.controllers.size > 0) {
+      cancelAllRequests(this.requestCanceller)
+      this.loadingDebouncer.hide()
+    }
+
     try {
-      await this.ensureLevelMetadata(levelIndex)
+      const existing = this.activeLevel
+      const canReuseArray =
+        reuseArray && existing !== null && existing.index === levelIndex
 
-      const newArray = await this.zarrStore.getLevelArray(level.asset)
-      const newWidth = newArray.shape[this.dimIndices.lon.index]
-      const newHeight = newArray.shape[this.dimIndices.lat.index]
+      let newArray: zarr.Array<zarr.DataType>
+      let newWidth: number
+      let newHeight: number
+      let newRegionSize: [number, number]
 
-      // Always use region-based loading for unified rendering path
-      // If no chunk/shard boundaries, treat whole level as one region
-      const detectedRegionSize = this.getRegionSize(newArray)
-      const newRegionSize: [number, number] = detectedRegionSize ?? [
-        newHeight,
-        newWidth,
-      ]
+      if (canReuseArray) {
+        newArray = existing!.zarrArray
+        newWidth = existing!.width
+        newHeight = existing!.height
+        newRegionSize = existing!.regionSize
+      } else {
+        if (this.isMultiscale) {
+          await this.ensureLevelMetadata(levelIndex)
+          const level = this.levels[levelIndex]
+          newArray = await this.zarrStore.getLevelArray(level.asset)
+        } else {
+          newArray = await this.zarrStore.getArray()
+        }
+        newWidth = newArray.shape[this.dimIndices.lon.index]
+        newHeight = newArray.shape[this.dimIndices.lat.index]
+        const detected = this.getRegionSize(newArray)
+        newRegionSize = detected ?? [newHeight, newWidth]
+      }
 
-      // Bail if the target changed while loading; `update()` will kick off
-      // the new init on the next tick.
-      if (this.pendingLevelIndex !== levelIndex) {
+      const { sliceArgs, multiValueDims } =
+        await this.buildSliceArgsForSelector(selectorSnapshot, {
+          includeSpatialSlices: false,
+          trackMultiValue: true,
+          array: newArray,
+        })
+
+      // Drop on the floor if anything raced past us: a newer load (or
+      // dispose) bumped the token, or `setSelector` replaced the selector
+      // we built slice args against.
+      if (
+        token !== this.loadToken ||
+        this.isRemoved ||
+        this.selector !== selectorSnapshot
+      ) {
         this.invalidate()
         return
       }
 
-      // Commit all level state atomically after async work completes.
-      this.currentLevelIndex = levelIndex
-      this.pendingLevelIndex = null
-      this.zarrArray = newArray
-      this.width = newWidth
-      this.height = newHeight
-      this.regionSize = newRegionSize
-      this.regionCache.clear()
+      // Atomic commit — one reference swap replaces all per-level state.
+      this.activeLevel = {
+        index: levelIndex,
+        zarrArray: newArray,
+        width: newWidth,
+        height: newHeight,
+        regionSize: newRegionSize,
+        baseSliceArgs: sliceArgs,
+        baseMultiValueDims: multiValueDims,
+      }
 
-      // Build base slice args for non-spatial dimensions
-      await this.buildBaseSliceArgs()
+      // Don't clear the region cache on level changes — older-level
+      // regions serve as fallback rendering while the new level's
+      // regions load, and the LRU (`evictOldRegions`) disposes them
+      // properly once they're no longer protected by `visibleRegionKeys`.
+      // Bare `.clear()` here would leak WebGL textures/buffers.
+      if (!canReuseArray) {
+        this.resetVisibleRegions()
+      }
 
-      // Let update() trigger viewport-aware loading
       this.invalidate()
     } catch (err) {
-      if (this.pendingLevelIndex === levelIndex) {
-        this.pendingLevelIndex = null
+      if (token === this.loadToken) {
+        const assetLabel = this.isMultiscale
+          ? this.levels[levelIndex]?.asset ?? String(levelIndex)
+          : 'single-level'
+        console.error(`Failed to load level ${assetLabel}:`, err)
       }
-      console.error(`Failed to initialize level ${level.asset}:`, err)
+    } finally {
+      if (token === this.loadToken) {
+        this.loadingLevelIndex = null
+      }
     }
-  }
-
-  /**
-   * Build base slice args for non-spatial dimensions.
-   * This caches the selector values for use in region fetching.
-   * Also tracks multi-value dimensions for band extraction.
-   */
-  private async buildBaseSliceArgs(): Promise<void> {
-    if (!this.zarrArray) return
-
-    this.baseSliceArgsReady = false
-
-    const { sliceArgs, multiValueDims } = await this.buildSliceArgsForSelector(
-      this.selector,
-      {
-        includeSpatialSlices: false, // placeholders for region fetching
-        trackMultiValue: true, // track multi-value dims for band extraction
-      }
-    )
-
-    this.baseSliceArgs = sliceArgs
-    this.baseMultiValueDims = multiValueDims
-    this.baseSliceArgsReady = true
   }
 
   private selectLevelForZoom(mapZoom: number): number {
@@ -1976,69 +2056,6 @@ export class UntiledMode implements ZarrMode {
 
     // If no level is sufficient, use the highest resolution available
     return levelResolutions[levelResolutions.length - 1].index
-  }
-
-  private async switchToLevel(newLevelIndex: number): Promise<void> {
-    if (newLevelIndex === this.currentLevelIndex) return
-    if (newLevelIndex < 0 || newLevelIndex >= this.levels.length) return
-
-    // Mark as pending to prevent concurrent calls for same level
-    this.pendingLevelIndex = newLevelIndex
-
-    // Cancel in-flight requests for the old level - data not reusable across resolutions
-    const controllersToCancel = this.requestCanceller.controllers.size
-    if (controllersToCancel > 0) {
-      for (const controller of this.requestCanceller.controllers.values()) {
-        controller.abort()
-      }
-      this.requestCanceller.controllers.clear()
-      this.loadingDebouncer.hide()
-    }
-
-    // Ensure metadata is loaded for this level (lazy load if needed)
-    await this.ensureLevelMetadata(newLevelIndex)
-
-    const level = this.levels[newLevelIndex]
-
-    try {
-      const newArray = await this.zarrStore.getLevelArray(level.asset)
-      const newWidth = newArray.shape[this.dimIndices.lon.index]
-      const newHeight = newArray.shape[this.dimIndices.lat.index]
-
-      // Always use region-based loading for unified rendering path
-      // If no chunk/shard boundaries, treat whole level as one region
-      const detectedRegionSize = this.getRegionSize(newArray)
-      const newRegionSize: [number, number] = detectedRegionSize ?? [
-        newHeight,
-        newWidth,
-      ]
-
-      if (this.pendingLevelIndex !== newLevelIndex) {
-        // Target changed while loading; let update() kick off the new switch.
-        this.pendingLevelIndex = null
-        this.invalidate()
-        return
-      }
-
-      // Update all level state atomically AFTER async work completes
-      // This prevents race conditions where render sees new level index but old dimensions
-      this.currentLevelIndex = newLevelIndex
-      this.pendingLevelIndex = null
-      this.zarrArray = newArray
-      this.width = newWidth
-      this.height = newHeight
-      this.regionSize = newRegionSize
-      this.resetVisibleRegions()
-
-      // Build base slice args for non-spatial dimensions
-      await this.buildBaseSliceArgs()
-
-      // Let update() trigger viewport-aware loading
-      this.invalidate()
-    } catch (err) {
-      this.pendingLevelIndex = null
-      console.error(`Failed to switch to level ${level.asset}:`, err)
-    }
   }
 
   render(renderer: ZarrRenderer, context: RenderContext): void {
@@ -2289,10 +2306,13 @@ export class UntiledMode implements ZarrMode {
 
   dispose(gl: WebGL2RenderingContext | WebGLRenderingContext): void {
     this.isRemoved = true
+    // Bump so any pending `loadLevel` drops its result on commit.
+    this.loadToken++
+    this.loadingLevelIndex = null
     cancelAllRequests(this.requestCanceller)
     // Clean up region caches
     this.clearRegionCache(gl)
-    this.regionSize = null
+    this.activeLevel = null
     this.cachedMercatorTransformer = null
     this.cachedWGS84Transformer = null
     this.cached4326Transformer = null
@@ -2368,32 +2388,38 @@ export class UntiledMode implements ZarrMode {
     this.selector = selector
     this.bandNames = getBands(this.variable, selector)
 
-    const gl = this.cachedGl
-    if (!gl) {
-      // No gl context yet - selector is stored, update() will handle loading
+    if (!this.cachedGl) {
+      // No gl context yet — selector is stored, update() will handle loading.
       this.invalidate()
       return
     }
 
-    // Initialize region size if needed
-    if (!this.regionSize && this.zarrArray) {
-      this.regionSize = this.getRegionSize(this.zarrArray) ?? [
-        this.height,
-        this.width,
-      ]
-    }
-
-    this.selectorVersion++
-
-    // Abort in-flight fetches still running with the old selector.
-    // The fetch's catch/finally handles state cleanup and re-invalidation.
+    // Abort in-flight region fetches still running with the old selector.
+    // Their catch/finally handles state cleanup and re-invalidation.
     for (const [, region] of this.regionCache) {
       if (region.loading && region.requestId !== null) {
         this.requestCanceller.controllers.get(region.requestId)?.abort()
       }
     }
 
-    await this.buildBaseSliceArgs()
+    // Rebuild the runtime with the new selector and atomic-swap. Going
+    // through `loadLevel` bumps `loadToken`, so any in-flight level load
+    // (zoom-driven or initial) drops and restarts against the new
+    // selector. `reuseArray` keeps the array/dims so no refetch is done
+    // when the level itself isn't changing.
+    if (this.activeLevel) {
+      await this.loadLevel(this.activeLevel.index, { reuseArray: true })
+    } else if (this.loadingLevelIndex !== null) {
+      // A level load is already in flight; let it pick up the new
+      // selector via its pre-commit `this.selector !== selectorSnapshot`
+      // check, which drops it and our fresh call takes over.
+      await this.loadLevel(this.loadingLevelIndex, { reuseArray: false })
+    }
+
+    // Bump only after the runtime commit — before this point, readers
+    // that observe the new `selectorVersion` would still see the old
+    // `baseSliceArgs` and mis-tag fetches.
+    this.selectorVersion++
     this.lastViewportHash = ''
     this.invalidate()
   }
