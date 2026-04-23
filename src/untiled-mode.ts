@@ -2517,6 +2517,12 @@ export class UntiledMode implements ZarrMode {
     const ryStart = Math.floor(minY / regionH)
     const ryEnd = Math.floor((maxY - 1) / regionH) + 1
 
+    const { combinations, labelCombinations } = this.buildChannelCombinations(
+      this.baseMultiValueDims
+    )
+    const numChannels = combinations.length || 1
+    const multiValueDimNames = this.baseMultiValueDims.map((d) => d.dimName)
+
     const coveringRegions: RegionState[] = []
     for (let ry = ryStart; ry < ryEnd; ry++) {
       for (let rx = rxStart; rx < rxEnd; rx++) {
@@ -2528,20 +2534,14 @@ export class UntiledMode implements ZarrMode {
           !region.data ||
           region.selectorVersion !== this.selectorVersion ||
           region.width <= 0 ||
-          region.height <= 0
+          region.height <= 0 ||
+          region.channels !== numChannels
         ) {
           return null
         }
         coveringRegions.push(region)
       }
     }
-
-    const { combinations, labelCombinations } = this.buildChannelCombinations(
-      this.baseMultiValueDims
-    )
-    const numChannels = combinations.length || 1
-    const multiValueDimNames = this.baseMultiValueDims.map((d) => d.dimName)
-    if (coveringRegions[0].channels !== numChannels) return null
 
     const outW = maxX - minX
     const outH = maxY - minY

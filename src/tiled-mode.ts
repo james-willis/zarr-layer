@@ -580,6 +580,15 @@ export class TiledMode implements ZarrMode {
    * - Every tile is cached with its chunkData/chunkIndices matching the one
    *   chunk the query needs (multi-chunk queries bypass the cache, since the
    *   render stores at most one chunk per tile).
+   *
+   * All-or-nothing: a partial hit would leave some tiles missing from the
+   * returned map, and `queryRegionTiled` skips tiles it has no chunks for —
+   * which would silently drop data. Returning null on any miss forces the
+   * caller into the uniform fetch path.
+   *
+   * Buffer sharing: the returned map aliases `tile.chunkData` directly (no
+   * copy). Callees must treat these Float32Arrays as read-only; mutating
+   * them would corrupt the rendered tile.
    */
   private tryBuildCachedTileChunks(
     tiles: TileTuple[],
