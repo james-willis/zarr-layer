@@ -78,8 +78,10 @@ import { geoToArrayIndex } from './map-utils'
 import {
   type RequestCanceller,
   type LoadingManager,
+  type ChunkLoadingDebouncer,
   createRequestCanceller,
   createLoadingManager,
+  createChunkLoadingDebouncer,
   cancelAllRequests,
   hasActiveRequests,
   setLoadingCallback as setLoadingCallbackUtil,
@@ -209,6 +211,9 @@ export class UntiledMode implements ZarrMode {
   // Shared state managers
   private requestCanceller: RequestCanceller = createRequestCanceller()
   private loadingManager: LoadingManager = createLoadingManager()
+  private loadingDebouncer: ChunkLoadingDebouncer = createChunkLoadingDebouncer(
+    this.loadingManager
+  )
 
   // Dimension values cache (supports numeric and string coordinate arrays)
   private dimensionValues: {
@@ -1456,9 +1461,7 @@ export class UntiledMode implements ZarrMode {
       })),
     }
 
-    // Emit loading state
-    this.loadingManager.chunksLoading = true
-    this.emitLoadingState()
+    this.loadingDebouncer.show()
 
     // Mark ALL regions as loading upfront to prevent duplicate fetches
     // from subsequent update() calls before we've processed them all
@@ -1508,8 +1511,7 @@ export class UntiledMode implements ZarrMode {
 
     // Only update loading state if we're still on the same level
     if (!hasActiveRequests(this.requestCanceller)) {
-      this.loadingManager.chunksLoading = false
-      this.emitLoadingState()
+      this.loadingDebouncer.hide()
 
       // Evict old regions if cache is full (LRU via Map insertion order)
       this.evictOldRegions(gl)
@@ -1969,8 +1971,7 @@ export class UntiledMode implements ZarrMode {
         controller.abort()
       }
       this.requestCanceller.controllers.clear()
-      this.loadingManager.chunksLoading = false
-      this.emitLoadingState()
+      this.loadingDebouncer.hide()
     }
 
     // Ensure metadata is loaded for this level (lazy load if needed)
@@ -2274,8 +2275,7 @@ export class UntiledMode implements ZarrMode {
     this.cachedMercatorTransformer = null
     this.cachedWGS84Transformer = null
     this.cached4326Transformer = null
-    this.loadingManager.chunksLoading = false
-    this.emitLoadingState()
+    this.loadingDebouncer.hide()
   }
 
   setLoadingCallback(callback: LoadingStateCallback | undefined): void {

@@ -95,3 +95,49 @@ export function emitLoadingState(manager: LoadingManager): void {
   }
   manager.callback(state)
 }
+
+/**
+ * Spinner debouncer for chunk loading: flips `chunksLoading` on only after
+ * a short delay, so cache-hit refetches (e.g. scrubbing a selector within
+ * already-fetched tiles, or any <80ms fetch) never trigger it; flips it
+ * off immediately so the UI stays honest when real work finishes.
+ *
+ * `show()` is idempotent — calling it repeatedly while a timer is pending
+ * or while the spinner is already on is a no-op. `hide()` cancels any
+ * pending show and turns the spinner off if it was on.
+ */
+export interface ChunkLoadingDebouncer {
+  show(): void
+  hide(): void
+}
+
+export function createChunkLoadingDebouncer(
+  manager: LoadingManager,
+  showDelayMs: number = 80
+): ChunkLoadingDebouncer {
+  let showTimer: ReturnType<typeof setTimeout> | null = null
+
+  return {
+    show() {
+      if (manager.chunksLoading) return
+      if (showTimer) return
+      showTimer = setTimeout(() => {
+        showTimer = null
+        if (!manager.chunksLoading) {
+          manager.chunksLoading = true
+          emitLoadingState(manager)
+        }
+      }, showDelayMs)
+    },
+    hide() {
+      if (showTimer) {
+        clearTimeout(showTimer)
+        showTimer = null
+      }
+      if (manager.chunksLoading) {
+        manager.chunksLoading = false
+        emitLoadingState(manager)
+      }
+    },
+  }
+}

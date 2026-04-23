@@ -20,8 +20,10 @@ import type {
 import {
   type RequestCanceller,
   type LoadingManager,
+  type ChunkLoadingDebouncer,
   createRequestCanceller,
   createLoadingManager,
+  createChunkLoadingDebouncer,
   cancelOlderRequests,
   cancelAllRequests,
   setLoadingCallback as setLoadingCallbackUtil,
@@ -119,6 +121,9 @@ export class TiledMode implements ZarrMode {
   // Shared state managers
   private requestCanceller: RequestCanceller = createRequestCanceller()
   private loadingManager: LoadingManager = createLoadingManager()
+  private loadingDebouncer: ChunkLoadingDebouncer = createChunkLoadingDebouncer(
+    this.loadingManager
+  )
 
   constructor(
     store: ZarrStore,
@@ -209,20 +214,17 @@ export class TiledMode implements ZarrMode {
     }
 
     if (tilesToFetch.length > 0) {
-      const wasEmpty = this.pendingChunks.size === 0
       for (const tileTuple of tilesToFetch) {
         this.pendingChunks.add(tileToKey(tileTuple))
       }
-      if (wasEmpty) {
-        this.emitLoadingState()
-      }
+      this.syncChunksLoading()
       const version = this.selectorVersion
       this.prefetchTileData(tilesToFetch, currentHash, version).catch((err) => {
         console.error('Error prefetching tile data:', err)
         for (const tileTuple of tilesToFetch) {
           this.pendingChunks.delete(tileToKey(tileTuple))
         }
-        this.emitLoadingState()
+        this.syncChunksLoading()
       })
     }
   }
@@ -316,11 +318,7 @@ export class TiledMode implements ZarrMode {
     this.tileCache?.clear()
     this.tileCache = null
     this.pendingChunks.clear()
-    if (this.loadingShowTimer) {
-      clearTimeout(this.loadingShowTimer)
-      this.loadingShowTimer = null
-    }
-    this.emitLoadingState()
+    this.loadingDebouncer.hide()
   }
 
   setLoadingCallback(callback: LoadingStateCallback | undefined): void {
@@ -343,33 +341,19 @@ export class TiledMode implements ZarrMode {
     return this.zarrStore.levels
   }
 
-  private loadingShowTimer: ReturnType<typeof setTimeout> | null = null
-
   private emitLoadingState(): void {
-    const loading = this.pendingChunks.size > 0
+    emitLoadingStateUtil(this.loadingManager)
+  }
 
-    // Delay flipping the spinner on so cache-hit refetches (scrub) never
-    // trigger it. Flip off immediately so the UI stays honest.
-    if (loading) {
-      if (this.loadingManager.chunksLoading) return
-      if (this.loadingShowTimer) return
-      this.loadingShowTimer = setTimeout(() => {
-        this.loadingShowTimer = null
-        if (this.pendingChunks.size > 0 && !this.loadingManager.chunksLoading) {
-          this.loadingManager.chunksLoading = true
-          emitLoadingStateUtil(this.loadingManager)
-        }
-      }, 80)
-      return
-    }
-
-    if (this.loadingShowTimer) {
-      clearTimeout(this.loadingShowTimer)
-      this.loadingShowTimer = null
-    }
-    if (this.loadingManager.chunksLoading) {
-      this.loadingManager.chunksLoading = false
-      emitLoadingStateUtil(this.loadingManager)
+  /**
+   * Sync the chunk-loading spinner with `pendingChunks`. Routes through
+   * the debouncer so cache-hit refetches don't flash it on.
+   */
+  private syncChunksLoading(): void {
+    if (this.pendingChunks.size > 0) {
+      this.loadingDebouncer.show()
+    } else {
+      this.loadingDebouncer.hide()
     }
   }
 
@@ -514,7 +498,7 @@ export class TiledMode implements ZarrMode {
     if (!this.tileCache) {
       const tileKey = tileToKey(tileTuple)
       this.pendingChunks.delete(tileKey)
-      this.emitLoadingState()
+      this.syncChunksLoading()
       return null
     }
 
@@ -536,7 +520,7 @@ export class TiledMode implements ZarrMode {
       this.pendingChunks.delete(tileKey)
 
       if (!tile) {
-        this.emitLoadingState()
+        this.syncChunksLoading()
         this.invalidate()
         return null
       }
@@ -544,7 +528,7 @@ export class TiledMode implements ZarrMode {
       // Cancel all older pending requests since a newer version has completed
       cancelOlderRequests(this.requestCanceller, version)
 
-      this.emitLoadingState()
+      this.syncChunksLoading()
 
       // Always invalidate to show data as it arrives - this allows
       // intermediate frames to render when scrubbing through time
@@ -553,7 +537,7 @@ export class TiledMode implements ZarrMode {
       return tile.data
     } catch (err) {
       this.pendingChunks.delete(tileKey)
-      this.emitLoadingState()
+      this.syncChunksLoading()
       // AbortError is expected when requests are cancelled
       if (err instanceof DOMException && err.name === 'AbortError') {
         return null
