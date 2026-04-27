@@ -8,78 +8,6 @@
 import type { LoadingStateCallback, LoadingState } from './types'
 
 // ============================================================================
-// Throttle Management
-// ============================================================================
-
-export interface ThrottleState {
-  lastFetchTime: number
-  throttleTimeout: ReturnType<typeof setTimeout> | null
-  throttledPending: boolean
-}
-
-export function createThrottleState(): ThrottleState {
-  return {
-    lastFetchTime: 0,
-    throttleTimeout: null,
-    throttledPending: false,
-  }
-}
-
-/**
- * Check if we should throttle (wait before fetching).
- * Returns the wait time in ms if we should throttle, or 0 if we can proceed.
- */
-export function getThrottleWaitTime(
-  state: ThrottleState,
-  throttleMs: number
-): number {
-  if (throttleMs <= 0) return 0
-  const now = Date.now()
-  const timeSinceLastFetch = now - state.lastFetchTime
-  if (timeSinceLastFetch < throttleMs) {
-    return throttleMs - timeSinceLastFetch
-  }
-  return 0
-}
-
-/**
- * Schedule a throttled update callback after the wait time.
- * Only schedules if no timeout is already pending.
- */
-export function scheduleThrottledUpdate(
-  state: ThrottleState,
-  waitTime: number,
-  invalidate: () => void
-): void {
-  if (state.throttleTimeout) return // Already scheduled
-
-  state.throttledPending = true
-  state.throttleTimeout = setTimeout(() => {
-    state.throttleTimeout = null
-    state.throttledPending = false
-    invalidate()
-  }, waitTime)
-}
-
-/**
- * Mark that a fetch is starting (update timestamp).
- */
-export function markFetchStart(state: ThrottleState): void {
-  state.lastFetchTime = Date.now()
-}
-
-/**
- * Clear any pending throttle timeout.
- */
-export function clearThrottle(state: ThrottleState): void {
-  if (state.throttleTimeout) {
-    clearTimeout(state.throttleTimeout)
-    state.throttleTimeout = null
-  }
-  state.throttledPending = false
-}
-
-// ============================================================================
 // Request Cancellation
 // ============================================================================
 
@@ -166,4 +94,50 @@ export function emitLoadingState(manager: LoadingManager): void {
     error: null,
   }
   manager.callback(state)
+}
+
+/**
+ * Spinner debouncer for chunk loading: flips `chunksLoading` on only after
+ * a short delay, so cache-hit refetches (e.g. scrubbing a selector within
+ * already-fetched tiles, or any <80ms fetch) never trigger it; flips it
+ * off immediately so the UI stays honest when real work finishes.
+ *
+ * `show()` is idempotent — calling it repeatedly while a timer is pending
+ * or while the spinner is already on is a no-op. `hide()` cancels any
+ * pending show and turns the spinner off if it was on.
+ */
+export interface ChunkLoadingDebouncer {
+  show(): void
+  hide(): void
+}
+
+export function createChunkLoadingDebouncer(
+  manager: LoadingManager,
+  showDelayMs: number = 80
+): ChunkLoadingDebouncer {
+  let showTimer: ReturnType<typeof setTimeout> | null = null
+
+  return {
+    show() {
+      if (manager.chunksLoading) return
+      if (showTimer) return
+      showTimer = setTimeout(() => {
+        showTimer = null
+        if (!manager.chunksLoading) {
+          manager.chunksLoading = true
+          emitLoadingState(manager)
+        }
+      }, showDelayMs)
+    },
+    hide() {
+      if (showTimer) {
+        clearTimeout(showTimer)
+        showTimer = null
+      }
+      if (manager.chunksLoading) {
+        manager.chunksLoading = false
+        emitLoadingState(manager)
+      }
+    },
+  }
 }

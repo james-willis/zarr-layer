@@ -76,16 +76,12 @@ import {
 import { createHybridMesh } from './mesh-reprojector'
 import { geoToArrayIndex } from './map-utils'
 import {
-  type ThrottleState,
   type RequestCanceller,
   type LoadingManager,
-  createThrottleState,
+  type ChunkLoadingDebouncer,
   createRequestCanceller,
   createLoadingManager,
-  getThrottleWaitTime,
-  scheduleThrottledUpdate,
-  markFetchStart,
-  clearThrottle,
+  createChunkLoadingDebouncer,
   cancelAllRequests,
   hasActiveRequests,
   setLoadingCallback as setLoadingCallbackUtil,
@@ -164,15 +160,58 @@ interface LevelSnapshot {
   height: number
   regionSize: [number, number]
   selectorVersion: number
+  bandNames: string[]
 }
+
+/**
+ * Fully-committed per-level state. Replaces six top-level fields that were
+ * previously mutated independently across `initializeLevel`, `switchToLevel`,
+ * `_initialize`, and `setSelector` — any of which was one `await` away from
+ * a half-commit race.
+ *
+ * `UntiledMode.activeLevel` is either `null` (nothing loaded) or a fully-
+ * formed runtime; readers never see a partial level.
+ */
+interface LevelRuntime {
+  index: number
+  zarrArray: zarr.Array<zarr.DataType>
+  width: number
+  height: number
+  regionSize: [number, number]
+  baseSliceArgs: (number | zarr.Slice)[]
+  baseMultiValueDims: Array<{
+    dimIndex: number
+    dimName: string
+    values: number[]
+    labels: (number | string)[]
+  }>
+}
+
+type QueryLevelSnapshot = Pick<
+  LevelRuntime,
+  'index' | 'zarrArray' | 'width' | 'height'
+>
 
 export class UntiledMode implements ZarrMode {
   isMultiscale: boolean = false
 
-  // Data state (single-level mode)
-  private width: number = 0
-  private height: number = 0
   private channels: number = 1
+
+  // The single committed snapshot. All per-level state (array, dims, slice
+  // args) is swapped atomically through `loadLevel()`; nothing else mutates
+  // these fields.
+  private activeLevel: LevelRuntime | null = null
+  // Monotonic id stamped by each `loadLevel` call. Async loads check this
+  // before committing — a bump invalidates older pending work.
+  private loadToken: number = 0
+  // Target level requested by zoom/init. `update()` writes this; `loadLevel`
+  // reads it to re-target if a zoom change happened mid-load.
+  private desiredLevelIndex: number = 0
+  // Target of the currently-running `loadLevel`, or null when idle. Used
+  // by `update()` to dedupe: if we're already loading the target level,
+  // don't restart the fetch every frame (ZarrLayer.prerender calls
+  // update() once per frame, so without this we'd never commit).
+  private loadingLevelIndex: number | null = null
 
   // Bounds
   private mercatorBounds: MercatorBounds | null = null
@@ -186,13 +225,10 @@ export class UntiledMode implements ZarrMode {
   private dimIndices: DimIndicesProps = {}
   private xyLimits: XYLimits | null = null
   private crs: CRS = 'EPSG:4326'
-  private zarrArray: zarr.Array<zarr.DataType> | null = null
   private latIsAscending: boolean = true
 
   // Multi-level support
   private levels: UntiledLevel[] = []
-  private currentLevelIndex: number = 0
-  private pendingLevelIndex: number | null = null // Guards against concurrent switchToLevel calls
   private levelMetadataFetched: Set<number> = new Set() // Tracks which levels have had metadata fetched
   private proj4def: string | null = null
 
@@ -210,13 +246,14 @@ export class UntiledMode implements ZarrMode {
 
   // Loading state
   private isRemoved: boolean = false
-  private throttleMs: number
   private _antimeridianWarnings: Set<string> = new Set()
 
   // Shared state managers
-  private throttleState: ThrottleState = createThrottleState()
   private requestCanceller: RequestCanceller = createRequestCanceller()
   private loadingManager: LoadingManager = createLoadingManager()
+  private loadingDebouncer: ChunkLoadingDebouncer = createChunkLoadingDebouncer(
+    this.loadingManager
+  )
 
   // Dimension values cache (supports numeric and string coordinate arrays)
   private dimensionValues: {
@@ -234,22 +271,11 @@ export class UntiledMode implements ZarrMode {
   private visibleRegionKeys: Set<string> = new Set()
   private lastVisibleRegions: Array<{ regionX: number; regionY: number }> = [] // Last computed visible regions
   private lastVisibleRegionsLevel: number = -1 // Level index that lastVisibleRegions corresponds to
-  private regionSize: [number, number] | null = null // [height, width] of each region
   private lastViewportHash: string = ''
-  private baseSliceArgs: (number | zarr.Slice)[] = [] // Cached slice args for non-spatial dims
   private selectorVersion: number = 0 // Incremented on selector change to track stale regions
-  // Multi-band support: track which dimensions have multiple selected values
-  private baseMultiValueDims: Array<{
-    dimIndex: number
-    dimName: string
-    values: number[]
-    labels: (number | string)[]
-  }> = []
 
   // Cached WebGL context for use in setSelector
   private cachedGl: WebGL2RenderingContext | null = null
-  // Track if base slice args have been built (ready for region fetching)
-  private baseSliceArgsReady: boolean = false
   // Track current projection for subdivision optimization
   private isGlobeProjection: boolean = false
   // Deferred geometry rebuild: when globe→flat transition starts, onProjectionChange(false)
@@ -265,7 +291,6 @@ export class UntiledMode implements ZarrMode {
     variable: string,
     selector: NormalizedSelector,
     invalidate: () => void,
-    throttleMs: number = 100,
     fixedDataScale: number = 1
   ) {
     this.zarrStore = store
@@ -273,7 +298,6 @@ export class UntiledMode implements ZarrMode {
     this.selector = selector
     this.bandNames = getBands(variable, selector)
     this.invalidate = invalidate
-    this.throttleMs = throttleMs
     this.fixedDataScale = fixedDataScale
   }
 
@@ -324,15 +348,14 @@ export class UntiledMode implements ZarrMode {
         // Ensure all levels have shape (required for level selection)
         // This only fetches levels where consolidated metadata was incomplete
         await this.ensureAllLevelShapes()
-        // Don't load data yet - defer to update() where we have the actual zoom level
-        // This avoids loading low-res then immediately switching to high-res
-        this.currentLevelIndex = -1 // Mark as not yet selected
+        // Don't load level data yet — `update()` will call `loadLevel`
+        // once we know the actual zoom level. Avoids loading low-res then
+        // immediately switching to high-res.
       } else {
-        // Single-level dataset - load immediately
         this.isMultiscale = false
-        this.zarrArray = await this.zarrStore.getArray()
-        this.width = this.zarrArray.shape[this.dimIndices.lon.index]
-        this.height = this.zarrArray.shape[this.dimIndices.lat.index]
+        // Single-level dataset — commit the level eagerly so first render
+        // doesn't wait for another tick of `update()`.
+        await this.loadLevel(0)
       }
 
       if (this.xyLimits) {
@@ -538,11 +561,12 @@ export class UntiledMode implements ZarrMode {
     map: MapLike
   ): Array<{ regionX: number; regionY: number }> {
     const bounds = map.getBounds?.()?.toArray?.()
-    if (!bounds || !this.xyLimits || !this.regionSize) return []
+    if (!bounds || !this.xyLimits || !this.activeLevel) return []
 
+    const { width, height, regionSize } = this.activeLevel
     const [[west, south], [east, north]] = bounds
     const { xMin, xMax, yMin, yMax } = this.xyLimits
-    const [regionH, regionW] = this.regionSize
+    const [regionH, regionW] = regionSize
 
     if (this.proj4def && this.cachedWGS84Transformer) {
       // For projected data, use a two-pass approach:
@@ -551,8 +575,8 @@ export class UntiledMode implements ZarrMode {
       //    bijective projections like UTM outside their zone)
       // 2. Inverse-transform candidate region bounds to WGS84 for precise overlap
       const transformer = this.cachedWGS84Transformer
-      const numRegionsX = Math.ceil(this.width / regionW)
-      const numRegionsY = Math.ceil(this.height / regionH)
+      const numRegionsX = Math.ceil(width / regionW)
+      const numRegionsY = Math.ceil(height / regionH)
 
       const candidates = this.getCandidateRegions(
         west,
@@ -563,7 +587,9 @@ export class UntiledMode implements ZarrMode {
         numRegionsX,
         numRegionsY,
         regionW,
-        regionH
+        regionH,
+        width,
+        height
       )
 
       // Verify candidates via inverse transform to WGS84 for precise overlap.
@@ -571,7 +597,11 @@ export class UntiledMode implements ZarrMode {
       // produce false positives.
       const regions: Array<{ regionX: number; regionY: number }> = []
       for (const { regionX, regionY } of candidates) {
-        const regBounds = this.getRegionBounds(regionX, regionY)
+        const regBounds = this.getRegionBounds(regionX, regionY, {
+          width,
+          height,
+          regionSize,
+        })
         const xMid = (regBounds.xMin + regBounds.xMax) / 2
         const yMid = (regBounds.yMin + regBounds.yMax) / 2
 
@@ -615,20 +645,20 @@ export class UntiledMode implements ZarrMode {
     }
 
     // Standard case: viewport bounds are in same CRS as xyLimits
-    const xMinIdx = geoToArrayIndex(west, xMin, xMax, this.width)
-    const xMaxIdx = geoToArrayIndex(east, xMin, xMax, this.width)
+    const xMinIdx = geoToArrayIndex(west, xMin, xMax, width)
+    const xMaxIdx = geoToArrayIndex(east, xMin, xMax, width)
 
     // For Y axis, geoToArrayIndex assumes yMin maps to row 0.
     // But if latIsAscending=false (row 0 = north = yMax), we need to invert.
-    let ySouthIdx = geoToArrayIndex(south, yMin, yMax, this.height)
-    let yNorthIdx = geoToArrayIndex(north, yMin, yMax, this.height)
+    let ySouthIdx = geoToArrayIndex(south, yMin, yMax, height)
+    let yNorthIdx = geoToArrayIndex(north, yMin, yMax, height)
 
     // Only invert if we explicitly know latIsAscending is false
     // If null/undefined, assume ascending (yMin at row 0) as default
     if (this.latIsAscending === false) {
       // Invert Y indices: row 0 = north (yMax), row height-1 = south (yMin)
-      ySouthIdx = this.height - 1 - ySouthIdx
-      yNorthIdx = this.height - 1 - yNorthIdx
+      ySouthIdx = height - 1 - ySouthIdx
+      yNorthIdx = height - 1 - yNorthIdx
     }
 
     // Convert pixel indices to region indices
@@ -638,8 +668,8 @@ export class UntiledMode implements ZarrMode {
     const regionYMax = Math.floor(Math.max(ySouthIdx, yNorthIdx) / regionH)
 
     // Clamp to valid range
-    const numRegionsX = Math.ceil(this.width / regionW)
-    const numRegionsY = Math.ceil(this.height / regionH)
+    const numRegionsX = Math.ceil(width / regionW)
+    const numRegionsY = Math.ceil(height / regionH)
     const clampedXMin = Math.max(0, regionXMin)
     const clampedXMax = Math.min(numRegionsX - 1, regionXMax)
     const clampedYMin = Math.max(0, regionYMin)
@@ -719,7 +749,8 @@ export class UntiledMode implements ZarrMode {
       region.vertexBuffer &&
       region.pixCoordBuffer &&
       region.vertexArr &&
-      region.mercatorBounds
+      region.mercatorBounds &&
+      region.levelMeta
     )
   }
 
@@ -761,10 +792,10 @@ export class UntiledMode implements ZarrMode {
    */
   private currentLevelCoversViewport(): boolean {
     // If visible regions are stale (from different level), we can't know coverage
-    if (this.lastVisibleRegionsLevel !== this.currentLevelIndex) {
+    if (this.lastVisibleRegionsLevel !== (this.activeLevel?.index ?? -1)) {
       return false
     }
-    const levelIndex = this.currentLevelIndex
+    const levelIndex = this.activeLevel?.index ?? -1
     for (const { regionX, regionY } of this.lastVisibleRegions) {
       const key = this.makeRegionKey(levelIndex, regionX, regionY)
       const region = this.regionCache.get(key)
@@ -783,7 +814,7 @@ export class UntiledMode implements ZarrMode {
   private getProtectedFallbackRegions(): RegionState[] {
     const fallbacks: RegionState[] = []
     for (const region of this.regionCache.values()) {
-      if (region.levelIndex === this.currentLevelIndex) continue
+      if (region.levelIndex === (this.activeLevel?.index ?? -1)) continue
       if (!this.isRegionValid(region)) continue
       // Only include regions that are protected (were visible)
       if (!this.visibleRegionKeys.has(region.key)) continue
@@ -798,7 +829,7 @@ export class UntiledMode implements ZarrMode {
    * Otherwise, includes protected fallback regions from other levels.
    */
   private getLoadedRegions(): RegionState[] {
-    const currentLevel = this.currentLevelIndex
+    const currentLevel = this.activeLevel?.index ?? -1
     const currentLevelRegions: RegionState[] = []
 
     // Collect all valid regions at current level
@@ -867,7 +898,9 @@ export class UntiledMode implements ZarrMode {
     numRegionsX: number,
     numRegionsY: number,
     regionW: number,
-    regionH: number
+    regionH: number,
+    width: number,
+    height: number
   ): Array<{ regionX: number; regionY: number }> {
     if (!this.xyLimits) return []
     const { xMin, xMax, yMin, yMax } = this.xyLimits
@@ -933,14 +966,14 @@ export class UntiledMode implements ZarrMode {
     // Widen margin when some samples failed (projection boundary)
     const margin = validCount < totalCount ? 8 : 2
 
-    const pxXMin = ((srcXMin - xMin) / (xMax - xMin)) * this.width
-    const pxXMax = ((srcXMax - xMin) / (xMax - xMin)) * this.width
-    const pxYMin = ((srcYMin - yMin) / (yMax - yMin)) * this.height
-    const pxYMax = ((srcYMax - yMin) / (yMax - yMin)) * this.height
+    const pxXMin = ((srcXMin - xMin) / (xMax - xMin)) * width
+    const pxXMax = ((srcXMax - xMin) / (xMax - xMin)) * width
+    const pxYMin = ((srcYMin - yMin) / (yMax - yMin)) * height
+    const pxYMax = ((srcYMax - yMin) / (yMax - yMin)) * height
     let rXMin: number, rXMax: number, rYMin: number, rYMax: number
     if (this.latIsAscending === false) {
-      const invYMin = this.height - pxYMax
-      const invYMax = this.height - pxYMin
+      const invYMin = height - pxYMax
+      const invYMax = height - pxYMin
       rYMin = Math.floor(invYMin / regionH) - margin
       rYMax = Math.floor(invYMax / regionH) + margin
     } else {
@@ -968,20 +1001,19 @@ export class UntiledMode implements ZarrMode {
   /**
    * Get geographic bounds for a region.
    * Accounts for data orientation (latIsAscending).
-   * Accepts optional levelMeta to use level-specific dimensions instead of current level.
+   * Requires level-specific dimensions so async work never reaches back into
+   * `activeLevel`, which may have changed since the caller captured a region.
    */
   private getRegionBounds(
     regionX: number,
     regionY: number,
-    levelMeta?: LevelMeta
+    levelMeta: LevelMeta
   ): { xMin: number; xMax: number; yMin: number; yMax: number } {
-    const width = levelMeta?.width ?? this.width
-    const height = levelMeta?.height ?? this.height
-    const regionSize = levelMeta?.regionSize ?? this.regionSize
+    const { width, height, regionSize } = levelMeta
 
     // xyLimits is assumed constant across all multiscale levels (same geographic extent).
     // If per-level bounds are ever needed, add xyLimits to LevelMeta type.
-    if (!this.xyLimits || !regionSize) {
+    if (!this.xyLimits) {
       return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }
     }
 
@@ -1031,9 +1063,7 @@ export class UntiledMode implements ZarrMode {
     region: RegionState
   ): void {
     // Guard: can't create geometry without dimension info
-    if (!region.levelMeta && !this.regionSize) {
-      return
-    }
+    if (!region.levelMeta) return
 
     // Defensive reset: wgs84Bounds is only set by the proj4 branch below.
     // Ensures it's not stale after projection toggle or geometry rebuild.
@@ -1041,11 +1071,7 @@ export class UntiledMode implements ZarrMode {
     region.indexArr = null
     region.useIndexedMesh = false
 
-    const geoBounds = this.getRegionBounds(
-      regionX,
-      regionY,
-      region.levelMeta ?? undefined
-    )
+    const geoBounds = this.getRegionBounds(regionX, regionY, region.levelMeta)
 
     // Use cached mercatorBounds if set (from fetchRegion's resampling path),
     // otherwise compute from geoBounds (for non-resampling cases like EPSG:3857)
@@ -1218,6 +1244,13 @@ export class UntiledMode implements ZarrMode {
         minY: number
         maxY: number
       }
+      /**
+       * Array to derive shape from. Caller pins this so we don't read
+       * `this.activeLevel?.zarrArray` mid-flight (which can swap during
+       * `loadLevel` or zoom). Pass the new array during `loadLevel`, or
+       * a snapshot of the active array for query/render paths.
+       */
+      array: zarr.Array<zarr.DataType>
     }
   ): Promise<{
     sliceArgs: (number | zarr.Slice)[]
@@ -1228,12 +1261,10 @@ export class UntiledMode implements ZarrMode {
       labels: (number | string)[]
     }>
   }> {
-    if (!this.zarrArray) {
-      return { sliceArgs: [], multiValueDims: [] }
-    }
+    const { array } = options
 
     const sliceArgs: (number | zarr.Slice)[] = new Array(
-      this.zarrArray.shape.length
+      array.shape.length
     ).fill(0)
 
     const multiValueDims: Array<{
@@ -1257,7 +1288,7 @@ export class UntiledMode implements ZarrMode {
           )
         } else {
           sliceArgs[dimInfo.index] = options.includeSpatialSlices
-            ? zarr.slice(0, this.width)
+            ? zarr.slice(0, array.shape[dimInfo.index] ?? 0)
             : 0
         }
       } else if (dimType === 'lat') {
@@ -1268,7 +1299,7 @@ export class UntiledMode implements ZarrMode {
           )
         } else {
           sliceArgs[dimInfo.index] = options.includeSpatialSlices
-            ? zarr.slice(0, this.height)
+            ? zarr.slice(0, array.shape[dimInfo.index] ?? 0)
             : 0
         }
       } else {
@@ -1347,8 +1378,8 @@ export class UntiledMode implements ZarrMode {
   private updateVisibleRegions(map: MapLike, gl: WebGL2RenderingContext): void {
     const visible = this.getVisibleRegions(map)
     this.lastVisibleRegions = visible
-    this.lastVisibleRegionsLevel = this.currentLevelIndex
-    const levelIndex = this.currentLevelIndex
+    this.lastVisibleRegionsLevel = this.activeLevel?.index ?? -1
+    const levelIndex = this.activeLevel?.index ?? -1
 
     // Add new level's visible region keys (protected from eviction)
     // Don't clear old keys yet - they protect fallback regions during transitions
@@ -1388,8 +1419,8 @@ export class UntiledMode implements ZarrMode {
     }
 
     // Separate regions into two categories:
-    // 1. New regions (no data) - viewport change, fetch immediately
-    // 2. Stale regions (have data, wrong selector) - selector change, throttle
+    // 1. New regions (no data) - viewport change
+    // 2. Stale regions (have data, wrong selector) - selector change
     const newRegions: Array<{ regionX: number; regionY: number }> = []
     const staleRegions: Array<{ regionX: number; regionY: number }> = []
 
@@ -1428,38 +1459,12 @@ export class UntiledMode implements ZarrMode {
       return
     }
 
-    // Fetch new regions immediately (viewport changes - no throttle)
     if (newRegions.length > 0) {
       this.fetchRegions(newRegions, gl)
     }
-
-    // Fetch stale regions with throttle (selector changes)
     if (staleRegions.length > 0) {
-      this.fetchRegionsThrottled(staleRegions, gl)
+      this.fetchRegions(staleRegions, gl)
     }
-  }
-
-  /**
-   * Fetch regions with throttling (for selector changes).
-   */
-  private fetchRegionsThrottled(
-    regions: Array<{ regionX: number; regionY: number }>,
-    gl: WebGL2RenderingContext
-  ): void {
-    const waitTime = getThrottleWaitTime(this.throttleState, this.throttleMs)
-    if (waitTime > 0) {
-      // Set loading state even when throttled so callers know data is pending
-      if (!this.throttleState.throttledPending) {
-        this.throttleState.throttledPending = true
-        this.emitLoadingState()
-      }
-      scheduleThrottledUpdate(this.throttleState, waitTime, this.invalidate)
-      return
-    }
-    markFetchStart(this.throttleState)
-
-    // Actually fetch the regions
-    this.fetchRegions(regions, gl)
   }
 
   /**
@@ -1469,22 +1474,23 @@ export class UntiledMode implements ZarrMode {
     regions: Array<{ regionX: number; regionY: number }>,
     gl: WebGL2RenderingContext
   ): Promise<void> {
-    // Can't fetch without required state
-    if (!this.zarrArray || !this.regionSize) {
-      return
-    }
+    // Can't fetch without a committed level.
+    if (!this.activeLevel) return
+    const level = this.activeLevel
 
-    // Capture ALL level-dependent state at start to pass to fetchRegion
-    // This prevents races where switchToLevel or selector changes update state mid-batch
+    // Capture ALL level-dependent state at start to pass to fetchRegion.
+    // This prevents races where a later `loadLevel` (zoom switch or
+    // selector rebuild) swaps `this.activeLevel` mid-batch.
     const snapshot: LevelSnapshot = {
-      index: this.currentLevelIndex,
-      zarrArray: this.zarrArray,
-      baseSliceArgs: [...this.baseSliceArgs],
-      width: this.width,
-      height: this.height,
-      regionSize: this.regionSize,
+      index: level.index,
+      zarrArray: level.zarrArray,
+      baseSliceArgs: [...level.baseSliceArgs],
+      width: level.width,
+      height: level.height,
+      regionSize: level.regionSize,
       selectorVersion: this.selectorVersion,
-      baseMultiValueDims: this.baseMultiValueDims.map((dim) => ({
+      bandNames: [...this.bandNames],
+      baseMultiValueDims: level.baseMultiValueDims.map((dim) => ({
         dimIndex: dim.dimIndex,
         dimName: dim.dimName,
         values: [...dim.values],
@@ -1492,9 +1498,7 @@ export class UntiledMode implements ZarrMode {
       })),
     }
 
-    // Emit loading state
-    this.loadingManager.chunksLoading = true
-    this.emitLoadingState()
+    this.loadingDebouncer.show()
 
     // Mark ALL regions as loading upfront to prevent duplicate fetches
     // from subsequent update() calls before we've processed them all
@@ -1508,44 +1512,31 @@ export class UntiledMode implements ZarrMode {
       region.loading = true
     }
 
-    const MAX_CONCURRENT = 32
-    const executing: Promise<void>[] = []
-
-    for (const { regionX, regionY } of regions) {
-      // Check if level or selector changed - bail out to avoid stale fetches
-      if (
-        this.currentLevelIndex !== snapshot.index ||
-        this.selectorVersion !== snapshot.selectorVersion
-      ) {
-        cancelAllRequests(this.requestCanceller)
-        this.clearBatchLoadingFlags(regions, snapshot.index)
-        break
-      }
-
-      const promise = this.fetchRegion(regionX, regionY, gl, snapshot)
-        .then(() => {
-          executing.splice(executing.indexOf(promise), 1)
-        })
-        .catch(() => {
-          executing.splice(executing.indexOf(promise), 1)
-        })
-
-      executing.push(promise)
-
-      if (executing.length >= MAX_CONCURRENT) {
-        await Promise.race(executing)
-      }
-    }
-
-    // Wait for remaining requests (if any are still in flight)
-    if (executing.length > 0) {
-      await Promise.allSettled(executing)
+    // Pre-flight staleness check. Mid-flight changes are handled by the
+    // `cancelAllRequests` in `loadLevel`/`setSelector`, which aborts the
+    // signals that fetchRegion threads through every await.
+    if (
+      (this.activeLevel?.index ?? -1) !== snapshot.index ||
+      this.selectorVersion !== snapshot.selectorVersion
+    ) {
+      cancelAllRequests(this.requestCanceller)
+      this.clearBatchLoadingFlags(regions, snapshot.index)
+    } else {
+      // Kick off every region synchronously so their underlying chunk reads
+      // land in one microtask drain — that's what lets the range coalescer
+      // (icechunk-js + zarrita) merge them into a handful of HTTP fetches
+      // instead of one per region. Browser HTTP queueing handles back-
+      // pressure on the connection pool; throttling fetchRegion calls here
+      // just fragments the coalescer's same-tick batch window.
+      const fetches = regions.map(({ regionX, regionY }) =>
+        this.fetchRegion(regionX, regionY, gl, snapshot)
+      )
+      await Promise.allSettled(fetches)
     }
 
     // Only update loading state if we're still on the same level
     if (!hasActiveRequests(this.requestCanceller)) {
-      this.loadingManager.chunksLoading = false
-      this.emitLoadingState()
+      this.loadingDebouncer.hide()
 
       // Evict old regions if cache is full (LRU via Map insertion order)
       this.evictOldRegions(gl)
@@ -1564,7 +1555,7 @@ export class UntiledMode implements ZarrMode {
     gl: WebGL2RenderingContext,
     snapshot: LevelSnapshot
   ): Promise<void> {
-    if (this.currentLevelIndex !== snapshot.index) {
+    if ((this.activeLevel?.index ?? -1) !== snapshot.index) {
       return
     }
 
@@ -1613,17 +1604,14 @@ export class UntiledMode implements ZarrMode {
       const { combinations: channelCombinations } =
         this.buildChannelCombinations(snapshot.baseMultiValueDims)
       const numChannels = channelCombinations.length || 1
-      const pixelCount = actualW * actualH
 
       // Fetch data for all channels
       const bandArrays: Float32Array[] = []
-      const packedData = new Float32Array(pixelCount * numChannels)
-      packedData.fill(fillValue ?? 0)
 
       const isStale = () =>
         controller.signal.aborted ||
         this.isRemoved ||
-        this.currentLevelIndex !== snapshot.index
+        (this.activeLevel?.index ?? -1) !== snapshot.index
 
       if (numChannels === 1) {
         // Single channel - simple fetch
@@ -1637,7 +1625,6 @@ export class UntiledMode implements ZarrMode {
 
         const rawData = new Float32Array(result.data as ArrayLike<number>)
         bandArrays.push(rawData)
-        packedData.set(rawData)
       } else {
         // Multi-channel - fetch all channels in parallel
         if (isStale()) return
@@ -1671,11 +1658,6 @@ export class UntiledMode implements ZarrMode {
           const result = results[c] as { data: ArrayLike<number> }
           const bandData = new Float32Array(result.data as ArrayLike<number>)
           bandArrays.push(bandData)
-
-          // Pack into interleaved format for main texture
-          for (let pixIdx = 0; pixIdx < pixelCount; pixIdx++) {
-            packedData[pixIdx * numChannels + c] = bandData[pixIdx]
-          }
         }
       }
 
@@ -1686,10 +1668,6 @@ export class UntiledMode implements ZarrMode {
       region.selectorVersion = fetchSelectorVersion
 
       // Resample bands to Mercator space if needed (EPSG:4326 or custom projection)
-      let bandDataToProcess = bandArrays
-      let outputW = actualW
-      let outputH = actualH
-
       // For non-EPSG:3857 datasets: GPU handles reprojection
       // - Proj4 datasets: adaptive mesh (CRS→4326), GPU projects to Mercator or ECEF
       // - EPSG:4326 datasets: subdivided quad, GPU reprojects via fragment or ECEF
@@ -1717,9 +1695,9 @@ export class UntiledMode implements ZarrMode {
       region.bandTexturesUploaded.clear()
       const normalizedBands: Float32Array[] = []
 
-      for (let c = 0; c < bandDataToProcess.length; c++) {
-        const bandName = this.bandNames[c] || `band_${c}`
-        let bandData = bandDataToProcess[c]
+      for (let c = 0; c < bandArrays.length; c++) {
+        const bandName = snapshot.bandNames[c] || `band_${c}`
+        let bandData = bandArrays[c]
 
         // Apply scale/offset if needed (converts raw to physical values)
         if (scaleFactor !== 1 || addOffset !== 0) {
@@ -1758,11 +1736,11 @@ export class UntiledMode implements ZarrMode {
       // The adaptive mesh only depends on spatial bounds and dimensions, not the selector
       const needsGeometry =
         !region.vertexBuffer ||
-        region.width !== outputW ||
-        region.height !== outputH
+        region.width !== actualW ||
+        region.height !== actualH
 
-      region.width = outputW
-      region.height = outputH
+      region.width = actualW
+      region.height = actualH
       region.channels = numChannels
       region.loading = false
 
@@ -1784,8 +1762,8 @@ export class UntiledMode implements ZarrMode {
       const result = uploadDataTexture(gl, {
         texture: region.texture!,
         data: region.data!,
-        width: outputW,
-        height: outputH,
+        width: actualW,
+        height: actualH,
         channels: numChannels,
         configured: false,
       })
@@ -1821,113 +1799,165 @@ export class UntiledMode implements ZarrMode {
       return
     }
 
-    // For multi-level datasets, select/switch levels based on zoom
+    // Pick target: zoom-selected for multiscale, single level otherwise.
     if (this.isMultiscale && this.levels.length > 0) {
       const mapZoom = map.getZoom?.() ?? 0
-      const bestLevelIndex = this.selectLevelForZoom(mapZoom)
-
-      // Initial load
-      if (this.currentLevelIndex === -1) {
-        this.initializeLevel(bestLevelIndex)
-        return
-      }
-
-      // Handle level switch (including retargeting)
-      if (bestLevelIndex !== this.currentLevelIndex) {
-        if (this.pendingLevelIndex === null) {
-          this.switchToLevel(bestLevelIndex)
-        } else if (this.pendingLevelIndex !== bestLevelIndex) {
-          this.pendingLevelIndex = bestLevelIndex
-          cancelAllRequests(this.requestCanceller)
-        }
-        // Defer region updates while switching
-        return
-      }
-
-      // Update regions for current level
-      if (this.regionSize && this.baseSliceArgsReady) {
-        this.updateVisibleRegions(map, gl)
-      }
+      this.desiredLevelIndex = this.selectLevelForZoom(mapZoom)
     } else {
-      // Single-level dataset - set up region-based loading if not already done
-      if (
-        !this.regionSize &&
-        this.zarrArray &&
-        !this.loadingManager.chunksLoading
-      ) {
-        const detectedRegionSize = this.getRegionSize(this.zarrArray)
-        this.regionSize = detectedRegionSize ?? [this.height, this.width]
-
-        // Build base slice args and let updateVisibleRegions handle loading
-        this.buildBaseSliceArgs().then(() => {
-          this.updateVisibleRegions(map, gl)
-        })
-        return
-      }
-
-      // Update visible regions for single-level dataset (only if ready)
-      if (this.regionSize && this.baseSliceArgsReady) {
-        this.updateVisibleRegions(map, gl)
-      }
+      this.desiredLevelIndex = 0
     }
-  }
 
-  private async initializeLevel(levelIndex: number): Promise<void> {
-    if (levelIndex < 0 || levelIndex >= this.levels.length) {
-      return
-    }
-    if (this.loadingManager.chunksLoading) {
+    // Kick off a load only when the committed level doesn't match the
+    // target AND we're not already loading that target. `prerender()`
+    // calls `update()` every frame, so without the `loadingLevelIndex`
+    // dedupe we'd bump `loadToken` on every frame and starve the load.
+    if (this.activeLevel?.index !== this.desiredLevelIndex) {
+      if (this.loadingLevelIndex !== this.desiredLevelIndex) {
+        this.loadLevel(this.desiredLevelIndex)
+      }
       return
     }
 
-    // Ensure metadata is loaded for this level (lazy load if needed)
-    await this.ensureLevelMetadata(levelIndex)
-
-    const level = this.levels[levelIndex]
-    this.currentLevelIndex = levelIndex
-
-    try {
-      this.zarrArray = await this.zarrStore.getLevelArray(level.asset)
-      this.width = this.zarrArray.shape[this.dimIndices.lon.index]
-      this.height = this.zarrArray.shape[this.dimIndices.lat.index]
-
-      // Always use region-based loading for unified rendering path
-      // If no chunk/shard boundaries, treat whole level as one region
-      const detectedRegionSize = this.getRegionSize(this.zarrArray)
-      this.regionSize = detectedRegionSize ?? [this.height, this.width]
-      this.regionCache.clear()
-
-      // Build base slice args for non-spatial dimensions
-      await this.buildBaseSliceArgs()
-
-      // Let update() trigger viewport-aware loading
-      this.invalidate()
-    } catch (err) {
-      console.error(`Failed to initialize level ${level.asset}:`, err)
-    }
+    // Committed level matches target — render from it. If a selector
+    // rebuild is in flight *for this level* (`loadingLevelIndex ===
+    // activeLevel.index`), skip the fetch loop: `updateVisibleRegions`
+    // would dispatch fetches against the old `baseSliceArgs` and stamp
+    // them with the pending selectorVersion, leaving stale data marked
+    // fresh in the cache. A pending load for a *different* level (e.g.
+    // user zoomed in then zoomed back out while the deeper-level load
+    // was still outstanding) shouldn't block rendering the current one.
+    if (this.loadingLevelIndex === this.activeLevel.index) return
+    this.updateVisibleRegions(map, gl)
   }
 
   /**
-   * Build base slice args for non-spatial dimensions.
-   * This caches the selector values for use in region fetching.
-   * Also tracks multi-value dimensions for band extraction.
+   * Unified level load: handles initial load, zoom-driven switch, and
+   * selector-driven slice-args rebuild. Builds a `LevelRuntime` off to
+   * the side and swaps it into `this.activeLevel` atomically, so readers
+   * never see a half-committed level.
+   *
+   * `reuseArray` reuses the current committed array/dims — used by
+   * `setSelector` to rebuild slice args without refetching. `loadToken`
+   * acts as a cancellation token: any load whose token is stale at
+   * commit time drops its result.
    */
-  private async buildBaseSliceArgs(): Promise<void> {
-    if (!this.zarrArray) return
+  private async loadLevel(
+    levelIndex: number,
+    { reuseArray = false }: { reuseArray?: boolean } = {}
+  ): Promise<void> {
+    if (this.isMultiscale && this.levels.length > 0) {
+      if (levelIndex < 0 || levelIndex >= this.levels.length) return
+    } else if (levelIndex !== 0) {
+      return
+    }
 
-    this.baseSliceArgsReady = false
+    // Dedupe: an in-flight load for the same target is already on it.
+    // A selector rebuild (`reuseArray`) intentionally supersedes.
+    if (this.loadingLevelIndex === levelIndex && !reuseArray) {
+      return
+    }
 
-    const { sliceArgs, multiValueDims } = await this.buildSliceArgsForSelector(
-      this.selector,
-      {
-        includeSpatialSlices: false, // placeholders for region fetching
-        trackMultiValue: true, // track multi-value dims for band extraction
+    const token = ++this.loadToken
+    // Snapshot `this.selector` so we can detect a concurrent `setSelector`
+    // that arrived after `buildSliceArgsForSelector` resolved; committing
+    // old slice args with a new selector would leak stale data.
+    const selectorSnapshot = this.selector
+    this.loadingLevelIndex = levelIndex
+
+    // Cancel any in-flight region fetches — they were tied to the old
+    // level's array/dims (or old selector) and can't be reused.
+    if (this.requestCanceller.controllers.size > 0) {
+      cancelAllRequests(this.requestCanceller)
+      this.loadingDebouncer.hide()
+    }
+
+    try {
+      const existing = this.activeLevel
+      const canReuseArray =
+        reuseArray && existing !== null && existing.index === levelIndex
+
+      let newArray: zarr.Array<zarr.DataType>
+      let newWidth: number
+      let newHeight: number
+      let newRegionSize: [number, number]
+
+      if (canReuseArray) {
+        newArray = existing!.zarrArray
+        newWidth = existing!.width
+        newHeight = existing!.height
+        newRegionSize = existing!.regionSize
+      } else {
+        if (this.isMultiscale) {
+          await this.ensureLevelMetadata(levelIndex)
+          const level = this.levels[levelIndex]
+          newArray = await this.zarrStore.getLevelArray(level.asset)
+        } else {
+          newArray = await this.zarrStore.getArray()
+        }
+        newWidth = newArray.shape[this.dimIndices.lon.index]
+        newHeight = newArray.shape[this.dimIndices.lat.index]
+        const detected = this.getRegionSize(newArray)
+        newRegionSize = detected ?? [newHeight, newWidth]
       }
-    )
 
-    this.baseSliceArgs = sliceArgs
-    this.baseMultiValueDims = multiValueDims
-    this.baseSliceArgsReady = true
+      const { sliceArgs, multiValueDims } =
+        await this.buildSliceArgsForSelector(selectorSnapshot, {
+          includeSpatialSlices: false,
+          trackMultiValue: true,
+          array: newArray,
+        })
+
+      const targetStillDesired =
+        reuseArray ||
+        !this.isMultiscale ||
+        levelIndex === this.desiredLevelIndex
+
+      // Drop on the floor if anything raced past us: a newer load (or
+      // dispose) bumped the token, the zoom target moved on, or
+      // `setSelector` replaced the selector we built slice args against.
+      if (
+        token !== this.loadToken ||
+        this.isRemoved ||
+        this.selector !== selectorSnapshot ||
+        !targetStillDesired
+      ) {
+        this.invalidate()
+        return
+      }
+
+      // Atomic commit — one reference swap replaces all per-level state.
+      this.activeLevel = {
+        index: levelIndex,
+        zarrArray: newArray,
+        width: newWidth,
+        height: newHeight,
+        regionSize: newRegionSize,
+        baseSliceArgs: sliceArgs,
+        baseMultiValueDims: multiValueDims,
+      }
+
+      // Don't clear the region cache on level changes — older-level
+      // regions serve as fallback rendering while the new level's
+      // regions load, and the LRU (`evictOldRegions`) disposes them
+      // properly once they're no longer protected by `visibleRegionKeys`.
+      // Bare `.clear()` here would leak WebGL textures/buffers.
+      if (!canReuseArray) {
+        this.resetVisibleRegions()
+      }
+
+      this.invalidate()
+    } catch (err) {
+      if (token === this.loadToken) {
+        const assetLabel = this.isMultiscale
+          ? this.levels[levelIndex]?.asset ?? String(levelIndex)
+          : 'single-level'
+        console.error(`Failed to load level ${assetLabel}:`, err)
+      }
+    } finally {
+      if (token === this.loadToken) {
+        this.loadingLevelIndex = null
+      }
+    }
   }
 
   private selectLevelForZoom(mapZoom: number): number {
@@ -1989,70 +2019,6 @@ export class UntiledMode implements ZarrMode {
 
     // If no level is sufficient, use the highest resolution available
     return levelResolutions[levelResolutions.length - 1].index
-  }
-
-  private async switchToLevel(newLevelIndex: number): Promise<void> {
-    if (newLevelIndex === this.currentLevelIndex) return
-    if (newLevelIndex < 0 || newLevelIndex >= this.levels.length) return
-
-    // Mark as pending to prevent concurrent calls for same level
-    this.pendingLevelIndex = newLevelIndex
-
-    // Cancel in-flight requests for the old level - data not reusable across resolutions
-    const controllersToCancel = this.requestCanceller.controllers.size
-    if (controllersToCancel > 0) {
-      for (const controller of this.requestCanceller.controllers.values()) {
-        controller.abort()
-      }
-      this.requestCanceller.controllers.clear()
-      this.loadingManager.chunksLoading = false
-      this.emitLoadingState()
-    }
-
-    // Ensure metadata is loaded for this level (lazy load if needed)
-    await this.ensureLevelMetadata(newLevelIndex)
-
-    const level = this.levels[newLevelIndex]
-
-    try {
-      const newArray = await this.zarrStore.getLevelArray(level.asset)
-      const newWidth = newArray.shape[this.dimIndices.lon.index]
-      const newHeight = newArray.shape[this.dimIndices.lat.index]
-
-      // Always use region-based loading for unified rendering path
-      // If no chunk/shard boundaries, treat whole level as one region
-      const detectedRegionSize = this.getRegionSize(newArray)
-      const newRegionSize: [number, number] = detectedRegionSize ?? [
-        newHeight,
-        newWidth,
-      ]
-
-      if (this.pendingLevelIndex !== newLevelIndex) {
-        // Target changed while loading; let update() kick off the new switch.
-        this.pendingLevelIndex = null
-        this.invalidate()
-        return
-      }
-
-      // Update all level state atomically AFTER async work completes
-      // This prevents race conditions where render sees new level index but old dimensions
-      this.currentLevelIndex = newLevelIndex
-      this.pendingLevelIndex = null
-      this.zarrArray = newArray
-      this.width = newWidth
-      this.height = newHeight
-      this.regionSize = newRegionSize
-      this.resetVisibleRegions()
-
-      // Build base slice args for non-spatial dimensions
-      await this.buildBaseSliceArgs()
-
-      // Let update() trigger viewport-aware loading
-      this.invalidate()
-    } catch (err) {
-      this.pendingLevelIndex = null
-      console.error(`Failed to switch to level ${level.asset}:`, err)
-    }
   }
 
   render(renderer: ZarrRenderer, context: RenderContext): void {
@@ -2275,7 +2241,7 @@ export class UntiledMode implements ZarrMode {
    * Includes previous level regions as fallback during level transitions.
    */
   private getRegionStates(): RegionRenderState[] {
-    if (!this.regionSize) {
+    if (!(this.activeLevel?.regionSize ?? null)) {
       return []
     }
 
@@ -2303,16 +2269,17 @@ export class UntiledMode implements ZarrMode {
 
   dispose(gl: WebGL2RenderingContext | WebGLRenderingContext): void {
     this.isRemoved = true
-    clearThrottle(this.throttleState)
+    // Bump so any pending `loadLevel` drops its result on commit.
+    this.loadToken++
+    this.loadingLevelIndex = null
     cancelAllRequests(this.requestCanceller)
     // Clean up region caches
     this.clearRegionCache(gl)
-    this.regionSize = null
+    this.activeLevel = null
     this.cachedMercatorTransformer = null
     this.cachedWGS84Transformer = null
     this.cached4326Transformer = null
-    this.loadingManager.chunksLoading = false
-    this.emitLoadingState()
+    this.loadingDebouncer.hide()
   }
 
   setLoadingCallback(callback: LoadingStateCallback | undefined): void {
@@ -2384,44 +2351,43 @@ export class UntiledMode implements ZarrMode {
     this.selector = selector
     this.bandNames = getBands(this.variable, selector)
 
-    const gl = this.cachedGl
-    if (!gl) {
-      // No gl context yet - selector is stored, update() will handle loading
+    if (!this.cachedGl) {
+      // No gl context yet — selector is stored, update() will handle loading.
       this.invalidate()
       return
     }
 
-    // Initialize region size if needed
-    if (!this.regionSize && this.zarrArray) {
-      this.regionSize = this.getRegionSize(this.zarrArray) ?? [
-        this.height,
-        this.width,
-      ]
-    }
-
-    this.selectorVersion++
-
-    // Abort in-flight fetches still running with the old selector.
-    // The fetch's catch/finally handles state cleanup and re-invalidation.
+    // Abort in-flight region fetches still running with the old selector.
+    // Their catch/finally handles state cleanup and re-invalidation.
     for (const [, region] of this.regionCache) {
       if (region.loading && region.requestId !== null) {
         this.requestCanceller.controllers.get(region.requestId)?.abort()
       }
     }
 
-    await this.buildBaseSliceArgs()
+    // Rebuild the runtime with the new selector and atomic-swap. Going
+    // through `loadLevel` bumps `loadToken`, so any in-flight level load
+    // (zoom-driven or initial) drops and restarts against the new
+    // selector. `reuseArray` keeps the array/dims so no refetch is done
+    // when the level itself isn't changing.
+    if (this.activeLevel) {
+      await this.loadLevel(this.activeLevel.index, { reuseArray: true })
+    } else if (this.loadingLevelIndex !== null) {
+      // A level load is already in flight; let it pick up the new
+      // selector via its pre-commit `this.selector !== selectorSnapshot`
+      // check, which drops it and our fresh call takes over.
+      await this.loadLevel(this.loadingLevelIndex, { reuseArray: false })
+    }
+
+    // Bump only after the runtime commit — before this point, readers
+    // that observe the new `selectorVersion` would still see the old
+    // `baseSliceArgs` and mis-tag fetches.
+    this.selectorVersion++
     this.lastViewportHash = ''
     this.invalidate()
   }
 
   private emitLoadingState(): void {
-    // Update chunksLoading to include throttle state
-    if (
-      this.throttleState.throttledPending &&
-      !this.loadingManager.chunksLoading
-    ) {
-      this.loadingManager.chunksLoading = true
-    }
     emitLoadingStateUtil(this.loadingManager)
   }
 
@@ -2476,6 +2442,7 @@ export class UntiledMode implements ZarrMode {
    * Handles multi-value dimensions and channel combinations.
    */
   private async fetchQueryData(
+    level: QueryLevelSnapshot,
     selector: NormalizedSelector,
     spatialQuery: {
       minX: number
@@ -2492,14 +2459,13 @@ export class UntiledMode implements ZarrMode {
     channelLabels: (string | number)[][]
     multiValueDimNames: string[]
   } | null> {
-    if (!this.zarrArray) return null
-
     try {
       const { sliceArgs: baseSliceArgs, multiValueDims } =
         await this.buildSliceArgsForSelector(selector, {
           includeSpatialSlices: false,
           trackMultiValue: true,
           spatialBounds: spatialQuery,
+          array: level.zarrArray,
         })
 
       const {
@@ -2515,12 +2481,10 @@ export class UntiledMode implements ZarrMode {
 
       if (numChannels === 1) {
         const result = (await zarr.get(
-          this.zarrArray,
+          level.zarrArray,
           baseSliceArgs,
           getOpts
-        )) as {
-          data: ArrayLike<number>
-        }
+        )) as { data: ArrayLike<number> }
         return {
           data: new Float32Array(result.data),
           width: fetchWidth,
@@ -2542,12 +2506,10 @@ export class UntiledMode implements ZarrMode {
         }
 
         const bandData = (await zarr.get(
-          this.zarrArray,
+          level.zarrArray,
           sliceArgs,
           getOpts
-        )) as {
-          data: ArrayLike<number>
-        }
+        )) as { data: ArrayLike<number> }
         for (let pixIdx = 0; pixIdx < fetchWidth * fetchHeight; pixIdx++) {
           packedData[pixIdx * numChannels + c] = bandData.data[pixIdx]
         }
@@ -2571,15 +2533,18 @@ export class UntiledMode implements ZarrMode {
   /**
    * Compute subset bounds from pixel bounds against the full mercator bounds.
    */
-  private computeSubsetBounds(pixelBounds: PixelRect): MercatorBounds {
+  private computeSubsetBounds(
+    pixelBounds: PixelRect,
+    level: QueryLevelSnapshot
+  ): MercatorBounds {
     const { minX, maxX, minY, maxY } = pixelBounds
     const xRange = this.mercatorBounds!.x1 - this.mercatorBounds!.x0
     const yRange = this.mercatorBounds!.y1 - this.mercatorBounds!.y0
     const subsetBounds: MercatorBounds = {
-      x0: this.mercatorBounds!.x0 + (minX / this.width) * xRange,
-      x1: this.mercatorBounds!.x0 + (maxX / this.width) * xRange,
-      y0: this.mercatorBounds!.y0 + (minY / this.height) * yRange,
-      y1: this.mercatorBounds!.y0 + (maxY / this.height) * yRange,
+      x0: this.mercatorBounds!.x0 + (minX / level.width) * xRange,
+      x1: this.mercatorBounds!.x0 + (maxX / level.width) * xRange,
+      y0: this.mercatorBounds!.y0 + (minY / level.height) * yRange,
+      y1: this.mercatorBounds!.y0 + (maxY / level.height) * yRange,
     }
     if (
       this.mercatorBounds!.latMin !== undefined &&
@@ -2588,14 +2553,14 @@ export class UntiledMode implements ZarrMode {
       const latRange = this.mercatorBounds!.latMax - this.mercatorBounds!.latMin
       if (this.latIsAscending) {
         subsetBounds.latMin =
-          this.mercatorBounds!.latMin + (minY / this.height) * latRange
+          this.mercatorBounds!.latMin + (minY / level.height) * latRange
         subsetBounds.latMax =
-          this.mercatorBounds!.latMin + (maxY / this.height) * latRange
+          this.mercatorBounds!.latMin + (maxY / level.height) * latRange
       } else {
         subsetBounds.latMax =
-          this.mercatorBounds!.latMax - (minY / this.height) * latRange
+          this.mercatorBounds!.latMax - (minY / level.height) * latRange
         subsetBounds.latMin =
-          this.mercatorBounds!.latMax - (maxY / this.height) * latRange
+          this.mercatorBounds!.latMax - (maxY / level.height) * latRange
       }
     }
     return subsetBounds
@@ -2615,14 +2580,22 @@ export class UntiledMode implements ZarrMode {
       coordinates: { lat: [], lon: [] },
     })
 
-    if (!this.mercatorBounds) return emptyResult()
+    const activeLevel = this.activeLevel
+    if (!this.mercatorBounds || !activeLevel) return emptyResult()
+
+    const level: QueryLevelSnapshot = {
+      index: activeLevel.index,
+      zarrArray: activeLevel.zarrArray,
+      width: activeLevel.width,
+      height: activeLevel.height,
+    }
 
     const normalizedSelector = selector
       ? normalizeSelector(selector)
       : this.selector
 
     const desc = this.zarrStore.describe()
-    const currentLevel = this.levels[this.currentLevelIndex]
+    const currentLevel = this.levels[level.index]
     const transforms = {
       scaleFactor: currentLevel?.scaleFactor ?? desc.scaleFactor,
       addOffset: currentLevel?.addOffset ?? desc.addOffset,
@@ -2646,13 +2619,14 @@ export class UntiledMode implements ZarrMode {
       opts?: QueryOptions
     ): Promise<QueryResult | null> => {
       const fetched = await this.fetchQueryData(
+        level,
         normalizedSelector,
         pixelBounds,
         opts?.signal
       )
       if (!fetched) return null
 
-      const subsetBounds = this.computeSubsetBounds(pixelBounds)
+      const subsetBounds = this.computeSubsetBounds(pixelBounds, level)
 
       let subsetSourceBounds: [number, number, number, number] | null = null
       if (this.proj4def && sourceBounds) {
@@ -2661,16 +2635,16 @@ export class UntiledMode implements ZarrMode {
           minX,
           minY,
           sourceBounds,
-          this.width,
-          this.height,
+          level.width,
+          level.height,
           this.latIsAscending
         )
         const [xMax, yMax] = pixelToSourceCRS(
           maxX,
           maxY,
           sourceBounds,
-          this.width,
-          this.height,
+          level.width,
+          level.height,
           this.latIsAscending
         )
         subsetSourceBounds = [
@@ -2709,8 +2683,8 @@ export class UntiledMode implements ZarrMode {
       const pixelBounds = computePixelBoundsFromGeometry(
         geom,
         this.mercatorBounds!,
-        this.width,
-        this.height,
+        level.width,
+        level.height,
         this.crs ?? 'EPSG:4326',
         this.latIsAscending,
         this.proj4def,
@@ -2765,8 +2739,8 @@ export class UntiledMode implements ZarrMode {
     const spans = wrappedBboxToPixelSpans(
       wrappedBbox,
       this.mercatorBounds,
-      this.width,
-      this.height,
+      level.width,
+      level.height,
       this.crs ?? 'EPSG:4326',
       this.latIsAscending
     )

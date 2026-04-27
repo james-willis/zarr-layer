@@ -281,6 +281,10 @@ const Controls = () => {
   const setMapProvider = useAppStore((state) => state.setMapProvider)
   const setRegionResult = useAppStore((state) => state.setRegionResult)
   const setPointResult = useAppStore((state) => state.setPointResult)
+  const hoverQueryEnabled = useAppStore((state) => state.hoverQueryEnabled)
+  const setHoverQueryEnabled = useAppStore(
+    (state) => state.setHoverQueryEnabled
+  )
   const themedColormap = useThemedColormap(colormap)
   const [queryInFlight, setQueryInFlight] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -317,10 +321,32 @@ const Controls = () => {
       fillValue
     )
     if (values.length === 0) return null
-    // For range bands or multi-values, show mean of collected values
-    const mean = values.reduce((acc, value) => acc + value, 0) / values.length
+
+    // Range bands render with month=[1..12] so queryData caches-hit, but the
+    // displayed average must only cover the user-selected month range.
+    const coordMonths = pointResult.coordinates?.month as number[] | undefined
+    const filtered =
+      isRangeBand &&
+      coordMonths &&
+      coordMonths.length === values.length &&
+      monthStart !== null &&
+      monthEnd !== null
+        ? values.filter(
+            (_, i) => coordMonths[i] >= monthStart && coordMonths[i] <= monthEnd
+          )
+        : values
+
+    if (filtered.length === 0) return null
+    const mean = filtered.reduce((acc, v) => acc + v, 0) / filtered.length
     return Number.isFinite(mean) ? mean : null
-  }, [currentVariable, fillValue, pointResult])
+  }, [
+    currentVariable,
+    fillValue,
+    pointResult,
+    isRangeBand,
+    monthStart,
+    monthEnd,
+  ])
 
   const regionMean = useMemo(
     () => getRegionMean(regionResult, fillValue),
@@ -438,9 +464,9 @@ const Controls = () => {
         <Column start={2} width={3}>
           <Box sx={{ color: 'secondary' }}>
             <Flex
-              sx={{ justifyContent: 'space-between', alignItems: 'center' }}
+              sx={{ justifyContent: 'space-between', alignItems: 'baseline' }}
             >
-              <Flex sx={{ alignItems: 'center', gap: 2 }}>
+              <Flex sx={{ gap: 2, alignItems: 'center' }}>
                 <Badge>
                   {pointDisplayValue !== null
                     ? pointDisplayValue.toFixed(2)
@@ -461,7 +487,19 @@ const Controls = () => {
                   </Box>
                 )}
               </Flex>
-              <Box sx={{ fontSize: 2 }}>Click map to query</Box>
+              <Flex sx={{ gap: 2 }}>
+                <Box sx={{ fontSize: 2, color: 'secondary' }}>Hover</Box>
+                <Filter
+                  values={{
+                    on: hoverQueryEnabled,
+                    off: !hoverQueryEnabled,
+                  }}
+                  setValues={(obj: Record<string, boolean>) => {
+                    if (obj.off) setHoverQueryEnabled(false)
+                    if (obj.on) setHoverQueryEnabled(true)
+                  }}
+                />
+              </Flex>
             </Flex>
           </Box>
         </Column>

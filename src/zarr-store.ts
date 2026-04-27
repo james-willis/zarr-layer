@@ -1,4 +1,5 @@
 import * as zarr from 'zarrita'
+import { withDecodedChunkCaching } from './decoded-chunk-cache'
 import type { Readable, AsyncReadable } from '@zarrita/storage'
 import type {
   Bounds,
@@ -135,8 +136,6 @@ const createFetchStore = (
 }
 
 export class ZarrStore {
-  private static _storeCache = new Map<string, Promise<ZarrStoreType>>()
-
   source: string
   version: 2 | 3 | null
   variable: string
@@ -238,8 +237,6 @@ export class ZarrStore {
   }
 
   private async _initialize(): Promise<this> {
-    const storeCacheKey = `${this.source}:${this.version ?? 'auto'}`
-
     if (this.customStore) {
       // Validate that custom store implements required Readable interface
       if (typeof this.customStore.get !== 'function') {
@@ -247,43 +244,47 @@ export class ZarrStore {
           'customStore must implement Readable interface with get() method'
         )
       }
-      // Use custom store directly (e.g., IcechunkStore)
-      this.store = this.customStore as ZarrStoreType
+      // Skip consolidated metadata: custom stores typically have their
+      // own efficient metadata layer. `withRangeCoalescing` eagerly
+      // asserts `getRange`, so only install it when the store has one.
+      const hasGetRange =
+        typeof (this.customStore as { getRange?: unknown }).getRange ===
+        'function'
+      this.store = hasGetRange
+        ? ((await zarr.extendStore(
+            this.customStore as AsyncReadable,
+            (store) => zarr.withRangeCoalescing(store),
+            (store) => withDecodedChunkCaching(store)
+          )) as ZarrStoreType)
+        : ((await zarr.extendStore(this.customStore as AsyncReadable, (store) =>
+            withDecodedChunkCaching(store)
+          )) as ZarrStoreType)
     } else {
-      const bypassCache = !!this.transformRequest
-      let storePromise = bypassCache
-        ? undefined
-        : ZarrStore._storeCache.get(storeCacheKey)
-
-      if (!storePromise) {
-        const baseStore = createFetchStore(this.source, this.transformRequest)
-        // When the version is known, tell the consolidated-metadata wrapper
-        // to only try that format — avoids a wasted .zmetadata fetch on v3
-        // stores (and vice versa). Falls back to auto-detect when unknown.
-        // v3 consolidated metadata support is experimental; the outer
-        // `.catch` keeps us on the raw store if the wrapper trips.
-        const consolidatedOpts: zarr.ConsolidatedMetadataOptions | undefined =
-          this.version === 2
-            ? { format: 'v2' }
-            : this.version === 3
-            ? { format: 'v3' }
-            : undefined
-        // Range coalescing groups concurrent HTTP range requests into fewer
-        // round-trips, reducing latency when fetching many tiles in parallel.
-        storePromise = zarr.extendStore(
-          baseStore,
-          (store) =>
-            zarr
-              .withMaybeConsolidatedMetadata(store, consolidatedOpts)
-              .catch(() => store),
-          (store) => zarr.withRangeCoalescing(store)
-        ) as Promise<ZarrStoreType>
-        if (!bypassCache) {
-          ZarrStore._storeCache.set(storeCacheKey, storePromise)
-        }
-      }
-
-      this.store = await storePromise
+      // Layered data access:
+      // - Consolidated metadata: one-shot fetch of the `.zmetadata`/`zarr.json`
+      //   blob so array opens are in-memory lookups. Falls back to the raw
+      //   store if the wrapper trips (e.g. v3 experimental).
+      // - Range coalescing: batches concurrent HTTP range requests in a
+      //   microtask tick so many tile fetches become few round-trips.
+      // - Decoded-chunk caching: memoizes the decompressed `getChunk`
+      //   ndarray so selector scrubs and hover queries within
+      //   already-fetched chunks skip decompression. Concurrent requests
+      //   for the same chunk share one fetch via an in-flight map.
+      const consolidatedOpts: zarr.ConsolidatedMetadataOptions | undefined =
+        this.version === 2
+          ? { format: 'v2' }
+          : this.version === 3
+          ? { format: 'v3' }
+          : undefined
+      this.store = (await zarr.extendStore(
+        createFetchStore(this.source, this.transformRequest),
+        (store) =>
+          zarr
+            .withMaybeConsolidatedMetadata(store, consolidatedOpts)
+            .catch(() => store),
+        (store) => zarr.withRangeCoalescing(store),
+        (store) => withDecodedChunkCaching(store)
+      )) as ZarrStoreType
     }
 
     this.root = zarr.root(this.store)
@@ -921,9 +922,5 @@ export class ZarrStore {
       tileSize: DEFAULT_TILE_SIZE, // Will be overridden by chunk shape
       crs,
     }
-  }
-
-  static clearCache() {
-    ZarrStore._storeCache.clear()
   }
 }

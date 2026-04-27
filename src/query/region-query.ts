@@ -220,10 +220,11 @@ export async function queryRegionTiled(
 
   checkAborted(signal)
 
-  // For each tile, determine which chunks we need based on selector and fetch them
+  // For each tile, determine which chunks we need based on selector and fetch them.
+  // The decoded-chunk cache handles duplicate fetches transparently, so we
+  // don't need a render-side chunk cache here.
   const tileChunkData = new Map<string, Map<string, Float32Array>>()
 
-  // Parallelize tile fetching - process all tiles concurrently instead of serially
   await Promise.all(
     tiles.map(async (tileTuple) => {
       const [, x, y] = tileTuple
@@ -240,7 +241,6 @@ export async function queryRegionTiled(
       const tileKey = tileToKey(tileTuple)
       const chunkDataMap = new Map<string, Float32Array>()
 
-      // Fetch all chunks for this tile
       await Promise.all(
         chunksToFetch.map(async (chunkIndices) => {
           try {
@@ -249,10 +249,11 @@ export async function queryRegionTiled(
               chunkIndices,
               signal ? { signal } : undefined
             )
-            // Make a proper copy to avoid buffer sharing issues
+            // `chunk` may be shared via the decoded-chunk cache, so copy
+            // into a Float32Array this query owns before handing it to
+            // downstream extractors (which may read it at non-native types
+            // or buffer offsets).
             const chunkData = new Float32Array(chunk.data as ArrayLike<number>)
-
-            // Store chunk with indices as key
             const chunkKey = chunkIndices.join(',')
             chunkDataMap.set(chunkKey, chunkData)
           } catch (err) {
