@@ -1918,13 +1918,19 @@ export class UntiledMode implements ZarrMode {
           array: newArray,
         })
 
+      const targetStillDesired =
+        reuseArray ||
+        !this.isMultiscale ||
+        levelIndex === this.desiredLevelIndex
+
       // Drop on the floor if anything raced past us: a newer load (or
-      // dispose) bumped the token, or `setSelector` replaced the selector
-      // we built slice args against.
+      // dispose) bumped the token, the zoom target moved on, or
+      // `setSelector` replaced the selector we built slice args against.
       if (
         token !== this.loadToken ||
         this.isRemoved ||
-        this.selector !== selectorSnapshot
+        this.selector !== selectorSnapshot ||
+        !targetStillDesired
       ) {
         this.invalidate()
         return
