@@ -182,18 +182,28 @@ export class ZarrRenderer {
         shaderProgram.projectionMode === 'maplibre-ecef'
       const eyeMatrix = isMaplibreProj ? projectionData?.mainMatrix : matrix
       if (eyeMatrix && eyeMatrix.length >= 16) {
-        gl.uniformMatrix4fv(
-          shaderProgram.eyeMatrixLoc,
-          false,
+        // Both the GPU upload and the JS anchor multiply must use the SAME
+        // matrix representation. If we computed anchor_clip against the
+        // possibly-Float64 source while uploading a Float32-quantized copy to
+        // the shader, the eye-coords identity
+        //   anchor_clip + matrix · delta  ≡  matrix · (anchor + delta)
+        // would hold only up to the matrix-element ULP — at z ≈ 19 the matrix
+        // scale columns are ~3×10⁵, so 1 Float32 ULP ≈ 3×10⁻² in clip space.
+        // Anchor magnitude ~0.5 → several viewport pixels of per-frame
+        // inconsistency, which is exactly what the eye-coords decomposition
+        // was meant to recover. Cast once and use the same Float32 array on
+        // both sides.
+        const eyeMatrixF32 =
           eyeMatrix instanceof Float32Array
             ? eyeMatrix
             : new Float32Array(eyeMatrix)
-        )
-        // Column-major: result[i] = m[0+i]*x + m[4+i]*y + m[8+i]*0 + m[12+i]*1.
-        // JS arithmetic is Float64; only the final 4 values lose precision in
-        // the cast to Float32. Each component lands near zero in clip space
-        // for typical viewports → Float32 ULP near zero.
-        const m = eyeMatrix
+        gl.uniformMatrix4fv(shaderProgram.eyeMatrixLoc, false, eyeMatrixF32)
+        // anchor_clip = eyeMatrixF32 · vec4(anchor.x, anchor.y, 0, 1).
+        // JS reads Float32Array elements as Float64-promoted values, so the
+        // multiply-add runs in Float64 against the same Float32 inputs the
+        // shader will see, then uniform4f casts the four results back to
+        // Float32. Column-major: result[i] = m[i]*x + m[4+i]*y + m[12+i].
+        const m = eyeMatrixF32
         const ax = uniforms.eyeAnchorMerc.x
         const ay = uniforms.eyeAnchorMerc.y
         const cx = m[0] * ax + m[4] * ay + m[12]
